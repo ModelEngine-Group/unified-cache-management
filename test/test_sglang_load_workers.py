@@ -6,7 +6,7 @@ import unittest
 from concurrent.futures import Future
 from unittest.mock import patch
 
-from common.sglang_utils import linker_module
+from common.sglang_utils import linker_module, metrics_module
 
 
 class LoadWorkerTest(unittest.TestCase):
@@ -19,6 +19,7 @@ class LoadWorkerTest(unittest.TestCase):
         forward_event=False,
         supports_prerequisite=False,
         handle=42,
+        metrics=False,
         prefetch=False,
         cancelled=False,
     ):
@@ -26,9 +27,9 @@ class LoadWorkerTest(unittest.TestCase):
         submitted = []
         reaped = set()
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = metrics
         obj.num_layers = 4
-        obj._tp_rank = 0
-        obj._dp_rank = obj._attn_dp_rank = 0
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
         obj._requires_load_finish = True
         obj._load_queue = queue.Queue()
         obj._load_results = {
@@ -104,12 +105,32 @@ class LoadWorkerTest(unittest.TestCase):
                 linker_module._PrefetchLoad([object()], ready_events, future)
             )
         else:
-            obj._load_queue.put((0, {"req": [object()]}, ready_events))
+            obj._load_queue.put((0, {"req": [object()]}, ready_events, None))
         obj._load_queue.put(None)
         obj._load_worker()
         self.assertEqual(obj._load_queue.unfinished_tasks, 0)
         self.assertEqual(reaped, set(submitted))
         return events
+
+    def test_worker_emits_one_sample_per_layer_including_failure_cleanup(self):
+        for failure in ({}, {"fail_submit": 2}, {"fail_wait": 1}, {"fail_check": 0}):
+            with self.subTest(failure=failure):
+                samples = []
+                with patch.object(metrics_module, "record_metrics", samples.append):
+                    self.run_worker(metrics=True, **failure)
+                names = [
+                    name
+                    for sample in samples
+                    for name in sample
+                    if name.startswith("sglang_linker_load_layer_duration_ms_")
+                ]
+                self.assertEqual(len(names), len(set(names)))
+                expected = (
+                    3
+                    if "fail_submit" in failure
+                    else (1 if "fail_check" in failure else 4)
+                )
+                self.assertEqual(len(names), expected)
 
     def test_prefetch_completes_after_all_layers_without_layer_notifications(self):
         with patch.object(linker_module, "Future", Future, create=True):
@@ -117,6 +138,19 @@ class LoadWorkerTest(unittest.TestCase):
         self.assertEqual(events[-1], ("result", True))
         self.assertEqual(len([e for e in events if e[0] == "wait"]), 4)
         self.assertFalse(any(e[0] in ("complete", "fail") for e in events))
+
+    def test_prefetch_metrics_preserve_completion_without_counter_notifications(self):
+        samples = []
+        with patch.object(metrics_module, "record_metrics", samples.append):
+            events = self.run_worker(prefetch=True, metrics=True)
+        self.assertEqual(events[-1], ("result", True))
+        self.assertFalse(any(e[0] in ("complete", "fail") for e in events))
+        names = [name for sample in samples for name in sample]
+        for layer in range(4):
+            self.assertEqual(
+                names.count(f"sglang_linker_load_layer_duration_ms_{layer}"), 1
+            )
+        self.assertNotIn("sglang_linker_load_ready_layers_total", names)
 
     def test_prefetch_failures_drain_before_future_completion(self):
         for failure in ({"fail_submit": 2}, {"fail_wait": 1}, {"fail_check": 0}):
@@ -203,6 +237,7 @@ class LoadWorkerTest(unittest.TestCase):
             )
 
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj._pending_loads = {"req": [object()]}
         obj.forward_stream = forward_stream
         obj._requires_load_finish = False
@@ -218,6 +253,7 @@ class LoadWorkerTest(unittest.TestCase):
 
     def test_native_transfer_ready_is_reused_for_load_and_dump(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         ready_events = [object(), object()]
         obj.forward_stream = object()
         obj._pending_loads = {"req": [object()]}
@@ -227,7 +263,7 @@ class LoadWorkerTest(unittest.TestCase):
         obj._load_queue = queue.Queue()
         obj._offload_queue = queue.Queue()
         obj._dump_ranks = (0,)
-        obj._tp_rank = 0
+        obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
         obj._expand = lambda transfers, **kwargs: transfers
         streams = []
 
@@ -249,6 +285,7 @@ class LoadWorkerTest(unittest.TestCase):
 
     def test_legacy_transfer_ready_without_forward_stream(self):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj.forward_stream = None
         recorded = []
         event = types.SimpleNamespace(record=lambda: recorded.append(True))

@@ -18,6 +18,7 @@ patch_module = load_source(
     os=os,
     init_logger=lambda name: logging.getLogger(name),
     install_cache_match_logging=Mock(),
+    install_counter_metrics=Mock(),
 )
 boot_module = load_source(
     "ucm/integration/sglang/patch/boot_patch.py", importlib=importlib, sys=sys
@@ -27,6 +28,7 @@ boot_module = load_source(
 class PatchSelectionTest(unittest.TestCase):
     def setUp(self):
         patch_module.install_cache_match_logging.reset_mock()
+        patch_module.install_counter_metrics.reset_mock()
         self.env = patch.dict(os.environ, {"ENABLE_UCM_PATCH": "1"}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -52,6 +54,7 @@ class PatchSelectionTest(unittest.TestCase):
             patch_module.apply_all_patches()
         version.assert_not_called()
         patch_module.install_cache_match_logging.assert_not_called()
+        patch_module.install_counter_metrics.assert_not_called()
 
     def test_unsupported_version_does_not_break_import(self):
         for version in ("0.5.18", "0.5.19.post1", "0.5.99rc1"):
@@ -77,6 +80,7 @@ class PatchSelectionTest(unittest.TestCase):
                 self.assertTrue(framework.existing_backend)
                 importer.assert_not_called()
                 patch_module.install_cache_match_logging.assert_not_called()
+                patch_module.install_counter_metrics.assert_not_called()
 
     def test_supported_patch_runs(self):
         for version, package in (
@@ -99,6 +103,7 @@ class PatchSelectionTest(unittest.TestCase):
                 ) as importer,
             ):
                 patch_module.install_cache_match_logging.reset_mock()
+                patch_module.install_counter_metrics.reset_mock()
                 importer.return_value.apply.side_effect = (
                     lambda: patch_module.install_cache_match_logging.assert_not_called()
                 )
@@ -108,6 +113,7 @@ class PatchSelectionTest(unittest.TestCase):
                 )
                 importer.return_value.apply.assert_called_once_with()
                 patch_module.install_cache_match_logging.assert_called_once_with()
+                patch_module.install_counter_metrics.assert_called_once_with()
 
     def test_native_support_installs_logging_without_compatibility_patch(self):
         with (
@@ -120,6 +126,7 @@ class PatchSelectionTest(unittest.TestCase):
             patch_module.apply_all_patches()
             importer.assert_not_called()
             patch_module.install_cache_match_logging.assert_called_once_with()
+            patch_module.install_counter_metrics.assert_called_once_with()
 
     def test_supported_patch_failure_is_not_hidden(self):
         with (
@@ -134,12 +141,14 @@ class PatchSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Failed to apply"):
                 patch_module.apply_all_patches()
             patch_module.install_cache_match_logging.assert_not_called()
+            patch_module.install_counter_metrics.assert_not_called()
 
     def test_explicit_version_pin_still_fails(self):
         os.environ["UCM_SGLANG_VERSION"] = "0.5.22"
         with patch.object(importlib.metadata, "version", return_value="0.5.21"):
             with self.assertRaisesRegex(RuntimeError, "version mismatch"):
                 patch_module.apply_all_patches()
+            patch_module.install_counter_metrics.assert_not_called()
 
     def test_missing_distribution_skips_patch(self):
         with (
@@ -151,6 +160,7 @@ class PatchSelectionTest(unittest.TestCase):
             self.assertLogs(patch_module.logger, level="WARNING"),
         ):
             patch_module.apply_all_patches()
+            patch_module.install_counter_metrics.assert_not_called()
 
 
 if __name__ == "__main__":

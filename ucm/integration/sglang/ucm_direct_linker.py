@@ -8,11 +8,12 @@ layer-ready and completion queues. Store setup and I/O stay in the adapter.
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from collections import OrderedDict, deque
 from concurrent.futures import Future
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from queue import Empty, Queue
 from typing import Any
 
@@ -31,14 +32,22 @@ from sglang.srt.mem_cache.unified_cache.unified_cache_linker import (
 from sglang.srt.runtime_context import get_model, get_parallel
 from sglang.srt.utils import freeze_gc, get_device_module
 
+from ucm.integration.sglang.metrics import (
+    LinkerOperation,
+    _record_interface_duration,
+    create_metrics_logger,
+    finish_timing,
+    record_metrics,
+    shutdown_metrics_logger,
+    start_timing,
+)
 from ucm.integration.sglang.ucm_direct_store_adapter import (
     UcmDirectStoreAdapter,
     UcmLayerTransfer,
     UcmPoolMetadata,
 )
-from ucm.logger import init_logger
 
-logger = init_logger(__name__)
+logger = logging.getLogger(__name__)
 device_module = get_device_module()
 _LOOKUP_PROGRESS_MAX_REQUESTS = 128
 _OFFLOAD_POLL_INTERVAL_S = 0.005
@@ -91,6 +100,8 @@ class _PendingOffload:
     transfers: list[UcmLayerTransfer]
     ready_events: list[object]
     result: bool | None = None
+    observation: LinkerOperation | None = None
+    timings: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -118,6 +129,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         adapter: UcmDirectStoreAdapter | None = None,
     ):
         del server_args
+        self._metrics_logger = None
+        self._metrics_enabled = False
         self.forward_stream = forward_stream
         self.page_size = params.page_size
         self._kv_allocator = params.token_to_kv_pool_allocator
@@ -138,7 +151,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         # Scheduler-owned state; workers receive batches through _load_queue.
         self._pending_loads: dict[str, list[PoolTransfer]] = {}
         self._load_queue: Queue[
-            tuple[int, dict[str, list[PoolTransfer]], list[object]]
+            tuple[
+                int, dict[str, list[PoolTransfer]], list[object], LinkerOperation | None
+            ]
             | _PrefetchLoad
             | None
         ] = Queue()
@@ -147,9 +162,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             UnifiedCacheLinker, "finish_layer_wise_loading"
         )
         self._load_results: dict[int, Future[bool]] = {}
-        self._offload_queue: Queue[tuple[list[PoolTransfer], list[object]] | None] = (
-            Queue()
-        )
+        self._offload_queue: Queue[
+            tuple[list[PoolTransfer], list[object], LinkerOperation | None] | None
+        ] = Queue()
         self._offload_results: Queue[bool] = Queue()
         self._lookup_progress: OrderedDict[str, _LookupProgress] = OrderedDict()
 
@@ -167,9 +182,51 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._log_pool_topology()
         try:
             self.adapter = adapter or self._create_adapter(params, extra_config)
+            self._init_metrics(params, extra_config)
             self.adapter.register_device_pools(self._pool_metadata())
             self._select_store_ranks(tp_group, params.attn_cp_size)
+            self.layer_done_counter = LayerWiseLoadCounter(self.num_layers)
+            if PoolName.MAMBA in self.pools:
+                register = getattr(
+                    params.req_to_token_pool, "register_layer_transfer_counter", None
+                )
+                if callable(register):
+                    register(self.layer_done_counter)
+                elif not callable(
+                    getattr(self._kv_cache, "register_layer_transfer_counter", None)
+                ):
+                    raise RuntimeError(
+                        "SGLang provides no layer transfer counter registration"
+                    )
+                # New SGLang registers the KV pool in its cache registry after
+                # constructing the linker, including Mamba layer-router setup.
+
+            self._load_thread = threading.Thread(
+                target=self._load_worker,
+                daemon=True,
+                name=f"ucm-load-tp{self._tp_rank}",
+            )
+            self._offload_thread = threading.Thread(
+                target=self._offload_worker,
+                daemon=True,
+                name=f"ucm-offload-tp{self._tp_rank}",
+            )
+            self._load_thread.start()
+            self._offload_thread.start()
         except Exception:
+            for thread_name, queue in (
+                ("_load_thread", self._load_queue),
+                ("_offload_thread", self._offload_queue),
+            ):
+                thread = getattr(self, thread_name, None)
+                if thread is not None and thread.is_alive():
+                    queue.put(None)
+                    thread.join()
+            try:
+                if hasattr(self, "adapter"):
+                    self.adapter.close()
+            finally:
+                shutdown_metrics_logger(self._metrics_logger)
             logger.exception(
                 "UCM linker initialization failed: layers=%d tp=%d/%d replicated=%s.",
                 self.num_layers,
@@ -179,33 +236,46 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
             raise
 
-        self.layer_done_counter = LayerWiseLoadCounter(self.num_layers)
-        if PoolName.MAMBA in self.pools:
-            register = getattr(
-                params.req_to_token_pool, "register_layer_transfer_counter", None
+    def _init_metrics(self, params, extra_config):
+        launch_config = dict(getattr(self.adapter, "launch_config", {}))
+        for key in ("enable_metrics", "metrics_config_path"):
+            if key in (extra_config or {}):
+                launch_config[key] = extra_config[key]
+        self._metrics_logger = create_metrics_logger(
+            enabled=getattr(params, "enable_metrics", False),
+            model_name=getattr(get_model(), "model_path", ""),
+            ranks={
+                "dp_rank": (
+                    self._attn_dp_rank
+                    if getattr(get_parallel(), "enable_dp_attention", False)
+                    else self._dp_rank
+                ),
+                "tp_rank": self._tp_rank,
+                "pp_rank": params.pp_rank,
+                "attn_cp_rank": params.attn_cp_rank,
+            },
+            launch_config=launch_config,
+        )
+        self._metrics_enabled = self._metrics_logger is not None
+        self.adapter.metrics_enabled = self._metrics_enabled
+        if self._metrics_enabled:
+            # Initialize counter series so queue-depth differences and zero-error
+            # rates exist before the first completion, without fabricating samples.
+            record_metrics(
+                {
+                    item["name"]: 0
+                    for item in self._metrics_logger.config.get("counter", [])
+                    if item["name"].startswith("sglang_")
+                }
             )
-            if callable(register):
-                register(self.layer_done_counter)
-            elif not callable(
-                getattr(self._kv_cache, "register_layer_transfer_counter", None)
-            ):
-                raise RuntimeError(
-                    "SGLang provides no layer transfer counter registration"
-                )
-            # New SGLang registers the KV pool in its cache registry after
-            # constructing the linker, including Mamba layer-router setup.
 
-        self._load_thread = threading.Thread(
-            target=self._load_worker, daemon=True, name=f"ucm-load-tp{self._tp_rank}"
-        )
-        self._offload_thread = threading.Thread(
-            target=self._offload_worker,
-            daemon=True,
-            name=f"ucm-offload-tp{self._tp_rank}",
-        )
-        self._load_thread.start()
-        self._offload_thread.start()
+    def _record_metrics(self, **values):
+        if self._metrics_enabled:
+            record_metrics(
+                {f"sglang_linker_{key}": value for key, value in values.items()}
+            )
 
+    @_record_interface_duration
     def _select_store_ranks(self, tp_group: Any, attn_cp_size: int) -> None:
         """Find shared-Cache peers for lookup deduplication and dump partitioning."""
         if (
@@ -283,6 +353,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         }
         return UcmDirectStoreAdapter.from_config(extra_config or {}, identity)
 
+    @_record_interface_duration
     def _pool_metadata(self) -> list[UcmPoolMetadata]:
         metadata = []
         for bundle in self._bundles:
@@ -489,6 +560,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     )
         return layouts
 
+    @_record_interface_duration
     def _entry_layer_rows(
         self,
         entry: DevicePoolEntry,
@@ -503,6 +575,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         )
         return pointer_matrix, layout.schema
 
+    @_record_interface_duration
     def _page_transfers(
         self,
         transfers: list[PoolTransfer],
@@ -607,11 +680,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return result
 
+    @_record_interface_duration
     def _expand(self, transfers: list[PoolTransfer], **kwargs) -> list[PoolTransfer]:
         return self.pool_group.resolve_transfers(transfers, **kwargs)
 
+    @_record_interface_duration
     def lookup(self, rid: str, transfers: list[PoolTransfer]) -> list[int]:
+        timings = {}
+        start_timing(timings, "lookup_expand_duration_ms", self._metrics_enabled)
         expanded = self._expand(transfers)
+        finish_timing(timings, "lookup_expand_duration_ms")
         if not expanded:
             return []
         kv_transfer = next(
@@ -625,9 +703,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
             # SGLang intersects each rank's restorable-boundary set. Supplying
             # every boundary is neutral while the local host owner probes its
             # shared Cache/Posix view.
+            self._record_metrics(lookup_skipped_total=1)
             return list(range(1, len(page_keys) + 1))
+        start_timing(timings, "lookup_prepare_duration_ms", self._metrics_enabled)
         lookup_transfers = self._page_transfers(expanded, for_io=False)
         if not lookup_transfers:
+            finish_timing(timings, "lookup_prepare_duration_ms")
             return []
         transfer_keys = tuple(
             (
@@ -653,12 +734,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         ):
             resume_from_pages = previous.hit_pages
+        finish_timing(timings, "lookup_prepare_duration_ms")
+        started = time.perf_counter() if self._metrics_enabled else None
+        lookup_succeeded = False
         try:
             result = self.adapter.lookup(
                 lookup_transfers,
                 page_keys,
                 resume_from_pages=resume_from_pages,
             )
+            lookup_succeeded = True
         except Exception:
             logger.exception(
                 "[dp_rank=%d attn_dp_rank=%d tp_rank=%d] "
@@ -670,14 +755,32 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 len(page_keys) * self.page_size,
             )
             raise
+        finally:
+            if started is not None:
+                # Capture adapter latency before constructing or recording metrics.
+                values = {
+                    "lookup_duration_ms": (time.perf_counter() - started) * 1000,
+                    "lookup_requests_total": 1,
+                    "lookup_resumed_total": int(resume_from_pages > 0),
+                }
+                if lookup_succeeded:
+                    # Local restorable boundary, not final cross-rank token reuse.
+                    values["lookup_query_pages_total"] = len(page_keys)
+                    values["lookup_hit_pages_total"] = result[-1] if result else 0
+                else:
+                    values["lookup_errors_total"] = 1
+                self._record_metrics(**values)
+        start_timing(timings, "lookup_result_duration_ms", self._metrics_enabled)
         self._lookup_progress[rid] = _LookupProgress(
             tuple(page_keys), transfer_keys, result[-1] if result else 0
         )
         self._lookup_progress.move_to_end(rid)
         if len(self._lookup_progress) > _LOOKUP_PROGRESS_MAX_REQUESTS:
             self._lookup_progress.popitem(last=False)
+        finish_timing(timings, "lookup_result_duration_ms")
         return result
 
+    @_record_interface_duration
     def load(self, rid: str, transfers: list[PoolTransfer]) -> bool:
         self._lookup_progress.pop(rid, None)
         try:
@@ -707,6 +810,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
             raise RuntimeError(f"UCM load for rid={rid} is already queued.")
         self._pending_loads[rid] = expanded
+        self._record_metrics(load_requests_total=1)
         return True
 
     def prefetch(self, transfers: list[PoolTransfer]) -> Future[bool] | None:
@@ -723,7 +827,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
         return future
 
     def cancel_queued_load(self, rid: str) -> bool:
-        return self._pending_loads.pop(rid, None) is not None
+        cancelled = self._pending_loads.pop(rid, None) is not None
+        if cancelled:
+            self._record_metrics(load_cancelled_requests_total=1)
+        return cancelled
 
     def num_completed_loads(self) -> int:
         return self._completed_loads.qsize()
@@ -751,6 +858,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             events.append(forward_done)
         return events
 
+    @_record_interface_duration
     def _wait_transfer_events(self, events: list[object]) -> int:
         # Address preparation reads indices on CPU. Only the dependency on
         # earlier device-page use can be delegated to Cache's copy streams.
@@ -765,6 +873,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         forward_done.synchronize()
         return 0
 
+    @_record_interface_duration
     def start_layer_wise_loading(self) -> int:
         if not self._pending_loads:
             return -1
@@ -775,9 +884,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if self._requires_load_finish:
             self._load_results[counter_index] = Future()
         ready_events = self._record_transfer_events()
-        self._load_queue.put((counter_index, pending, ready_events))
+        observation = LinkerOperation.begin(self._metrics_enabled, "load")
+        self._load_queue.put((counter_index, pending, ready_events, observation))
         return counter_index
 
+    @_record_interface_duration
     def finish_layer_wise_loading(self, counter_index: int) -> bool:
         if counter_index < 0:
             return True
@@ -801,11 +912,18 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     counter_index = -1
                     pending = {"prefetch": task.transfers}
                     ready_events = task.ready_events
+                    observation = None
                 else:
-                    counter_index, pending, ready_events = task
+                    counter_index, pending, ready_events, observation = task
+                if observation is not None:
+                    observation.start()
                 landed = True
                 active_layer = -1
+                timings = {}
                 try:
+                    start_timing(
+                        timings, "load_prepare_duration_ms", self._metrics_enabled
+                    )
                     prerequisite_handle = self._wait_transfer_events(ready_events)
                     page_transfers = [
                         transfer
@@ -815,14 +933,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         )
                     ]
                     prepared_transfers = self.adapter.prepare_load(page_transfers)
+                    finish_timing(timings, "load_prepare_duration_ms")
                     # Keep submitting without blocking on an earlier layer.
                     # Reap ready layers between submissions so the first layer
                     # can start computing before the entire batch is submitted.
                     in_flight: dict[int, list[Any]] = {}
                     next_complete = 0
+
                     try:
                         for layer in range(self.num_layers):
                             active_layer = layer
+                            start_timing(
+                                timings,
+                                f"load_layer_duration_ms_{layer}",
+                                self._metrics_enabled,
+                            )
                             in_flight[layer] = self.adapter.submit_prepared_load_layer(
                                 prepared_transfers,
                                 layer,
@@ -834,23 +959,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                 if not all(self.adapter.check(t) for t in tasks):
                                     break
                                 self.adapter.wait(in_flight.pop(next_complete))
+                                finish_timing(
+                                    timings, f"load_layer_duration_ms_{next_complete}"
+                                )
                                 if not prefetch:
                                     self.layer_done_counter.complete(
                                         counter_index, next_complete
                                     )
+                                    self._record_metrics(load_ready_layers_total=1)
                                 next_complete += 1
 
                         while next_complete < self.num_layers:
                             active_layer = next_complete
                             self.adapter.wait(in_flight.pop(next_complete))
+                            finish_timing(
+                                timings, f"load_layer_duration_ms_{next_complete}"
+                            )
                             if not prefetch:
                                 self.layer_done_counter.complete(
                                     counter_index, next_complete
                                 )
+                                self._record_metrics(load_ready_layers_total=1)
                             next_complete += 1
                     finally:
                         # A failed submit or wait must not leave prefetched
                         # tasks writing into device slots after this batch ends.
+                        if active_layer not in in_flight:
+                            finish_timing(
+                                timings, f"load_layer_duration_ms_{active_layer}"
+                            )
                         for drain_layer, tasks in in_flight.items():
                             try:
                                 self.adapter.wait(tasks)
@@ -865,6 +1002,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                                     list(pending),
                                     counter_index,
                                     drain_layer,
+                                )
+                            finally:
+                                finish_timing(
+                                    timings, f"load_layer_duration_ms_{drain_layer}"
                                 )
                 except BaseException as error:
                     landed = False
@@ -883,6 +1024,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                         list(pending),
                     )
                 finally:
+                    finish_timing(timings, "load_prepare_duration_ms")
+                    if observation is not None:
+                        observation.finish(landed)
                     if prefetch:
                         task.future.set_result(landed)
                     elif self._requires_load_finish:
@@ -954,6 +1098,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return selected
 
+    @_record_interface_duration
     def offload(
         self, transfers: list[PoolTransfer], session_id: str | None = None
     ) -> bool:
@@ -966,11 +1111,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._freeze_gc_once()
         selected = self._partition_offload(expanded)
         if not selected:
+            self._record_metrics(offload_skipped_total=1)
             # Empty ranks still occupy their position in the node-result FIFO.
-            self._offload_queue.put(([], []))
+            self._offload_queue.put(([], [], None))
             return True
         ready_events = self._record_transfer_events()
-        self._offload_queue.put((selected, ready_events))
+        observation = LinkerOperation.begin(self._metrics_enabled, "offload")
+        self._offload_queue.put((selected, ready_events, observation))
         return True
 
     def _offload_worker(self) -> None:
@@ -981,21 +1128,33 @@ class UcmDirectLinker(UnifiedCacheLinker):
         next_poll_at = 0.0
         sequence = 0
 
-        def submit(task: tuple[list[PoolTransfer], list[object]]) -> None:
+        def submit(task) -> None:
             nonlocal sequence
             sequence += 1
-            expanded, ready_events = task
+            expanded, ready_events, observation = task
             if not expanded:
                 in_flight.append(_PendingOffload(sequence, [], [], [], result=True))
                 return
+            if observation is not None:
+                observation.start()
+            timings = {}
             transfers: list[UcmLayerTransfer] = []
             try:
+                start_timing(
+                    timings, "offload_prepare_duration_ms", self._metrics_enabled
+                )
                 prerequisite_handle = self._wait_transfer_events(ready_events)
                 transfers = self._page_transfers(expanded, for_io=True)
+                finish_timing(timings, "offload_prepare_duration_ms")
+                start_timing(timings, "offload_io_duration_ms", self._metrics_enabled)
                 tasks = self.adapter.submit_offload(
                     transfers, prerequisite_handle=prerequisite_handle
                 )
             except BaseException:
+                finish_timing(timings, "offload_prepare_duration_ms")
+                finish_timing(timings, "offload_io_duration_ms")
+                if observation is not None:
+                    observation.finish(False)
                 logger.exception(
                     "UCM offload submit failed tp_rank=%d node=%d",
                     self._tp_rank,
@@ -1019,6 +1178,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     tasks=tasks,
                     transfers=transfers,
                     ready_events=ready_events,
+                    observation=observation,
+                    timings=timings,
                 )
             )
 
@@ -1073,6 +1234,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             pending.sequence,
                         )
                         pending.result = False
+                    finish_timing(pending.timings, "offload_io_duration_ms")
+                    if pending.observation is not None:
+                        pending.observation.finish(pending.result)
                     pending.tasks = []
                     pending.transfers = []
                     pending.ready_events = []
@@ -1101,6 +1265,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def reset(self) -> None:
         self._lookup_progress.clear()
+        self._record_metrics(load_cancelled_requests_total=len(self._pending_loads))
         self._pending_loads.clear()
         self._load_queue.join()
         self._load_results.clear()
@@ -1118,4 +1283,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._offload_queue.put(None)
         self._load_thread.join()
         self._offload_thread.join()
-        self.adapter.close()
+        try:
+            self.adapter.close()
+        finally:
+            shutdown_metrics_logger(self._metrics_logger)

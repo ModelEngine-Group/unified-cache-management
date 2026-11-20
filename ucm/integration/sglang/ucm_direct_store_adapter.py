@@ -15,6 +15,10 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import yaml
 
+from ucm.integration.sglang.metrics import (
+    _record_interface_duration,
+    record_metrics,
+)
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -56,6 +60,7 @@ class _StoreTask:
     task: Task
     # Keep address arrays alive until the native task is reaped.
     addresses: np.ndarray
+    stats: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +140,8 @@ class UcmDirectStoreAdapter:
         identity: dict[str, Any],
     ) -> None:
         self._connector_name = connector_name
+        self.metrics_enabled = False
+        self.launch_config: dict[str, Any] = {}
         self._module_path = module_path
         self._identity = dict(identity)
         self._block_identity_prefix = self._identity_suffix()
@@ -190,13 +197,22 @@ class UcmDirectStoreAdapter:
             raise ValueError("UCM connector entry is missing ucm_connector_name.")
         if not isinstance(store_config, dict):
             raise ValueError("UCM connector entry is missing ucm_connector_config.")
-        return cls(
+        adapter = cls(
             connector_name=name,
             module_path=connector.get("ucm_connector_module_path"),
             store_config=store_config,
             identity=identity,
         )
+        # Metrics options live beside ucm_connectors, never in a Store config.
+        # Explicit linker options override the YAML, including false values.
+        adapter.launch_config = {
+            key: config.get(key, document.get(key))
+            for key in ("enable_metrics", "metrics_config_path")
+            if key in config or key in document
+        }
+        return adapter
 
+    @_record_interface_duration
     def _estimate_gc_capacities(
         self, by_group: dict[str, list[UcmPoolMetadata]]
     ) -> dict[str, int]:
@@ -233,13 +249,14 @@ class UcmDirectStoreAdapter:
             capacities[group] += 1
         for group in weights:
             logger.info(
-                "SGLang UCM GC capacity group=%s estimated_bytes=%d " "capacity_gb=%d",
+                "SGLang UCM GC capacity group=%s estimated_bytes=%d capacity_gb=%d",
                 group,
                 weights[group],
                 capacities[group],
             )
         return capacities
 
+    @_record_interface_duration
     def register_device_pools(self, pools: list[UcmPoolMetadata]) -> None:
         for pool in pools:
             previous = self._pool_metadata.get(pool.name)
@@ -406,6 +423,7 @@ class UcmDirectStoreAdapter:
             for group in groups
         }
 
+    @_record_interface_duration
     def _ensure_store_schema(
         self,
         store_group: str,
@@ -537,6 +555,7 @@ class UcmDirectStoreAdapter:
             )
             return store
 
+    @_record_interface_duration
     def _block_ids(
         self, transfer: UcmLayerTransfer, page_keys: Iterable[str] | None = None
     ) -> list[bytes]:
@@ -563,6 +582,7 @@ class UcmDirectStoreAdapter:
             == end - max(0, end - trailing)
         ]
 
+    @_record_interface_duration
     def lookup(
         self,
         transfers: list[UcmLayerTransfer],
@@ -617,6 +637,8 @@ class UcmDirectStoreAdapter:
                             f"invalid prefix hit count={found} pages={len(query_keys)}"
                         )
                     if start and found == 0:
+                        if self.metrics_enabled:
+                            record_metrics({"sglang_linker_lookup_fallback_total": 1})
                         # The previous boundary vanished; rebuild from page 0.
                         found = (
                             store.lookup_on_prefix(self._block_ids(transfer, keys)) + 1
@@ -643,6 +665,7 @@ class UcmDirectStoreAdapter:
                 raise
         return candidates
 
+    @_record_interface_duration
     def _transfer_layout(self, transfer: UcmLayerTransfer) -> _TransferLayout:
         signature = (
             transfer.layers,
@@ -715,6 +738,7 @@ class UcmDirectStoreAdapter:
             bool(self._identity.get("rank_replicated", False)),
         )
 
+    @_record_interface_duration
     def _prepare_transfers(
         self, transfers: list[UcmLayerTransfer], *, is_offload: bool
     ) -> list[_PreparedStoreTransfer]:
@@ -762,6 +786,7 @@ class UcmDirectStoreAdapter:
                 raise
         return prepared
 
+    @_record_interface_duration
     def prepare_load(
         self, transfers: list[UcmLayerTransfer]
     ) -> dict[int, list[_PreparedStoreTransfer]]:
@@ -771,6 +796,7 @@ class UcmDirectStoreAdapter:
                 by_layer.setdefault(layer, []).append(item)
         return by_layer
 
+    @_record_interface_duration
     def _submit_dump(
         self,
         item: _PreparedStoreTransfer,
@@ -781,26 +807,31 @@ class UcmDirectStoreAdapter:
         addresses = transfer.addresses.reshape(-1, len(transfer.tensor_size_list))
         if not len(addresses):
             return
-        if item.prepared_io is not None:
-            task = item.prepared_io.dump_data(addresses, prerequisite_handle)
-        else:
-            # Keep custom Stores on their public interface. Native Pipeline
-            # consumes these descriptors before returning the task handle.
-            page_count = len(item.block_ids)
-            rows = range(len(addresses))
-            block_ids = [item.block_ids[row % page_count] for row in rows]
-            indexes = [row // page_count for row in rows]
-            task = (
-                item.store.dump_data(
-                    block_ids,
-                    indexes,
-                    addresses,
-                    prerequisite_handle=prerequisite_handle,
+        stats = self._io_stats(True, len(addresses), transfer.shard_size)
+        try:
+            if item.prepared_io is not None:
+                task = item.prepared_io.dump_data(addresses, prerequisite_handle)
+            else:
+                # Keep custom Stores on their public interface. Native Pipeline
+                # consumes these descriptors before returning the task handle.
+                page_count = len(item.block_ids)
+                rows = range(len(addresses))
+                block_ids = [item.block_ids[row % page_count] for row in rows]
+                indexes = [row // page_count for row in rows]
+                task = (
+                    item.store.dump_data(
+                        block_ids,
+                        indexes,
+                        addresses,
+                        prerequisite_handle=prerequisite_handle,
+                    )
+                    if prerequisite_handle
+                    else item.store.dump_data(block_ids, indexes, addresses)
                 )
-                if prerequisite_handle
-                else item.store.dump_data(block_ids, indexes, addresses)
-            )
-        tasks.append(_StoreTask(item.store, task, addresses))
+            tasks.append(_StoreTask(item.store, task, addresses, stats))
+        except BaseException:
+            self._finish_io_stats(stats, "submit")
+            raise
 
     def _submit_prepared(
         self,
@@ -849,9 +880,16 @@ class UcmDirectStoreAdapter:
                             addresses,
                         )
                     )
-                    task = operation(*args, **transfer_options)
-                    tasks.append(_StoreTask(item.store, task, addresses))
-            except Exception:
+                    stats = self._io_stats(
+                        False, len(transfer.page_keys), transfer.shard_size
+                    )
+                    try:
+                        task = operation(*args, **transfer_options)
+                    except BaseException:
+                        self._finish_io_stats(stats, "submit")
+                        raise
+                    tasks.append(_StoreTask(item.store, task, addresses, stats))
+            except BaseException:
                 # A later layer, batch or group can fail after earlier tasks
                 # started. Reap those handles before their device buffers can
                 # be reused by the caller.
@@ -874,6 +912,7 @@ class UcmDirectStoreAdapter:
                 raise
         return tasks
 
+    @_record_interface_duration
     def submit_prepared_load_layer(
         self,
         prepared: dict[int, list[_PreparedStoreTransfer]],
@@ -887,6 +926,7 @@ class UcmDirectStoreAdapter:
             prerequisite_handle=prerequisite_handle,
         )
 
+    @_record_interface_duration
     def submit_offload(
         self, transfers: list[UcmLayerTransfer], prerequisite_handle: int = 0
     ) -> list[_StoreTask]:
@@ -898,18 +938,53 @@ class UcmDirectStoreAdapter:
 
     def wait(self, tasks: list[_StoreTask]) -> None:
         # Wait consumes task handles; do not Check them again after this call.
-        first_error: Exception | None = None
+        first_error: BaseException | None = None
         for item in tasks:
+            failed = False
             try:
                 item.store.wait(item.task)
-            except Exception as error:
+            except BaseException as error:
+                failed = True
                 if first_error is None:
                     first_error = error
+            finally:
+                self._finish_io_stats(item.stats, "wait" if failed else None)
         if first_error is not None:
             raise first_error
 
     def check(self, task: _StoreTask) -> bool:
-        return bool(task.store.check(task.task))
+        try:
+            return bool(task.store.check(task.task))
+        except BaseException:
+            if task.stats is not None and not task.stats.get("check_failed"):
+                task.stats["check_failed"] = True
+                record_metrics(
+                    {f"sglang_linker_{task.stats['operation']}_check_errors_total": 1}
+                )
+            raise
+
+    def _io_stats(self, is_dump, pages, shard_size):
+        if not self.metrics_enabled or not pages:
+            return None
+        return {
+            "operation": "dump" if is_dump else "load",
+            "pages": pages,
+            "bytes": pages * shard_size,
+        }
+
+    @staticmethod
+    def _finish_io_stats(stats, error=None):
+        if stats is None or stats.get("finished"):
+            return
+        stats["finished"] = True
+        prefix = f"sglang_connector_{stats['operation']}"
+        values = {f"{prefix}_requests_total": 1}
+        if error:
+            values[f"{prefix}_{error}_errors_total"] = 1
+        elif not stats.get("check_failed"):
+            values[f"{prefix}_bytes_total"] = stats["bytes"]
+            values[f"{prefix}_pages"] = stats["pages"]
+        record_metrics(values)
 
     def close(self) -> None:
         with self._store_lock:
