@@ -34,10 +34,10 @@ namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 class StubTransport : public AsuTransport {
@@ -64,7 +64,7 @@ public:
 
     Status CheckHealth() override { return Status::OK(); }
 
-    Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
+    Status RunQuery(BatchView<ResolvedCacheKey> keys, QueryResult& result)
     {
         result.exists.assign(keys.size, true);
         result.prefixHitKeys = 0;
