@@ -9,9 +9,10 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import replace
+from functools import wraps
 from itertools import count
 from threading import Lock
-from time import sleep
+from time import perf_counter, sleep
 from uuid import uuid4
 
 import torch.distributed as dist
@@ -33,6 +34,45 @@ from .device_layout import DeviceLayout, fingerprint
 from .runtime import Runtime, proxy
 
 logger = init_logger(__name__)
+
+
+def _log_duration(name, threshold_ms=20):
+    def decorate(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start = perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                duration_ms = (perf_counter() - start) * 1e3
+                if duration_ms >= threshold_ms:
+                    logger.info(
+                        "SGLang UCM V2 slow operation=%s duration_ms=%.3f",
+                        name,
+                        duration_ms,
+                    )
+
+        return wrapper
+
+    return decorate
+
+
+class _MeasuredLayerWiseLoadCounter(LayerWiseLoadCounter):
+    def wait_until(self, threshold):
+        # The model/KV pool calls the counter directly, outside linker methods.
+        index = self.consumer_index
+        start = perf_counter()
+        try:
+            return super().wait_until(threshold)
+        finally:
+            duration_ms = (perf_counter() - start) * 1e3
+            if duration_ms >= 20:
+                logger.info(
+                    "SGLang UCM V2 load wait: batch=%s layer=%s wait_ms=%.3f",
+                    index,
+                    threshold,
+                    duration_ms,
+                )
 
 
 class _OffloadResult(Future):
@@ -112,7 +152,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._pending_puts = {}
         self._finished_requests = set()
         self._scheduler_lock = Lock()
-        self.layer_done_counter = LayerWiseLoadCounter(self.layout.num_layers)
+        self.layer_done_counter = _MeasuredLayerWiseLoadCounter(self.layout.num_layers)
         if PoolName.MAMBA in self.pools:
             params.req_to_token_pool.register_layer_transfer_counter(
                 self.layer_done_counter
@@ -214,6 +254,19 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def lookup(self, rid, transfers):
         """Intersect restorable boundaries across the requested sections."""
+        start = perf_counter()
+        store_ms = 0.0
+        store_calls = 0
+
+        def query(method, keys):
+            nonlocal store_ms, store_calls
+            query_start = perf_counter()
+            store_calls += 1
+            try:
+                return method(rid, keys)
+            finally:
+                store_ms += (perf_counter() - query_start) * 1e3
+
         self._check_open()
         expanded = self.layout.expand(transfers)
         if not expanded:
@@ -232,7 +285,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 keys = b"".join(block_ids)
                 transfer = section_transfers[0]
                 if transfer.hit_policy != "trailing_pages":
-                    index, _prefetchable = self.runtime.lookup_on_prefix(rid, keys)
+                    index, _prefetchable = query(self.runtime.lookup_on_prefix, keys)
                     candidates = [end for end in candidates if end <= index + 1]
                 elif len(transfer.keys) == 1:
                     # State snapshots may have sparse boundaries. Enumerate all
@@ -241,8 +294,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     boundaries = set()
                     remaining = len(block_ids)
                     while remaining:
-                        index, _prefetchable = self.runtime.lookup_on_reverse(
-                            rid, b"".join(block_ids[:remaining])
+                        index, _prefetchable = query(
+                            self.runtime.lookup_on_reverse,
+                            b"".join(block_ids[:remaining]),
                         )
                         if index < 0:
                             break
@@ -252,7 +306,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 else:
                     # A multi-page tail requires every page in its window;
                     # a rightmost-hit index alone cannot establish that.
-                    hits, _prefetchable = self.runtime.lookup(rid, keys)
+                    hits, _prefetchable = query(self.runtime.lookup, keys)
                     prefix = [0]
                     for hit in hits:
                         prefix.append(prefix[-1] + int(not hit))
@@ -265,14 +319,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     ]
                 if not candidates:
                     break
-        logger.info(
-            "SGLang UCM V2 lookup: rid=%s requested_pages=%d "
-            "restorable_prefix_pages=%d candidates=%s",
-            rid,
-            len(page_keys),
-            candidates[-1] if candidates else 0,
-            candidates,
-        )
+        total_ms = (perf_counter() - start) * 1e3
+        if total_ms >= 10:
+            logger.info(
+                "SGLang UCM V2 lookup: rid=%s requested_pages=%d "
+                "restorable_prefix_pages=%d candidates=%s total_ms=%.3f "
+                "store_ms=%.3f other_ms=%.3f store_calls=%d",
+                rid,
+                len(page_keys),
+                candidates[-1] if candidates else 0,
+                candidates,
+                total_ms,
+                store_ms,
+                max(0.0, total_ms - store_ms),
+                store_calls,
+            )
         return candidates
 
     def associate_pages(self, rid, keys):
@@ -319,6 +380,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             if rid in self._finished_requests:
                 self._close_request(rid)
 
+    @_log_duration("load")
     def load(self, rid, transfers):
         self._check_open()
         expanded = self.layout.expand(
@@ -337,6 +399,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self.finish_request(rid)
         return True
 
+    @_log_duration("start_layer_wise_loading")
     def start_layer_wise_loading(self):
         if not self._pending_loads:
             return -1
@@ -344,7 +407,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         index = self.layer_done_counter.update_producer()
         pending, self._pending_loads = self._pending_loads, {}
         self._load_batches[index] = self._load_executor.submit(
-            self._load_worker, index, pending, events
+            self._load_worker, index, pending, events, perf_counter()
         )
         return index
 
@@ -367,11 +430,17 @@ class UcmDirectLinker(UnifiedCacheLinker):
             events.append(forward_done)
         return events
 
-    def _load_worker(self, index, pending, events):
+    def _load_worker(self, index, pending, events, queued_at=None):
+        start = perf_counter()
+        queue_ms = (start - queued_at) * 1e3 if queued_at is not None else 0.0
+        event_ms = prepare_ms = forward_ms = layers_ms = 0.0
         try:
             with ExitStack() as requests:
                 indices_ready, *forward_events = events
+                event_start = perf_counter()
                 indices_ready.synchronize()
+                event_ms = (perf_counter() - event_start) * 1e3
+                prepare_start = perf_counter()
                 context = proxy().IoContext()
                 prepared = []
                 for rid, sections in pending.items():
@@ -387,12 +456,35 @@ class UcmDirectLinker(UnifiedCacheLinker):
                             )
                         prepared.append((pages, token))
 
+                prepare_ms = (perf_counter() - prepare_start) * 1e3
+                forward_start = perf_counter()
                 self._apply_forward_dependency(context, forward_events)
-                self._load_layers(index, prepared, context)
+                forward_ms = (perf_counter() - forward_start) * 1e3
+                layers_start = perf_counter()
+                try:
+                    self._load_layers(index, prepared, context)
+                finally:
+                    layers_ms = (perf_counter() - layers_start) * 1e3
         except Exception as error:
             logger.exception("UCM V2 load batch %s failed", index)
             self.layer_done_counter.fail(index, error)
             return False
+        finally:
+            total_ms = queue_ms + (perf_counter() - start) * 1e3
+            if total_ms >= 20:
+                logger.info(
+                    "SGLang UCM V2 load: batch=%s requests=%d total_ms=%.3f "
+                    "queue_ms=%.3f event_ms=%.3f prepare_ms=%.3f "
+                    "forward_ms=%.3f layers_ms=%.3f",
+                    index,
+                    len(pending),
+                    total_ms,
+                    queue_ms,
+                    event_ms,
+                    prepare_ms,
+                    forward_ms,
+                    layers_ms,
+                )
         return True
 
     def _apply_forward_dependency(self, context, forward_events):
@@ -449,6 +541,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             raise RuntimeError(f"Store Get failed for layer {layer}")
         self.layer_done_counter.complete(index, layer)
 
+    @_log_duration("finish_layer_wise_loading")
     def finish_layer_wise_loading(self, counter_index):
         if counter_index < 0:
             return True
@@ -462,6 +555,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
         """
         raise NotImplementedError
 
+    @_log_duration("offload")
     def offload(self, transfers, session_id=None):
         self._check_open()
         expanded = self.layout.expand(transfers, allow_partial=True)
@@ -481,6 +575,31 @@ class UcmDirectLinker(UnifiedCacheLinker):
             return True
         events = self._record_transfer_events()
         result = _OffloadResult()
+        start = perf_counter()
+        result.timings = {}
+
+        def log_completion(future):
+            duration_ms = (perf_counter() - start) * 1e3
+            if duration_ms >= 20:
+                logger.info(
+                    "SGLang UCM V2 offload: session=%s total_ms=%.3f "
+                    "queue_ms=%.3f event_ms=%.3f prepare_ms=%.3f "
+                    "forward_ms=%.3f submit_to_complete_ms=%.3f success=%s",
+                    session_id,
+                    duration_ms,
+                    result.timings.get("queue_ms", 0.0),
+                    result.timings.get("event_ms", 0.0),
+                    result.timings.get("prepare_ms", 0.0),
+                    result.timings.get("forward_ms", 0.0),
+                    (perf_counter() - result.timings["submit_start"]) * 1e3
+                    if "submit_start" in result.timings
+                    else 0.0,
+                    not future.cancelled()
+                    and future.exception() is None
+                    and bool(future.result()),
+                )
+
+        result.add_done_callback(log_completion)
         pages_by_request = {}
         with self._scheduler_lock:
             keys = (key for _, transfers in expanded for key in transfers[0].keys)
@@ -491,7 +610,12 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 self._pending_puts[rid] = self._pending_puts.get(rid, 0) + 1
         try:
             self._dump_executor.submit(
-                self._submit_offloads, expanded, events, result, pages_by_request
+                self._submit_offloads,
+                expanded,
+                events,
+                result,
+                pages_by_request,
+                perf_counter(),
             )
         except Exception:
             with self._scheduler_lock:
@@ -558,10 +682,15 @@ class UcmDirectLinker(UnifiedCacheLinker):
             )
         return tuple(selected)
 
-    def _submit_offloads(self, sections, events, result, pages_by_request):
+    def _submit_offloads(self, sections, events, result, pages_by_request, queued_at=None):
+        start = perf_counter()
+        timings = getattr(result, "timings", {})
+        timings["queue_ms"] = (start - queued_at) * 1e3 if queued_at is not None else 0.0
         try:
             indices_ready, *forward_events = events
             indices_ready.synchronize()
+            timings["event_ms"] = (perf_counter() - start) * 1e3
+            prepare_start = perf_counter()
             prepared, block_ids, payloads = [], [], []
             for section, transfers in sections:
                 pages = section.prepare(transfers)
@@ -569,7 +698,11 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 block_ids.extend(section.block_ids(pages.keys))
                 payloads.extend(pages.payloads())
             context = proxy().IoContext()
+            timings["prepare_ms"] = (perf_counter() - prepare_start) * 1e3
+            forward_start = perf_counter()
             self._apply_forward_dependency(context, forward_events)
+            timings["forward_ms"] = (perf_counter() - forward_start) * 1e3
+            timings["submit_start"] = perf_counter()
         except Exception:
             logger.exception("UCM V2 offload preparation failed")
             with self._scheduler_lock:

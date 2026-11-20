@@ -42,7 +42,15 @@ def load_linker(*, mamba=False):
     modules["sglang.srt.utils"].get_device_module = lambda: device_module
     group = types.SimpleNamespace(rank_replicated=False)
     modules[names[6]].resolve_hybrid_device_pool_group = lambda **kwargs: group
-    modules[names[8]].LayerWiseLoadCounter = lambda layers: Mock()
+    class Counter(Mock):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            self.consumer_index = 2
+
+        def wait_until(self, threshold):
+            pass
+
+    modules[names[8]].LayerWiseLoadCounter = Counter
     modules[names[8]].UnifiedCacheLinker = object
     modules[names[9]].get_model = lambda: types.SimpleNamespace(model_path="test")
     modules[names[9]].get_parallel = lambda: types.SimpleNamespace(
@@ -225,6 +233,39 @@ class OffloadTest(unittest.TestCase):
             events=[types.SimpleNamespace(synchronize=lambda: None)]
         )
         self.addCleanup(self.cleanup)
+
+    def test_counter_logs_slow_wait_with_batch_and_layer(self):
+        with (
+            patch.object(self.module, "perf_counter", side_effect=[1.0, 1.025]),
+            patch.object(self.module.LayerWiseLoadCounter, "wait_until") as wait,
+            patch.object(self.module.logger, "info") as info,
+        ):
+            self.linker.layer_done_counter.wait_until(3)
+        wait.assert_called_once_with(3)
+        self.assertEqual(info.call_args.args[1:3], (2, 3))
+        self.assertAlmostEqual(info.call_args.args[3], 25.0)
+
+    def test_counter_does_not_log_fast_wait(self):
+        with (
+            patch.object(self.module, "perf_counter", side_effect=[1.0, 1.001]),
+            patch.object(self.module.logger, "info") as info,
+        ):
+            self.linker.layer_done_counter.wait_until(0)
+        info.assert_not_called()
+
+    def test_load_summary_separates_queue_and_event_time(self):
+        clock = [100, 100, 100.005, 100.005, 100.006,
+                 100.006, 100.006, 100.006, 100.010, 100.010]
+        event = types.SimpleNamespace(synchronize=lambda: None)
+        with (
+            patch.object(self.module, "perf_counter", side_effect=clock),
+            patch.object(self.module.logger, "info") as info,
+        ):
+            self.assertTrue(self.linker._load_worker(0, {}, [event], queued_at=99))
+        values = info.call_args.args
+        self.assertAlmostEqual(values[3], 1010.0)
+        self.assertAlmostEqual(values[4], 1000.0)
+        self.assertAlmostEqual(values[5], 5.0)
 
     def test_mamba_pool_uses_the_linkers_layer_counter(self):
         self.params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
