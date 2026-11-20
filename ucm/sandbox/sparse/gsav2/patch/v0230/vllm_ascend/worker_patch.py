@@ -12,7 +12,6 @@ logger = init_logger(__name__)
 
 def init_device(self):
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     # NOTE: KEEP device the member of `NPUWorker`, as it will be checked
     # in ray scenario. see https://github.com/vllm-project/vllm/pull/26845
@@ -38,7 +37,6 @@ def init_device(self):
         hasattr(self.vllm_config.model_config, "hf_text_config")
         and hasattr(self.vllm_config.model_config.hf_text_config, "index_topk")
         and has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
     ):
         self.maybe_init_ucm_sparse_dsa(self.model_runner)
 

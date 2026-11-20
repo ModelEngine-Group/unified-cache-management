@@ -86,7 +86,7 @@ ucm_config='{"kv_connector": "MultiConnector", "kv_role": "kv_producer", "kv_con
                     "kv_connector": "UCMConnector",
                     "kv_role": "kv_both",
                     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-                    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "./ucm_config_prefill.yaml"}
+                    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "./ucm/sandbox/sparse/gsav2/script/ucm_config_prefill.yaml"}
                 }
             ]}}'
 
