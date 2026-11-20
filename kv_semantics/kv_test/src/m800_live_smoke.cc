@@ -27,9 +27,10 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <thread>
+#include <unordered_map>
 #include <vector>
+#include "m800_live_smoke_watch.h"
 #include "view/m800_view_master_server.h"
 #include "view/m800_view_slave_server.h"
 
@@ -205,8 +206,9 @@ int Run(int argc, const char** argv)
     std::cout << "[OK] bad master address failover succeeded\n";
 
     if (watchSeconds > 0) {
-        bool addSeen = expectedAddPool.empty();
-        bool removeSeen = expectedRemovePool.empty();
+        const kv::test::M800LiveSmokeWatchOptions watchOptions{watchSeconds};
+        bool addSeen = false;
+        bool removeSeen = false;
         const auto expectedAddId =
             expectedAddPool.empty() ? kv::KvNsId{0} : kv::M800PoolNameToKvNsId(expectedAddPool);
         const auto expectedRemoveId = expectedRemovePool.empty()
@@ -220,8 +222,10 @@ int Run(int argc, const char** argv)
         std::size_t lastAsuCount{0};
         std::uint64_t lastAsuChangeEpoch{0};
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(watchSeconds);
-        while (std::chrono::steady_clock::now() < deadline &&
-               !(addSeen && removeSeen && asuSequenceDone)) {
+        std::cout << "[OK] watch mode keeps the Master HTTP listener alive for " << watchSeconds
+                  << " seconds\n";
+        while (
+            !kv::test::WatchShouldStop(std::chrono::steady_clock::now(), deadline, watchOptions)) {
             const auto masterStatus = master->GetAllViews(universe);
             if (!masterStatus.ok()) {
                 return Fail("Master refresh failed during watch", &masterStatus);
@@ -240,8 +244,7 @@ int Run(int argc, const char** argv)
                 }
             }
             const auto currentEpoch = MaxViewEpoch(universe);
-            std::cout << "[WATCH] epoch=" << currentEpoch
-                      << " nsCount=" << universe.size();
+            std::cout << "[WATCH] epoch=" << currentEpoch << " nsCount=" << universe.size();
             if (!watchAsuPool.empty()) { std::cout << " asuCount=" << currentAsuCount; }
             std::cout << '\n';
 
@@ -266,14 +269,15 @@ int Run(int argc, const char** argv)
                 ++asuSequenceIndex;
                 asuSequenceDone = asuSequenceIndex == expectedAsuCounts.size();
             }
-            if (!addSeen) {
+            if (!addSeen && !expectedAddPool.empty()) {
                 kv::GlobalView addedView;
                 if (universe.find(expectedAddId) != universe.end()) {
                     addSeen = true;
                     std::cout << "[OK] expected namespace appeared: " << expectedAddPool << '\n';
                 }
             }
-            if (!removeSeen && (expectedAddPool.empty() || addSeen)) {
+            if (!removeSeen && !expectedRemovePool.empty() &&
+                (expectedAddPool.empty() || addSeen)) {
                 kv::GlobalView removedView;
                 if (universe.find(expectedRemoveId) == universe.end()) {
                     removeSeen = true;
@@ -281,11 +285,12 @@ int Run(int argc, const char** argv)
                               << '\n';
                 }
             }
-            if (!(addSeen && removeSeen && asuSequenceDone)) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        if (!addSeen || !removeSeen || !asuSequenceDone) {
+        const bool addMissing = !expectedAddPool.empty() && !addSeen;
+        const bool removeMissing = !expectedRemovePool.empty() && !removeSeen;
+        const bool asuSequenceMissing = !expectedAsuCounts.empty() && !asuSequenceDone;
+        if (addMissing || removeMissing || asuSequenceMissing) {
             return Fail("dynamic namespace/ASU expectation timed out");
         }
         std::cout << "[OK] dynamic namespace/ASU transitions validated\n";

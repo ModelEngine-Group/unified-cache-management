@@ -15,6 +15,7 @@ target_include_directories(kv.test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/client
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/trans
     ${CMAKE_CURRENT_SOURCE_DIR}/../agent/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../kv_test/include
 )
 target_link_libraries(kv.test PRIVATE
     kv_client
