@@ -520,9 +520,7 @@ class DashboardTest(unittest.TestCase):
             names.update(
                 item["name"] + suffix for suffix in ("_sum", "_count", "_bucket")
             )
-        board = json.loads(
-            (root / "sglang-linker-dashboard.json").read_text(encoding="utf-8")
-        )
+        board = json.loads((root / "grafana_linker.json").read_text(encoding="utf-8"))
         ids = [panel["id"] for panel in board["panels"]]
         self.assertEqual(len(ids), len(set(ids)))
         import re
@@ -533,12 +531,25 @@ class DashboardTest(unittest.TestCase):
                 expr = target["expr"]
                 self.assertNotIn("or vector(0)", expr)
                 self.assertIn('worker_id=~"$worker_id"', expr)
-                for name in re.findall(r"\$\{ucm_prefix\}(sglang_\w+)\{", expr):
+                for name in re.findall(r"ucm:(sglang_\w+)\{", expr):
                     self.assertIn(name, names)
                     queried.add(name)
+                self.assertNotIn("${ucm_prefix}", expr)
         for item in config["counter"]:
             if item["name"].startswith("sglang_linker_"):
                 self.assertIn(item["name"], queried)
+        for name in (
+            "sglang_linker_load_layer_duration_ms",
+            "sglang_linker_load_layer_wait_duration_ms",
+        ):
+            for suffix in ("_sum", "_count", "_bucket"):
+                self.assertIn(name + suffix, queried)
+        native = json.loads((root / "grafana_sglang.json").read_text(encoding="utf-8"))
+        for panel in native["panels"]:
+            for target in panel.get("targets", []):
+                self.assertIn("sglang:", target["expr"])
+                self.assertNotIn("ucm:", target["expr"])
+        self.assertFalse(list(root.glob("sglang*.json")))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,10 @@
 # SGLang UCM metrics: shared by HiCache and direct Linker integrations.
 # The adapter records physical storage transfers, not inference batches or queue submissions.
+# Dashboards: grafana_linker.json (UCM), grafana_sglang.json (native SGLang),
+# and the existing grafana_store.json (Store). Native SGLang metrics are not registered here.
+# Interface timers can overlap: do not sum nested calls. Layer load time ends at worker
+# observation; layer wait time covers consumer wait_until including its ready callback.
+# Legacy sglang_connector duration/bandwidth definitions remain for HiCache only.
 # Use SGLang's PROMETHEUS_MULTIPROC_DIR; do not configure a separate directory here.
 log_interval: 5
 multiproc_prefix: "ucm:"
@@ -1115,54 +1120,6 @@ histogram:
     - 5000
     - 10000
 
-  - name: sglang_linker_interface_build_layer_pointer_layouts_duration_ms
-    documentation: Synchronous linker._build_layer_pointer_layouts call duration including
-      failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_build_pool_bundles_duration_ms
-    documentation: Synchronous linker._build_pool_bundles call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_create_adapter_duration_ms
-    documentation: Synchronous linker._create_adapter call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
   - name: sglang_linker_interface_entry_layer_rows_duration_ms
     documentation: Synchronous linker._entry_layer_rows call duration including failures;
       not asynchronous I/O latency (ms)
@@ -1195,56 +1152,8 @@ histogram:
     - 1000
     - 5000
     - 10000
-  - name: sglang_linker_interface_freeze_gc_once_duration_ms
-    documentation: Synchronous linker._freeze_gc_once call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_log_pool_topology_duration_ms
-    documentation: Synchronous linker._log_pool_topology call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
   - name: sglang_linker_interface_page_transfers_duration_ms
     documentation: Synchronous linker._page_transfers call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_partition_offload_duration_ms
-    documentation: Synchronous linker._partition_offload call duration including failures;
       not asynchronous I/O latency (ms)
     buckets:
     - 0.01
@@ -1262,22 +1171,6 @@ histogram:
   - name: sglang_linker_interface_pool_metadata_duration_ms
     documentation: Synchronous linker._pool_metadata call duration including failures;
       not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_record_transfer_events_duration_ms
-    documentation: Synchronous linker._record_transfer_events call duration including
-      failures; not asynchronous I/O latency (ms)
     buckets:
     - 0.01
     - 0.1
@@ -1310,22 +1203,6 @@ histogram:
   - name: sglang_linker_interface_wait_transfer_events_duration_ms
     documentation: Synchronous linker._wait_transfer_events call duration including
       failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_cancel_queued_load_duration_ms
-    documentation: Synchronous linker.cancel_queued_load call duration including failures;
-      not asynchronous I/O latency (ms)
     buckets:
     - 0.01
     - 0.1
@@ -1387,73 +1264,9 @@ histogram:
     - 1000
     - 5000
     - 10000
-  - name: sglang_linker_interface_num_completed_loads_duration_ms
-    documentation: Synchronous linker.num_completed_loads call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_num_completed_offloads_duration_ms
-    documentation: Synchronous linker.num_completed_offloads call duration including
-      failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
   - name: sglang_linker_interface_offload_duration_ms
     documentation: Synchronous linker.offload call duration including failures; not
       asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_pop_completed_load_duration_ms
-    documentation: Synchronous linker.pop_completed_load call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_linker_interface_pop_completed_offload_duration_ms
-    documentation: Synchronous linker.pop_completed_offload call duration including
-      failures; not asynchronous I/O latency (ms)
     buckets:
     - 0.01
     - 0.1
@@ -1531,72 +1344,8 @@ histogram:
     - 1000
     - 5000
     - 10000
-  - name: sglang_adapter_interface_identity_suffix_duration_ms
-    documentation: Synchronous adapter._identity_suffix call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_adapter_interface_prepare_backend_paths_duration_ms
-    documentation: Synchronous adapter._prepare_backend_paths call duration including
-      failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_adapter_interface_prepare_pipeline_io_duration_ms
-    documentation: Synchronous adapter._prepare_pipeline_io call duration including
-      failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
   - name: sglang_adapter_interface_prepare_transfers_duration_ms
     documentation: Synchronous adapter._prepare_transfers call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_adapter_interface_store_unique_id_duration_ms
-    documentation: Synchronous adapter._store_unique_id call duration including failures;
       not asynchronous I/O latency (ms)
     buckets:
     - 0.01
@@ -1627,41 +1376,9 @@ histogram:
     - 1000
     - 5000
     - 10000
-  - name: sglang_adapter_interface_submit_prepared_duration_ms
-    documentation: Synchronous adapter._submit_prepared call duration including failures;
-      not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
   - name: sglang_adapter_interface_transfer_layout_duration_ms
     documentation: Synchronous adapter._transfer_layout call duration including failures;
       not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_adapter_interface_check_duration_ms
-    documentation: Synchronous adapter.check call duration including failures; not asynchronous
-      I/O latency (ms)
     buckets:
     - 0.01
     - 0.1
@@ -1742,22 +1459,6 @@ histogram:
   - name: sglang_adapter_interface_submit_prepared_load_layer_duration_ms
     documentation: Synchronous adapter.submit_prepared_load_layer call duration including
       failures; not asynchronous I/O latency (ms)
-    buckets:
-    - 0.01
-    - 0.1
-    - 0.5
-    - 1
-    - 5
-    - 10
-    - 50
-    - 100
-    - 500
-    - 1000
-    - 5000
-    - 10000
-  - name: sglang_adapter_interface_wait_duration_ms
-    documentation: Synchronous adapter.wait call duration including failures; not asynchronous
-      I/O latency (ms)
     buckets:
     - 0.01
     - 0.1

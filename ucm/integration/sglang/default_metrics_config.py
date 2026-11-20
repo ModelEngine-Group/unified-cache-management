@@ -180,18 +180,6 @@ def get_default_sglang_metrics_config() -> dict:
     # Nested interface samples overlap; do not sum them into end-to-end time.
     for name, documentation in (
         (
-            "sglang_linker_interface_build_layer_pointer_layouts_duration_ms",
-            "Synchronous linker._build_layer_pointer_layouts call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_build_pool_bundles_duration_ms",
-            "Synchronous linker._build_pool_bundles call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_create_adapter_duration_ms",
-            "Synchronous linker._create_adapter call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_linker_interface_entry_layer_rows_duration_ms",
             "Synchronous linker._entry_layer_rows call duration including failures; not asynchronous I/O latency (ms)",
         ),
@@ -200,28 +188,12 @@ def get_default_sglang_metrics_config() -> dict:
             "Synchronous linker._expand call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
-            "sglang_linker_interface_freeze_gc_once_duration_ms",
-            "Synchronous linker._freeze_gc_once call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_log_pool_topology_duration_ms",
-            "Synchronous linker._log_pool_topology call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_linker_interface_page_transfers_duration_ms",
             "Synchronous linker._page_transfers call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
-            "sglang_linker_interface_partition_offload_duration_ms",
-            "Synchronous linker._partition_offload call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_linker_interface_pool_metadata_duration_ms",
             "Synchronous linker._pool_metadata call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_record_transfer_events_duration_ms",
-            "Synchronous linker._record_transfer_events call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_linker_interface_select_store_ranks_duration_ms",
@@ -230,10 +202,6 @@ def get_default_sglang_metrics_config() -> dict:
         (
             "sglang_linker_interface_wait_transfer_events_duration_ms",
             "Synchronous linker._wait_transfer_events call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_cancel_queued_load_duration_ms",
-            "Synchronous linker.cancel_queued_load call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_linker_interface_finish_layer_wise_loading_duration_ms",
@@ -248,24 +216,8 @@ def get_default_sglang_metrics_config() -> dict:
             "Synchronous linker.lookup call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
-            "sglang_linker_interface_num_completed_loads_duration_ms",
-            "Synchronous linker.num_completed_loads call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_num_completed_offloads_duration_ms",
-            "Synchronous linker.num_completed_offloads call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_linker_interface_offload_duration_ms",
             "Synchronous linker.offload call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_pop_completed_load_duration_ms",
-            "Synchronous linker.pop_completed_load call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_linker_interface_pop_completed_offload_duration_ms",
-            "Synchronous linker.pop_completed_offload call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_linker_interface_start_layer_wise_loading_duration_ms",
@@ -284,40 +236,16 @@ def get_default_sglang_metrics_config() -> dict:
             "Synchronous adapter._estimate_gc_capacities call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
-            "sglang_adapter_interface_identity_suffix_duration_ms",
-            "Synchronous adapter._identity_suffix call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_adapter_interface_prepare_backend_paths_duration_ms",
-            "Synchronous adapter._prepare_backend_paths call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_adapter_interface_prepare_pipeline_io_duration_ms",
-            "Synchronous adapter._prepare_pipeline_io call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_adapter_interface_prepare_transfers_duration_ms",
             "Synchronous adapter._prepare_transfers call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_adapter_interface_store_unique_id_duration_ms",
-            "Synchronous adapter._store_unique_id call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_adapter_interface_submit_dump_duration_ms",
             "Synchronous adapter._submit_dump call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
-            "sglang_adapter_interface_submit_prepared_duration_ms",
-            "Synchronous adapter._submit_prepared call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
             "sglang_adapter_interface_transfer_layout_duration_ms",
             "Synchronous adapter._transfer_layout call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_adapter_interface_check_duration_ms",
-            "Synchronous adapter.check call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_adapter_interface_lookup_duration_ms",
@@ -338,10 +266,6 @@ def get_default_sglang_metrics_config() -> dict:
         (
             "sglang_adapter_interface_submit_prepared_load_layer_duration_ms",
             "Synchronous adapter.submit_prepared_load_layer call duration including failures; not asynchronous I/O latency (ms)",
-        ),
-        (
-            "sglang_adapter_interface_wait_duration_ms",
-            "Synchronous adapter.wait call duration including failures; not asynchronous I/O latency (ms)",
         ),
         (
             "sglang_linker_load_prepare_duration_ms",
