@@ -49,6 +49,8 @@
 namespace UC::Cache2 {
 
 struct Config {
+    static constexpr size_t kDefaultTimeoutMs{30000};
+
     StoreV1* storeBackend{};
     std::string uniqueId{};
     int32_t deviceId{-1};
@@ -59,7 +61,7 @@ struct Config {
     size_t loadExclusiveBufferNumber{1024};
     size_t waitingQueueDepth{8192};
     size_t runningQueueDepth{524288};
-    size_t timeoutMs{30000};
+    size_t timeoutMs{kDefaultTimeoutMs};
     /* Budget for the whole data-plane setup. Only bounds initialization; it has
      * nothing to do with NUMA placement. */
     size_t dataSetupTimeoutMs{600000};

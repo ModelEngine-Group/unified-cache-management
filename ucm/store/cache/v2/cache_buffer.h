@@ -29,6 +29,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <utility>
 #include "ctrl_layout.h"
@@ -190,6 +191,17 @@ public:
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                size_t preferredRank = kInvalid)
     {
+        for (;;) {
+            auto handle = TryGet(blockId, offset, allowReserved, preferredRank);
+            if (handle) { return std::move(*handle); }
+            std::this_thread::yield();
+        }
+    }
+
+    // A miss can mean the preferred rank has not published the slot yet.
+    std::optional<Handle> TryGet(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
+                                 size_t preferredRank)
+    {
         assert(myRank_ < rankCount_);
         assert(preferredRank == kInvalid || preferredRank < rankCount_);
         assert(reservedSlots_ < slotsPerRank_);
@@ -197,13 +209,10 @@ public:
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
                             ? std::numeric_limits<size_t>::max()
                             : 2 * usable;
-        for (;;) {
-            bool owner = false;
-            auto slot =
-                TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
-            if (slot != kInvalid) { return Handle{this, slot, owner}; }
-            std::this_thread::yield();
-        }
+        bool owner = false;
+        auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
+        if (slot == kInvalid) { return std::nullopt; }
+        return Handle{this, slot, owner};
     }
 
     void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
