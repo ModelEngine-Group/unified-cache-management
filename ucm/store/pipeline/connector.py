@@ -26,6 +26,7 @@ import array
 import copy
 import ctypes
 import importlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,8 @@ import numpy as np
 import torch
 
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
+
+logger = logging.getLogger(__name__)
 
 _preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
 
@@ -152,6 +155,24 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             else:
                 pending.append(task_id)
         self._pending_prefetch_tasks = pending
+
+    def close(self) -> None:
+        """Drain pending prefetch tasks so no handle outlives the store."""
+        pending = self._pending_prefetch_tasks
+        self._pending_prefetch_tasks = []
+        for task_id in pending:
+            try:
+                self.store_.Wait(task_id)
+            except Exception as exc:  # best-effort: never block teardown
+                logger.warning("Failed to wait for prefetch task %s: %s", task_id, exc)
+
+    def __del__(self) -> None:
+        # Prefetch is fire-and-forget; reap the last batch on destruction so
+        # TransManager::tasks_ does not keep completed tasks alive.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _tensor_normalize(self, tensors: List[List[torch.Tensor]]) -> np.ndarray:
         n_rows = len(tensors)

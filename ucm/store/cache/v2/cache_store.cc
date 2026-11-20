@@ -41,7 +41,6 @@ class Store : public StoreV1 {
     std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_;
     TransManager<> transMgr_;
     bool transEnable_{false};
-    size_t nShardPerBlock_{0};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -62,7 +61,6 @@ public:
             if (s.Failure()) { return s; }
         }
         if (s = bufferMgr_.Setup(config); s.Failure()) { return s; }
-        nShardPerBlock_ = config.blockSize / config.shardSize;
         if (config.deviceId >= 0) {
             if (s = transMgr_.Setup(config, bufferMgr_.GetTransBuffer()); s.Failure()) { return s; }
             transEnable_ = true;

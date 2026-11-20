@@ -2918,6 +2918,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self._load_wait_executor.shutdown(wait=True)
             self._load_wait_executor = None
 
+    def prefetch_data(self, block_ids: list[bytes]) -> None:
+        """Warm FA and WA stores with the same keys as the load path.
+
+        FA groups load every matched block, while WA groups only load the
+        final matched boundary (``load_keys[-1:]``). Warming only the FA store
+        would leave the WA tail on the slow backend.
+        """
+        if not block_ids:
+            return
+        if self.fa_store is not None:
+            self.fa_store.prefetch_data(block_ids)
+        if self.window_group_ids and self.wa_store is not None:
+            self.wa_store.prefetch_data(block_ids[-1:])
+
     def request_finished_all_groups(
         self,
         request: "Request",

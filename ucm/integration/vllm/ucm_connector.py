@@ -2064,6 +2064,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
         for store in getattr(self, "_pp_stores", [self.store]):
             store.prefetch(block_ids)
 
+    def prefetch_data(self, block_ids: list[bytes]) -> None:
+        """Warm the DDR cache with the same key mapping as the load path."""
+        if not block_ids:
+            return
+        store_block_ids = block_ids
+        if self.tp_rank != 0 and not self.is_mla:
+            store_block_ids = [
+                self.request_hasher(block_id) for block_id in block_ids
+            ]
+        for store in getattr(self, "_pp_stores", [self.store]):
+            store.prefetch_data(store_block_ids)
+
     def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
         """Query the single store; the layer-wise connector intersects stages."""
         return self._lookup_one_stage(self.store, block_ids)
@@ -3945,9 +3957,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def prefetch_data(self, block_ids: List[bytes]) -> None:
         """Prefetch blocks into the host DDR buffer (Backend2Cache), no H2D.
 
-        Forwards to the inner connector's store.prefetch_data (worker side only).
+        Forwards to the inner connector so prefetch reuses the same key and
+        store mapping as the load path. Connectors that cannot support it
+        reject the call explicitly.
         """
         inner = getattr(self, "connector", None)
+        prefetch = getattr(inner, "prefetch_data", None)
+        if prefetch is not None:
+            prefetch(block_ids)
+            return
         store = getattr(inner, "store", None)
         if store is not None:
             store.prefetch_data(block_ids)
