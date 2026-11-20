@@ -1824,7 +1824,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _bind_request_block_hasher(self) -> None:
         if self._role == KVConnectorRole.SCHEDULER:
             self.request_block_hasher = self.request_hasher.make_request_block_hasher(
-                self.hash_block_size, self._seed, include_partial_tail=(self.cp_world_size == 1)
+                self.hash_block_size,
+                self._seed,
+                include_partial_tail=(self.cp_world_size == 1),
             )
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
