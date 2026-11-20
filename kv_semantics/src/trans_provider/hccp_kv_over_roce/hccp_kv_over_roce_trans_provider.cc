@@ -54,8 +54,8 @@ constexpr const char* kLibraryPathEnv = "UCM_HCCP_KV_ROCE_LIB_PATH";
 
 // Every connection owns one HBM slot. The slot receives the operator QPC and is
 // later handed to the operator IO path through Send.
-static_assert(sizeof(HccpKvRoceQpc) <= kHccpKvRoceConnSlotBytes,
-              "one connection QPC must fit into one HBM slot");
+static_assert(sizeof(HccpKvRoceQpc) == kHccpKvRoceConnSlotBytes,
+              "the HBM connection slot must be exactly one QPC");
 
 using CreateConnectionFn = decltype(&::CreateConnection);
 using DeleteConnectionsFn = decltype(&::DeleteConnections);

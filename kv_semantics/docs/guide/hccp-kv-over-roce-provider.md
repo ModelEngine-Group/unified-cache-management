@@ -112,13 +112,14 @@ process; `ACL_ERROR_REPEAT_INITIALIZE` is treated as success.
 
 The provider allocates one contiguous HBM region per provider instance:
 
-- one slot per live QP, 256 bytes each (`HCCP_KV_ROCE_QPC_BYTES`);
-- `hccp_kv_roce_max_connections` slots, 3072 by default, so 768 KiB;
+- one slot per live QP, `HCCP_KV_ROCE_QPC_BYTES` bytes each (512 with the
+  current header);
+- `hccp_kv_roce_max_connections` slots, 3072 by default, so 1.5 MiB;
 - the region is shared by every IP pair of that provider.
 
-A slot holds exactly one QPC, with no padding. The slot size and
-`HCCP_KV_ROCE_QPC_BYTES` in `hccp_kv_over_roce_abi.h` must stay equal; a
-`static_assert` in the provider enforces it.
+A slot holds exactly one QPC, with no padding. The slot size is derived from
+`HCCP_KV_ROCE_QPC_BYTES` in `hccp_kv_over_roce_abi.h`, and a `static_assert` in
+the provider enforces that it equals `sizeof(HccpKvRoceQpc)`.
 
 Each slot is tracked as `FREE` or `IN_USE`. `Acquire` marks a slot `IN_USE` and
 returns `RESOURCE_BUSY` when the pool is exhausted. `Release` only accepts an
@@ -273,7 +274,7 @@ failure modes the provider cannot detect at runtime.
 - [ ] Fill each `connectionHandles[i]` in place and keep the pointer: the
       provider passes addresses of its own `HccpKvRoceQpc` records and copies
       them into HBM afterwards.
-- [ ] Write at most `HCCP_KV_ROCE_QPC_BYTES` (256) bytes per QPC. The HBM slot is
+- [ ] Write at most `HCCP_KV_ROCE_QPC_BYTES` bytes per QPC. The HBM slot is
       exactly one QPC, so a larger payload corrupts the next slot.
 - [ ] Set `*connectionHandleNum` to `qpNum` on success and never write or report
       more than `qpNum` entries.
@@ -361,7 +362,7 @@ failure modes the provider cannot detect at runtime.
 
 The client opens `TransportConfig::qpNum` QPs per endpoint (`1` by default), so
 the capacity must cover the sum of QPs over every live endpoint of that provider.
-With the defaults, one provider covers 3072 QPs in 768 KiB of HBM.
+With the defaults, one provider covers 3072 QPs in 1.5 MiB of HBM.
 
 `asu_shared_provider: 0` creates one provider per transport, so N transports
 allocate N regions; `asu_shared_provider: 1` shares one provider and one region,

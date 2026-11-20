@@ -257,7 +257,7 @@ standalone file keys. Compatibility aliases are omitted.
 | `transport.provider_type` | AICPU, FAKE, AIV, or HCCP_KV_OVER_ROCE; the provider must be enabled at build time. |
 | `transport.device_id` | Local logical device ID; AICPU first uses the caller's current ACL device. |
 | `transport.hccp_kv_roce_lib_path` | Path of the external HCCP KV-over-RoCE library; defaults to `UCM_HCCP_KV_ROCE_LIB_PATH` and then `libhccp_kv_over_roce.so`. |
-| `transport.hccp_kv_roce_max_connections` | HBM connection-slot capacity for HCCP_KV_OVER_ROCE; defaults to 3072 slots of 256 bytes. |
+| `transport.hccp_kv_roce_max_connections` | HBM connection-slot capacity for HCCP_KV_OVER_ROCE; 3072 slots of 512 bytes (1.5 MiB) by default. |
 | `transport.max_inflight_tasks` | Per-transport task capacity. |
 | `transport.max_error_count` | Consecutive channel failure threshold before draining. |
 | `transport.completion_poll_spin_limit` | Empty completion polling rounds before yielding the CPU. |
