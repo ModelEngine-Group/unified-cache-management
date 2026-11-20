@@ -1824,7 +1824,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _bind_request_block_hasher(self) -> None:
         if self._role == KVConnectorRole.SCHEDULER:
             self.request_block_hasher = self.request_hasher.make_request_block_hasher(
-                self.hash_block_size, self._seed
+                self.hash_block_size, self._seed, include_partial_tail=(self.cp_world_size == 1)
             )
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
@@ -2343,7 +2343,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if req_meta.token_processed < req_meta.num_token_ids:
             start_idx = req_meta.token_processed // self.block_size
             dump_block_start = start_idx
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            processed_end = req_meta.token_processed + new_tokens
+            end_idx = processed_end // self.block_size
+            if processed_end >= req_meta.num_token_ids and self.cp_world_size == 1:
+                end_idx = len(ucm_block_ids)
             dump_ucm_block_ids = ucm_block_ids[
                 start_idx * self.cp_world_size : end_idx * self.cp_world_size
             ]
