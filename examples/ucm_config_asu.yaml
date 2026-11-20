@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 # UCM ASU AIV backend example for vLLM / vLLM-Ascend integration.
 #
 # Use with:
@@ -8,6 +9,9 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "ASU"
       asu_mode: "client"
+      # Use batch Load/Store protocol even for a single entry (default: true).
+      # Set false to use single-key protocol for single-entry requests.
+      asu_use_batch_io_for_single_key: true
       asu_client_id: "ucm-vllm-asu-aiv"
       # For multiple ASUs, list every ASU here and provide asu_ips/asu_ports in the same order,
       # for example: asu_ids: [1, 2]

@@ -225,7 +225,7 @@ s.def("Wait", &PipelineStore::Wait);
 ### pipeline
 
 - `ucm/store/pipeline/connector.py` 定义注册管线及加载的原生库。
-- `ucm/store/cache/cc/cache_store.cc` 管理缓冲默认值和最小容量检查。
+- `ucm/store/cache/v2/global_config.h` 管理缓冲默认值和最小容量检查。
 - `ucm/store/posix/cc/posix_store.cc` 管理文件系统配置与健康探针。
 - `ucm/integration/vllm/ucm_connector.py` 提供布局、共享缓冲默认值和 GC 归属。
 

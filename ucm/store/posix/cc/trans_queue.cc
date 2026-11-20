@@ -42,8 +42,7 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     ioDirect_ = config.ioDirect;
     timeoutMs_ = config.timeoutMs;
     tracker_.Setup(nShardPerBlock_);
-    auto cacheStatus = SetupLoadHandles(loadHandles_, backends_->size(), config.loadHandleCacheSize,
-                                        config.ioDirect);
+    auto cacheStatus = loadHandles_.Setup(config.loadHandleCacheSize, config.ioDirect);
     if (cacheStatus.Failure()) [[unlikely]] { return cacheStatus; }
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
@@ -187,7 +186,9 @@ Status TransQueue::H2S(IoUnit& ios)
         UC_ERROR("Failed({}) to open file({}) with flags({}) in backend({}:{}).", s, path, flags,
                  backendIndex, backend);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
-        return s;
+        // With O_CREAT, ENOENT means the data directory is gone, e.g. the mount disappeared.
+        // Report it as a backend error so the breaker trips, the same as the AIO engine.
+        return s == Status::NotFound() ? Status::Error() : s;
     }
     ios.ino = InoOf(file.Handle());
     auto offset = shardSize_ * ios.shard.index;
@@ -209,7 +210,7 @@ Status TransQueue::S2H(IoUnit& ios)
     const auto backendIndex = ios.task->backendIndex;
     const auto& backend = (*backends_)[backendIndex];
     const auto& path = layout_->ArchivedFilePath(backend, ios.shard.owner);
-    auto borrowed = loadHandles_[backendIndex].GetOrOpen(ios.shard.owner, path);
+    auto borrowed = loadHandles_.GetOrOpen(ios.shard.owner, backendIndex, path);
     if (!borrowed.Valid()) [[unlikely]] {
         UC_ERROR("Failed({}) to open file({}) for load in backend({}:{}).", borrowed.Error(), path,
                  backendIndex, backend);

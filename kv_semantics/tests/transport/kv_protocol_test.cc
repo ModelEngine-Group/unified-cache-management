@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,17 +31,17 @@
 namespace kv::test {
 namespace {
 
-CacheKey MakeCacheKey(std::string_view text)
+BinaryKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
     return key;
 }
 
-CacheKey MakeCacheKey(std::uint64_t value)
+BinaryKey MakeCacheKey(std::uint64_t value)
 {
-    CacheKey key{};
+    BinaryKey key{};
     std::memcpy(key.data(), &value, key.size());
     return key;
 }
@@ -85,7 +85,7 @@ TEST_F(KvProtocolPackTest, StoreProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(16, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | 0x01;
+    expected[0] = (kCid << 16) | (0x1U << 14) | 0x01;
     expected[1] = kKvNsId;
     expected[2] = ((kDtype & 0x7) << 13) | ((kDspec & 0x1F) << 8);
     expected[6] = kBufferAddr & 0xFFFFFFFFULL;
@@ -133,7 +133,7 @@ TEST_F(KvProtocolPackTest, RetrieveProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(16, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | 0x02;
+    expected[0] = (kCid << 16) | (0x1U << 14) | 0x02;
     expected[1] = kKvNsId;
     expected[6] = kBufferAddr & 0xFFFFFFFFULL;
     expected[7] = (kBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -192,7 +192,7 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(34, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (kRflag ? (1U << 13) : 0) | 0x45;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (kRflag ? (1U << 13) : 0) | 0x45;
     expected[1] = kKvNsId;
     expected[2] = ((kDtype & 0x7) << 13) | ((kDspec & 0x1F) << 8);
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
@@ -204,14 +204,16 @@ TEST_F(KvProtocolPackTest, BatchStoreProtocolPackMatchesProtocol)
     expected[11] = kLr ? (1U << 31) : 0;
 
     expected[16] = entry1.offset;
-    std::memcpy(&expected[17], entry1.key.data(), std::min(entry1.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[17], CacheKeyView(entry1.key).data(),
+                std::min(CacheKeyView(entry1.key).size(), kCacheKeySizeBytes));
     expected[21] = entry1.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry1.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry1.mr_key & 0xFF) << 24) | (entry1.length & 0xFFFFFF);
     expected[24] = (0x40 << 24) | ((entry1.mr_key >> 8) & 0xFFFFFF);
 
     expected[25] = entry2.offset;
-    std::memcpy(&expected[26], entry2.key.data(), std::min(entry2.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[26], CacheKeyView(entry2.key).data(),
+                std::min(CacheKeyView(entry2.key).size(), kCacheKeySizeBytes));
     expected[30] = entry2.buffer_addr & 0xFFFFFFFFULL;
     expected[31] = (entry2.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[32] = ((entry2.mr_key & 0xFF) << 24) | (entry2.length & 0xFFFFFF);
@@ -255,7 +257,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(25, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (1U << 13) | 0x46;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (1U << 13) | 0x46;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -264,7 +266,8 @@ TEST_F(KvProtocolPackTest, BatchRetrieveProtocolPackMatchesProtocol)
     expected[9] = 0x01 << 24;
     expected[10] = 1;
     expected[16] = entry.offset;
-    std::memcpy(&expected[17], entry.key.data(), std::min(entry.key.size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[17], CacheKeyView(entry.key).data(),
+                std::min(CacheKeyView(entry.key).size(), kCacheKeySizeBytes));
     expected[21] = entry.buffer_addr & 0xFFFFFFFFULL;
     expected[22] = (entry.buffer_addr >> 32) & 0xFFFFFFFFULL;
     expected[23] = ((entry.mr_key & 0xFF) << 24) | (entry.length & 0xFFFFFF);
@@ -299,7 +302,7 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(24, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (kRflag ? (1U << 13) : 0) | 0x08;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (kRflag ? (1U << 13) : 0) | 0x08;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -307,10 +310,10 @@ TEST_F(KvProtocolPackTest, DeleteProtocolPackMatchesProtocol)
     expected[8] = 2 * 16;
     expected[9] = 0x01 << 24;
     expected[10] = 2;
-    std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), kCacheKeySizeBytes));
-    std::memcpy(&expected[20], req.keys[1].data(),
-                std::min(req.keys[1].size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[16], CacheKeyView(req.keys[0]).data(),
+                std::min(CacheKeyView(req.keys[0]).size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[20], CacheKeyView(req.keys[1]).data(),
+                std::min(CacheKeyView(req.keys[1]).size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -343,7 +346,7 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<std::uint32_t> expected(20, 0);
-    expected[0] = (kCid << 16) | (0x3 << 14) | (1U << 13) | 0x0C;
+    expected[0] = (kCid << 16) | (0x1U << 14) | (1U << 13) | 0x0C;
     expected[1] = kKvNsId;
     expected[3] = kRespBufferAddr & 0xFFFFFFFFULL;
     expected[4] = (kRespBufferAddr >> 32) & 0xFFFFFFFFULL;
@@ -351,8 +354,8 @@ TEST_F(KvProtocolPackTest, ExistProtocolPackMatchesProtocol)
     expected[8] = 1 * 16;
     expected[9] = 0x01 << 24;
     expected[10] = 1 | (kSc ? (1U << 16) : 0);
-    std::memcpy(&expected[16], req.keys[0].data(),
-                std::min(req.keys[0].size(), kCacheKeySizeBytes));
+    std::memcpy(&expected[16], CacheKeyView(req.keys[0]).data(),
+                std::min(CacheKeyView(req.keys[0]).size(), kCacheKeySizeBytes));
 
     ASSERT_EQ(packed.size(), expected.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {
@@ -487,7 +490,7 @@ TEST_F(KvProtocolPackTest, StoreValidateRequestRejectsAllZeroKey)
     req.buffer_length = 512;
     req.offset = 0;
     req.length = 1;
-    req.key = CacheKey{};
+    req.key = BinaryKey{};
 
     KvStoreProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -600,7 +603,7 @@ TEST_F(KvProtocolPackTest, BatchStoreValidateRequestRejectsAllZeroKey)
     KvBatchStoreRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = CacheKey{};
+    req.entries[0].key = BinaryKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -793,7 +796,7 @@ TEST_F(KvProtocolPackTest, RetrieveValidateRequestRejectsAllZeroKey)
     req.buffer_length = 1024;
     req.offset = 512;
     req.length = 512;
-    req.key = CacheKey{};
+    req.key = BinaryKey{};
 
     KvRetrieveProtocol proto;
     std::vector<std::uint32_t> target(16, 0);
@@ -857,7 +860,7 @@ TEST_F(KvProtocolPackTest, BatchRetrieveValidateRequestRejectsAllZeroKey)
     KvBatchRetrieveRequest req;
     req.batch_number = 1;
     req.entries.resize(1);
-    req.entries[0].key = CacheKey{};
+    req.entries[0].key = BinaryKey{};
     req.entries[0].offset = 0;
     req.entries[0].buffer_addr = 0x1000;
     req.entries[0].length = 512;
@@ -885,7 +888,7 @@ TEST_F(KvProtocolPackTest, DeleteValidateRequestRejectsAllZeroKey)
 {
     KvDeleteRequest req;
     req.batch_number = 2;
-    req.keys = {MakeCacheKey("key1"), CacheKey{}};
+    req.keys = {MakeCacheKey("key1"), BinaryKey{}};
 
     KvDeleteProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -923,7 +926,7 @@ TEST_F(KvProtocolPackTest, ExistValidateRequestRejectsAllZeroKey)
 {
     KvExistRequest req;
     req.batch_number = 1;
-    req.keys = {CacheKey{}};
+    req.keys = {BinaryKey{}};
 
     KvExistProtocol proto;
     std::vector<std::uint32_t> target(32, 0);
@@ -1463,10 +1466,14 @@ TEST_F(KvProtocolVerifyTest, StoreRejectsWrongLength)
 TEST_F(KvProtocolVerifyTest, StoreRejectsBadFixedBits)
 {
     auto buf = PackStore();
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 // ── Store: reserved bits in data[0] ──
@@ -1983,10 +1990,14 @@ TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseAddr)
 TEST_F(KvProtocolVerifyTest, RetrieveRejectsBadFixedBits)
 {
     auto buf = PackRetrieve();
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, RetrieveRejectsReservedBitsInDword0)
@@ -2079,10 +2090,14 @@ TEST_F(KvProtocolVerifyTest, RetrieveRejectsAllZeroKey)
 TEST_F(KvProtocolVerifyTest, BatchStoreRejectsBadFixedBits)
 {
     auto buf = PackBatchStore(2);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, BatchStoreRejectsReservedBitsInDword0)
@@ -2165,10 +2180,14 @@ TEST_F(KvProtocolVerifyTest, BatchStoreRejectsEntryUnalignedLength)
 TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsBadFixedBits)
 {
     auto buf = PackBatchRetrieve(2);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsReservedBitsInDword0)
@@ -2329,10 +2348,14 @@ TEST_F(KvProtocolVerifyTest, BatchRetrieveRejectsEntryBadDptrType)
 TEST_F(KvProtocolVerifyTest, DeleteRejectsBadFixedBits)
 {
     auto buf = PackDelete(3);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, DeleteRejectsReservedBitsInDword0)
@@ -2430,10 +2453,14 @@ TEST_F(KvProtocolVerifyTest, DeleteRejectsWrongLength)
 TEST_F(KvProtocolVerifyTest, ExistRejectsBadFixedBits)
 {
     auto buf = PackExist(3);
-    buf[0] &= ~(0x3U << 14);
-    auto s = mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
-    EXPECT_FALSE(s.ok());
-    EXPECT_NE(s.message.find("fixed bits"), std::string::npos);
+    // Bits [15:14] must be 01; reject all other encodings, including the old 11 value.
+    for (const auto fixedBits : {0x0U, 0x2U, 0x3U}) {
+        buf[0] = (buf[0] & ~(0x3U << 14)) | (fixedBits << 14);
+        const auto status =
+            mgr_->VerifyPackedBuffer(buf.data(), buf.size() * sizeof(std::uint32_t));
+        EXPECT_FALSE(status.ok()) << "fixedBits=" << fixedBits;
+        EXPECT_NE(status.message.find("fixed bits"), std::string::npos);
+    }
 }
 
 TEST_F(KvProtocolVerifyTest, ExistRejectsReservedBitsInDword0)

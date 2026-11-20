@@ -119,7 +119,16 @@ class MemoryStore:
                 for pointer, size in zip(row, self.workload.tensor_sizes)
             )
 
-    def Load(self, ids, shards, pointers):
+    def Load(
+        self,
+        ids,
+        shards,
+        pointers,
+        prerequisite_handle=0,
+        distribute_backend_load=False,
+    ):
+        assert prerequisite_handle == 0
+        assert distribute_backend_load == self.workload.shared
         ids = self.unpack(ids, shards, pointers)
         self.records.append(tuple(ids))
         for block_id, shard, row in zip(ids, shards, pointers):
@@ -294,105 +303,30 @@ class CacheBandwidthTest(unittest.TestCase):
         self.assertEqual(seed["block_size"], load["block_size"])
         self.assertFalse(seed["posix_gc_enable"])
 
-    def test_cache_hit_applies_direct_io_for_both_cache_cores(self):
-        for core in ("legacy", "v2"):
-            for direct_io in (True, False):
-                with self.subTest(core=core, direct_io=direct_io):
-                    args, workload = self.parse(
-                        "cache-hit",
-                        "--cache-core",
-                        core,
-                        "--model",
-                        "dsv4",
-                        "--workers",
-                        "1",
-                        "--worker-mode",
-                        "gqa",
-                        "--cache-capacity-gb",
-                        "16",
-                        "--cache-copy",
-                        "plain",
-                        "--cache-streams",
-                        "4",
-                        "--direct-io" if direct_io else "--no-direct-io",
-                    )
-                    config = bw.store_config(args, workload, "run", 0)
-                    self.assertIs(config["io_direct"], direct_io)
-                    self.assertFalse(config["share_buffer_enable"])
-                    self.assertEqual(config["cache_stream_number"], 4)
-                    self.assertIs(bw.describe(args, workload)["direct_io"], direct_io)
-
-    def test_legacy_gqa_uses_equal_private_capacity_and_dispatch_domains(self):
-        args, workload = self.parse(
-            "cache-hit",
-            "--model",
-            "minimax-m2.7-tp8",
-            "--cache-core",
-            "legacy",
-            "--cache-capacity-gb",
-            "64",
-            "--cache-copy",
-            "plain",
-            "--cache-streams",
-            "4",
-        )
-        for rank in range(args.workers):
-            config = bw.store_config(args, workload, "run", rank)
-            self.assertEqual(config["device_id"], rank)
-            self.assertEqual(config["store_pipeline"], "Cache|Empty")
-            self.assertEqual(config["cache_buffer_capacity_gb"], 8)
-            self.assertEqual(config["local_rank_size"], 1)
-            self.assertEqual(config["cache_load_exclusive_buffer_number"], 128)
-            self.assertFalse(config["share_buffer_enable"])
-            self.assertEqual(config["cache_stream_number"], 4)
-            self.assertFalse(any("numa" in key for key in config))
-        plan = bw.describe(args, workload)
-        self.assertEqual(plan["cache_capacity_gib"], 64)
-        self.assertEqual(plan["cache_config_capacity_gib"], 8)
-        self.assertEqual(plan["pipeline"], "Cache|Empty")
-
-    def test_legacy_mla_keeps_shared_capacity_and_all_ranks(self):
-        args, workload = self.parse("cache-hit", "--cache-core", "legacy")
-        config = bw.store_config(args, workload, "run", 15)
-        self.assertEqual(config["cache_buffer_capacity_gb"], 32)
-        self.assertEqual(config["local_rank_size"], 16)
-        self.assertEqual(config["cache_load_exclusive_buffer_number"], 1024)
-        self.assertTrue(config["share_buffer_enable"])
-
-    def test_legacy_posix_preserves_seed_and_cold_load_backends(self):
-        args, workload = self.parse(
-            "posix-hit", "--model", "minimax-m2.7-tp8", "--cache-core", "legacy"
-        )
-        seed = bw.store_config(args, workload, "run", 3, seed=True)
-        load = bw.store_config(args, workload, "run", 3)
-        self.assertEqual(seed["store_pipeline"], "Posix")
-        self.assertNotIn("cache_buffer_capacity_gb", seed)
-        self.assertEqual(load["store_pipeline"], "Cache|Posix")
-        self.assertEqual(seed["storage_backends"], load["storage_backends"])
-        self.assertEqual(load["cache_buffer_capacity_gb"], 4)
-        self.assertNotEqual(seed["unique_id"], load["unique_id"])
-
-    def test_legacy_rejects_ineffective_or_unequal_configuration(self):
-        cases = [
-            ["--cache-numa-nodes", "0,0,2,2,4,4,6,6"],
-            ["--cache-capacity-gb", "65"],
-            ["--cache-copy", "sdma", "--cache-streams", "4"],
-            ["--cache-capacity-gb", "8", "--io-size", "2M", "--blocks", "1"],
-        ]
-        for case in cases:
-            with (
-                self.subTest(case=case),
-                contextlib.redirect_stderr(io.StringIO()),
-                self.assertRaises(SystemExit),
-            ):
-                self.parse(
+    def test_cache_hit_applies_direct_io(self):
+        for direct_io in (True, False):
+            with self.subTest(direct_io=direct_io):
+                args, workload = self.parse(
                     "cache-hit",
                     "--model",
-                    "minimax-m2.7-tp8",
-                    "--cache-core",
-                    "legacy",
-                    *case,
+                    "dsv4",
+                    "--workers",
+                    "1",
+                    "--worker-mode",
+                    "gqa",
+                    "--cache-capacity-gb",
+                    "16",
+                    "--cache-copy",
+                    "plain",
+                    "--cache-streams",
+                    "4",
+                    "--direct-io" if direct_io else "--no-direct-io",
                 )
+                config = bw.store_config(args, workload, "run", 0)
+                self.assertIs(config["io_direct"], direct_io)
+                self.assertFalse(config["share_buffer_enable"])
+                self.assertEqual(config["cache_stream_number"], 4)
+                self.assertIs(bw.describe(args, workload)["direct_io"], direct_io)
 
     def test_mla_ownership_is_disjoint_complete_and_shared_keys_match(self):
         args, _ = self.parse()
@@ -678,6 +612,19 @@ class CacheBandwidthTest(unittest.TestCase):
         submitted = [call.args for call in store.store_.Load.call_args_list]
         self.assertEqual([list(args[1]) for args in submitted], [[0], [1], [2]])
         self.assertTrue(all(args[2] is submitted[0][2] for args in submitted))
+        self.assertTrue(all(args[3:] == (0, workload.shared) for args in submitted))
+
+    def test_transfer_marks_only_mla_loads_for_backend_distribution(self):
+        for shared in (False, True):
+            with self.subTest(shared=shared):
+                workload = bw.Workload((4096,), 1, shared)
+                rows = make_fake_rows(None, workload, "mock", 1)
+                request = bw.prepare_transfer(rows, [b"a" * 16], workload)
+                store, runtime = mock.Mock(), mock.Mock()
+                bw.transfer_request(store, runtime, request)
+                self.assertEqual(store.store_.Load.call_args.args[3:], (0, shared))
+                bw.transfer_request(store, runtime, request, dump=True)
+                self.assertEqual(len(store.store_.Dump.call_args.args), 3)
 
     def test_every_posix_epoch_and_every_layer_is_cold(self):
         args, workload = self.small("posix-hit")
@@ -726,6 +673,7 @@ class CacheBandwidthTest(unittest.TestCase):
             text=True,
         )
         plan = json.loads(result.stdout)
+        self.assertNotIn("cache_core", plan)
         self.assertEqual(plan["load_tasks_per_request"], 78)
         self.assertEqual(plan["unique_seed_records"], 12)
         self.assertEqual(plan["seed_storage_bytes"], 180224 * 512 * 78 * 12)

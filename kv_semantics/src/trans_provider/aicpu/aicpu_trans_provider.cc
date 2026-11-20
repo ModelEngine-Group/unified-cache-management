@@ -56,6 +56,7 @@ using aicpu_config::ResolveLocType;
 
 constexpr std::uint32_t kDefaultNotifyNum = 1;
 constexpr std::uint32_t kDefaultUbSqDepth = 0xFFFFFFFFU;
+constexpr std::uint32_t kDefaultQos = 0xFFFFFFFFU;
 constexpr std::uint32_t kDefaultSendTimeoutMs = 1836U * 1000U;
 constexpr std::uint32_t kAclSyncGraceMs = 5000U;
 constexpr std::uint32_t kCpuKernelMode = 0U;
@@ -527,7 +528,7 @@ struct AICPUTransProvider::Impl {
                                       kDefaultNotifyNum)),
           ubSqDepth(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_ub_sq_depth", "ub_sq_depth"}),
                                       kDefaultUbSqDepth)),
-          qos(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), 0)),
+          qos(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), kDefaultQos)),
           sendTimeoutMs(ParseConfigUint32(
               GetConfigAttr(configIn, {"aicpu_send_timeout_ms", "send_timeout_ms", "timeout"}),
               kDefaultSendTimeoutMs)),
@@ -1837,7 +1838,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
                                      "AICPUTransProvider: HCOMM token range mismatch");
             }
             if (tokenInfo.type == HCOMM_MEM_TOKEN_TYPE_UB && tokenInfo.tokenValue != 0U) {
-                record->tokenId = tokenInfo.tokenValue;
+                record->tokenId = tokenInfo.tokenId;
                 record->hasToken = true;
             } else if (tokenInfo.type == HCOMM_MEM_TOKEN_TYPE_RDMA && tokenInfo.rkey != 0U) {
                 record->tokenId = tokenInfo.rkey;

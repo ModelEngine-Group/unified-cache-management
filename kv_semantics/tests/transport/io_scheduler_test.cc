@@ -31,17 +31,17 @@
 namespace kv::test {
 namespace {
 
-CacheKey MakeCacheKey(const std::string& text)
+ResolvedCacheKey MakeCacheKey(const std::string& text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
-    return key;
+    return {key, 0};
 }
 
 TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
 {
-    std::vector<KVBuffer> entries(5);
+    std::vector<ResolvedKVBuffer> entries(5);
     for (std::size_t index = 0; index < entries.size(); ++index) {
         entries[index].key = MakeCacheKey("key_" + std::to_string(index));
     }
@@ -49,8 +49,8 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     TransportConfig config;
     config.batchLoadIoNum = 2;
     IoScheduler scheduler(config);
-    const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
-                                               AsuOpType::BATCH_LOAD);
+    const auto batches = scheduler.SplitForAsu(
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}, AsuOpType::BATCH_LOAD);
 
     ASSERT_EQ(batches.size(), std::size_t{3});
     EXPECT_EQ(batches[0].entries.size, std::size_t{2});
@@ -59,7 +59,7 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     EXPECT_EQ(&batches[0].entries[0], &entries[0]);
     EXPECT_EQ(&batches[1].entries[0], &entries[2]);
     EXPECT_EQ(&batches[2].entries[0], &entries[4]);
-    EXPECT_EQ(batches[1].entries[1].key, MakeCacheKey("key_3"));
+    EXPECT_EQ(batches[1].entries[1].key.keyBytes, MakeCacheKey("key_3").keyBytes);
 }
 
 TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
@@ -84,10 +84,10 @@ TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
     TransportConfig config;
     config.batchLoadIoNum = 2;
     IoScheduler scheduler(config);
-    std::vector<KVBuffer> entries(5);
+    std::vector<ResolvedKVBuffer> entries(5);
 
-    const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
-                                               AsuOpType::BATCH_LOAD);
+    const auto batches = scheduler.SplitForAsu(
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}, AsuOpType::BATCH_LOAD);
 
     ASSERT_EQ(batches.size(), std::size_t{3});
     EXPECT_EQ(batches[0].entries.size, std::size_t{2});

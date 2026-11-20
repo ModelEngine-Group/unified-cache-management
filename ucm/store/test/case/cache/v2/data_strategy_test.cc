@@ -116,13 +116,10 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
     const auto statuses = SetupAllRanks(ranks);
     for (const auto& s : statuses) { ASSERT_TRUE(s.Success()) << s.ToString(); }
     auto& owner = ranks[0];
-    [[maybe_unused]] auto& peer = ranks[1];
+    auto& peer = ranks[1];
 
     const size_t totalSlots = kRankCount * kSlotsPerRank;
     for (size_t slot = 0; slot < totalSlots; ++slot) {
-#if UCM_RUNTIME_ASCEND_HAL
-        EXPECT_EQ(slot < kSlotsPerRank, owner.HostAccessibleOf(slot));
-#else
         /* Memfd maps every rank segment into every participant. */
         EXPECT_TRUE(owner.HostAccessibleOf(slot));
         EXPECT_TRUE(peer.HostAccessibleOf(slot));
@@ -130,7 +127,6 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
         EXPECT_NE(nullptr, peer.DataAt(slot));
         EXPECT_EQ(nullptr, owner.DeviceDataAt(slot));
         EXPECT_EQ(nullptr, peer.DeviceDataAt(slot));
-#endif
     }
     /* Slot addresses advance by slotSize and stay inside their rank segment. */
     EXPECT_EQ(kSlotSize, static_cast<size_t>(static_cast<std::byte*>(owner.DataAt(1)) -
@@ -139,9 +135,6 @@ TEST_F(DataStrategyTest, SetupPublishesAndImportsAllRanks)
 
 TEST_F(DataStrategyTest, SegmentsAreSharedAcrossRanks)
 {
-#if UCM_RUNTIME_ASCEND_HAL
-    GTEST_SKIP() << "cross-rank host access requires the memfd backend";
-#else
     std::vector<DataStrategy> ranks(kRankCount);
     const auto statuses = SetupAllRanks(ranks);
     for (const auto& s : statuses) { ASSERT_TRUE(s.Success()) << s.ToString(); }
@@ -154,7 +147,6 @@ TEST_F(DataStrategyTest, SegmentsAreSharedAcrossRanks)
     /* Rank 1 writes its own slot; rank 0 observes it through its mapping. */
     FillSlot(peer.DataAt(kSlotsPerRank), 0xa5);
     EXPECT_TRUE(SlotIsFilled(owner.DataAt(kSlotsPerRank), 0xa5));
-#endif
 }
 
 TEST_F(DataStrategyTest, SecondSetupIsRejected)
@@ -192,9 +184,6 @@ TEST_F(DataStrategyTest, MissingPeerTimesOut)
 
 TEST_F(DataStrategyTest, PeerHandleMismatchIsRejected)
 {
-#if UCM_RUNTIME_ASCEND_HAL
-    GTEST_SKIP() << "handle validation is a memfd backend capability";
-#else
     CtrlLayout::RankDataDesc poisoned;
     poisoned.handle.store(0x1234567812345678ULL, std::memory_order_relaxed);
     ASSERT_TRUE(layout_.SetRankDesc(0, poisoned).Success());
@@ -203,7 +192,6 @@ TEST_F(DataStrategyTest, PeerHandleMismatchIsRejected)
     auto s = peer.Setup(layout_, MakeOptions(uniqueId_, 1, /*myRank=*/1, 100));
     ASSERT_TRUE(s.Failure());
     EXPECT_EQ(Status::InvalidParam().Underlying(), s.Underlying());
-#endif
 }
 
 TEST_F(DataStrategyTest, PeerPollingWaitsForDelayedPublish)

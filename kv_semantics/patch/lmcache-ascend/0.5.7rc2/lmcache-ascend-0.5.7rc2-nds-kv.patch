@@ -1,0 +1,335 @@
+diff --git a/csrc/mem_alloc.cpp b/csrc/mem_alloc.cpp
+index a948cb4531876c947f499b01e3e413d6f3ba4f43..00152d64f16e1c09fd3ae8f6e09880ba9e2c97b9 100644
+--- a/csrc/mem_alloc.cpp
++++ b/csrc/mem_alloc.cpp
+@@ -1,84 +1,209 @@
+ #include "mem_alloc.h"
+ #include "managed_mem.h"
+ #include <acl/acl.h>
+-#include <cstdlib> // for std::getenv
+-#include <cstring> // for strerror
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
+ #include <errno.h>
++#include <fcntl.h>
++#include <iostream>
+ #include <numaif.h>
++#include <sstream>
+ #include <stdexcept>
+ #include <string>
++#include <sys/file.h>
+ #include <sys/mman.h>
++#include <sys/resource.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <thread>
++#include <unistd.h>
++
++static constexpr size_t kPageSize = 4096;
++static constexpr const char *kLockFile = "/tmp/lmcache_ascend_reg.lock";
++
++static size_t align_to_page_size(size_t size) {
++  return (size + kPageSize - 1) & ~(kPageSize - 1);
++}
++
++/**
++ * Get current timestamp string for logging
++ */
++static std::string timestamp() {
++  auto now = std::chrono::system_clock::now();
++  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++                now.time_since_epoch()) %
++            1000;
++  auto timer = std::chrono::system_clock::to_time_t(now);
++  struct tm tm_buf;
++  localtime_r(&timer, &tm_buf);
++  std::ostringstream oss;
++  oss << "[" << tm_buf.tm_hour << ":" << tm_buf.tm_min << ":" << tm_buf.tm_sec
++      << "." << ms.count() << "]";
++  return oss.str();
++}
++
++/**
++ * Get process info string for logging
++ */
++static std::string proc_info() {
++  std::ostringstream oss;
++  oss << "[pid=" << getpid() << "]";
++  return oss.str();
++}
++
++/**
++ * Check if the process has permission to lock memory.
++ */
++static bool can_lock_memory() {
++  struct rlimit rlim;
++  if (getrlimit(RLIMIT_MEMLOCK, &rlim) != 0) {
++    return false;
++  }
++  return rlim.rlim_cur == RLIM_INFINITY || rlim.rlim_cur > 0;
++}
++
++/**
++ * Acquire a cross-process file lock to serialize register_ptr calls.
++ * This prevents multiple workers from deadlocking in NPU driver.
++ */
++static int acquire_register_lock() {
++  int fd = open(kLockFile, O_CREAT | O_RDWR, 0666);
++  if (fd < 0) {
++    std::cerr << timestamp() << " mem_alloc: WARN " << proc_info()
++              << " Failed to open lock file: " << strerror(errno) << std::endl;
++    return -1;
++  }
++  // Non-blocking try-lock first
++  int rc = flock(fd, LOCK_EX | LOCK_NB);
++  if (rc < 0) {
++    if (errno == EWOULDBLOCK) {
++      std::cerr << timestamp() << " mem_alloc: INFO " << proc_info()
++                << " Another process is registering memory, waiting..."
++                << std::endl;
++      // Blocking wait with timeout-like behavior by retrying
++      int retries = 0;
++      while (flock(fd, LOCK_EX | LOCK_NB) < 0 && retries < 300) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(100));
++        retries++;
++      }
++      if (retries >= 300) {
++        std::cerr << timestamp() << " mem_alloc: ERROR " << proc_info()
++                  << " Timeout waiting for register lock (30s)" << std::endl;
++        close(fd);
++        return -1;
++      }
++    } else {
++      std::cerr << timestamp() << " mem_alloc: WARN " << proc_info()
++                << " flock failed: " << strerror(errno) << std::endl;
++      close(fd);
++      return -1;
++    }
++  }
++  return fd; // Return fd so caller can release the lock
++}
++
++static void release_register_lock(int fd) {
++  if (fd >= 0) {
++    flock(fd, LOCK_UN);
++    close(fd);
++  }
++}
+ 
+ uintptr_t alloc_pinned_ptr(std::size_t size, unsigned int flags) {
+-  void *ptr = nullptr;
+-  // no flags
+-  aclError err = aclrtMallocHost(&ptr, size);
+-  if (err != ACL_SUCCESS) {
+-    throw std::runtime_error("aclrtMallocHost failed: " + std::to_string(err));
+-  }
+-
+-  const char *socVersion = aclrtGetSocName();
+-
+-  // nullptr means that the chip version failed to be obtained. We cannot be
+-  // sure about the version of the device. Unless we are sure that we deal with
+-  // a 310 device, we try to register.
+-  if (socVersion == nullptr ||
+-      std::string(socVersion).find("310") == std::string::npos) {
+-    // not 310p
+-    auto devPtr = register_ptr(ptr, size);
+-    if (devPtr == nullptr) {
+-      free_pinned_ptr(reinterpret_cast<uintptr_t>(ptr));
+-      throw std::runtime_error("register ptr failed");
++  size_t aligned_size = align_to_page_size(size);
++
++  void *ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
++                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  if (ptr == MAP_FAILED) {
++    throw std::runtime_error(std::string("mmap failed: ") + strerror(errno));
++  }
++
++  if (can_lock_memory()) {
++    int lock_err = mlock(ptr, aligned_size);
++    if (lock_err != 0) {
++      munmap(ptr, aligned_size);
++      throw std::runtime_error(std::string("mlock failed: ") + strerror(errno));
+     }
++  } else {
++    std::cerr << timestamp() << " mem_alloc: WARN " << proc_info()
++              << " Cannot mlock (no privilege), proceeding anyway" << std::endl;
++  }
++
++  std::memset(ptr, 0, aligned_size);
++
++  int lock_fd = acquire_register_lock();
++  if (lock_fd < 0) {
++    munmap(ptr, aligned_size);
++    throw std::runtime_error("failed to acquire Ascend register lock");
++  }
++  auto devPtr = register_ptr(ptr, aligned_size);
++  release_register_lock(lock_fd);
++
++  if (devPtr == nullptr) {
++    munmap(ptr, aligned_size);
++    throw std::runtime_error(
++        "register_ptr failed (unable to register with Ascend)");
+   }
+ 
+   return reinterpret_cast<uintptr_t>(ptr);
+ }
+ 
+ void free_pinned_ptr(uintptr_t ptr) {
+-  unregister_ptr(reinterpret_cast<void *>(ptr));
+-  aclError err = aclrtFreeHost(reinterpret_cast<void *>(ptr));
+-  if (err != ACL_SUCCESS) {
+-    throw std::runtime_error("aclrtFreeHost failed: " + std::to_string(err));
++  void *void_ptr = reinterpret_cast<void *>(ptr);
++
++  // Must get size BEFORE unregister
++  size_t size =
++      lmc::HostRegisteredMemoryManager::GetInstance().getRecordSize(void_ptr);
++
++  unregister_ptr(void_ptr);
++
++  if (size > 0) {
++    munmap(void_ptr, size);
+   }
+ }
+ 
+-/*
+- * This function is potentially slow for the mbind
+- */
+ uintptr_t alloc_pinned_numa_ptr(std::size_t size, int node) {
+-  void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
++  size_t aligned_size = align_to_page_size(size);
++
++  void *ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+   if (ptr == MAP_FAILED) {
+     throw std::runtime_error(std::string("mmap failed: ") + strerror(errno));
+   }
+ 
+-  // Maximum of 64 numa nodes
+   unsigned long mask = 1UL << node;
+   long maxnode = 8 * sizeof(mask);
+-  int err = mbind(ptr, size, MPOL_BIND, &mask, maxnode,
++  int err = mbind(ptr, aligned_size, MPOL_BIND, &mask, maxnode,
+                   MPOL_MF_MOVE | MPOL_MF_STRICT);
+   if (err != 0) {
+-    munmap(ptr, size);
++    munmap(ptr, aligned_size);
+     throw std::runtime_error(std::string("mbind failed: ") + strerror(errno));
+   }
+ 
+-  memset(ptr, 0, size);
++  if (can_lock_memory()) {
++    int lock_err = mlock(ptr, aligned_size);
++    if (lock_err != 0) {
++      munmap(ptr, aligned_size);
++      throw std::runtime_error(std::string("mlock failed for NUMA memory: ") +
++                               strerror(errno));
++    }
++  }
++
++  std::memset(ptr, 0, aligned_size);
++
++  // Register with lock to avoid multi-process deadlock
++  int lock_fd = acquire_register_lock();
++  if (lock_fd < 0) {
++    munmap(ptr, aligned_size);
++    throw std::runtime_error("failed to acquire Ascend register lock");
++  }
++  auto devPtr = register_ptr(ptr, aligned_size);
++  release_register_lock(lock_fd);
+ 
+-  // as before we need to actually save the dev ptr for later reuse,
+-  // because acl APIs do not allow retrieving register dev ptr
+-  auto devPtr = register_ptr(ptr, size);
+   if (devPtr == nullptr) {
+-    munmap(ptr, size);
+-    aclError err = aclrtGetLastError(aclrtLastErrLevel::ACL_RT_THREAD_LEVEL);
+-    if (err != ACL_SUCCESS) {
+-      throw std::runtime_error(
+-          std::string("unable to register Pinned Numa HostPtr: ") +
+-          std::to_string(err));
+-    } else {
+-      throw std::runtime_error(
+-          std::string("unable to register Pinned Numa HostPtr."));
+-    }
++    free_pinned_numa_ptr(reinterpret_cast<uintptr_t>(ptr), aligned_size);
++    throw std::runtime_error("register_ptr failed for NUMA memory");
+   }
+ 
+   return reinterpret_cast<uintptr_t>(ptr);
+@@ -86,9 +211,10 @@ uintptr_t alloc_pinned_numa_ptr(std::size_t size, int node) {
+ 
+ void free_pinned_numa_ptr(uintptr_t p, std::size_t size) {
+   void *ptr = reinterpret_cast<void *>(p);
++  size_t aligned_size = align_to_page_size(size);
+ 
+   auto unRegErr = unregister_ptr(ptr);
+-  auto unMapErr = munmap(ptr, size);
++  auto unMapErr = munmap(ptr, aligned_size);
+   if (unRegErr) {
+     throw std::runtime_error("unregister_ptr failed: " +
+                              std::to_string(unRegErr));
+diff --git a/lmcache_ascend/v1/storage_backend/__init__.py b/lmcache_ascend/v1/storage_backend/__init__.py
+index 3370da9ed13c5af57e81fe849056d863eedbbeaf..41deb3c480c7272f03fbf36eb9fd1d925a047c3b 100644
+--- a/lmcache_ascend/v1/storage_backend/__init__.py
++++ b/lmcache_ascend/v1/storage_backend/__init__.py
+@@ -62,17 +62,19 @@ def CreateStorageBackends(
+     storage_backends: OrderedDict[str, StorageBackendInterface] = OrderedDict()
+     _skip = skip_backends or set()
+ 
++    use_nds_pd = config.enable_pd and config.pd_backend_mode == "nds"
+     if config.enable_pd:
+-        # First Party
+-        from lmcache_ascend.v1.storage_backend.pd import AscendPDBackend
+-
+         if config.use_layerwise:
+             raise ValueError(
+                 "Invalid LMCache-Ascend config: `enable_pd=true` is not compatible "
+                 "with `use_layerwise=true`. PD backend does not support layerwise "
+                 "mode (including pull/delay-pull paths). Disable one of them."
+             )
+-        storage_backends["PDBackend"] = AscendPDBackend(config, metadata)
++        if not use_nds_pd:
++            # First Party
++            from lmcache_ascend.v1.storage_backend.pd import AscendPDBackend
++
++            storage_backends["PDBackend"] = AscendPDBackend(config, metadata)
+ 
+     # TODO(Jiayi): The hierarchy is fixed for now
+     # NOTE(Jiayi): The local_cpu backend is always created because
+@@ -88,7 +90,7 @@ def CreateStorageBackends(
+     if metadata.role == "scheduler":
+         # For scheduler role, local_cpu_backend is None
+         pass
+-    elif not config.enable_pd or config.local_cpu:
++    elif not config.enable_pd or config.local_cpu or use_nds_pd:
+         if "LocalCPUBackend" in _skip:
+             pass  # Skipped — already exists
+         elif config.max_local_cpu_size > 0:
+@@ -103,6 +105,25 @@ def CreateStorageBackends(
+         else:
+             logger.info("No cpu memory is allocated as max_local_cpu_size <= 0")
+ 
++    if use_nds_pd and "PDBackend" not in _skip:
++        if local_cpu_backend is None:
++            raise ValueError(
++                "NDS PD requires a LocalCPUBackend staging pool. "
++                "Set max_local_cpu_size > 0."
++            )
++        # Third Party
++        from lmcache.v1.storage_backend.nds_pd_backend import NDSPDBackend
++
++        nds_pd_backend = NDSPDBackend(
++            config,
++            loop,
++            local_cpu_backend,
++            dst_device,
++            lmcache_worker,
++            metadata,
++        )
++        storage_backends[str(nds_pd_backend)] = nds_pd_backend
++
+     if config.enable_p2p and "P2PBackend" not in _skip:
+         if config.use_layerwise:
+             raise ValueError(

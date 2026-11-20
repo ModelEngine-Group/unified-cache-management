@@ -10,6 +10,8 @@ import types
 import unittest
 from collections import namedtuple
 from collections.abc import Callable
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -69,6 +71,8 @@ def _load_hma_methods(names):
             "_v41_whole_page_sizes",
             "_ascend_v41_whole_page_sizes",
             "select_transfer_views",
+            "FAWALoadTask",
+            "FAWAPendingLoad",
         )
     ]
     module = ast.Module(body=helpers + nodes, type_ignores=[])
@@ -82,12 +86,15 @@ def _load_hma_methods(names):
             self.tail_tokens = tail_tokens
 
     namespace = {
+        "__name__": __name__,
+        "dataclass": dataclass,
+        "field": field,
+        "Task": object,
+        "Future": Future,
         "math": math,
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
         "Optional": Optional,
-        "uses_partitioned_cache": lambda: False,
-        "cache_core_version": lambda: 0,
         "UcmKVStoreBaseV1": object,
         "round_up": lambda n, a: (n + a - 1) // a * a,
         "KVCacheGroupMeta": GroupMeta,
@@ -97,6 +104,9 @@ def _load_hma_methods(names):
         "FAWARequestDispatchMeta": types.SimpleNamespace,
         "UCMFAWAConnectorMetadata": object,
         "SchedulerOutput": object,
+        "RequestStatus": types.SimpleNamespace(
+            WAITING="waiting", PREEMPTED="preempted"
+        ),
         "extract_layer_index": lambda name: int(name.split(".")[1]),
         "logger": types.SimpleNamespace(
             info_once=lambda *_args: None, info=lambda *_args: None
@@ -178,6 +188,14 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         # Match the 0.30.0rc1 layer-outermost planner: MLA + indexer share
         # each page, while ring and SWA groups alias it with different IDs.
         ns = types.SimpleNamespace
+
+        class UniformTypeKVCacheSpecs(ns):
+            @property
+            def prefix_cacheable(self):
+                return all(
+                    spec.prefix_cacheable for spec in self.kv_cache_specs.values()
+                )
+
         mla_type = type("AscendMLAAttentionSpec", (ns,), {})
         swa_type = type("AscendSlidingWindowMLASpec", (ns,), {})
         ring_type = type("CircularBufferSpec", (ns,), {})
@@ -216,18 +234,16 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         groups = [
             ns(
                 layer_names=list(full),
-                kv_cache_spec=ns(
+                kv_cache_spec=UniformTypeKVCacheSpecs(
                     block_size=128,
-                    prefix_cacheable=True,
                     kv_cache_specs=full,
                 ),
             ),
             ns(layer_names=[ring_name], kv_cache_spec=ring),
             ns(
                 layer_names=list(windows),
-                kv_cache_spec=ns(
+                kv_cache_spec=UniformTypeKVCacheSpecs(
                     block_size=128,
-                    prefix_cacheable=True,
                     kv_cache_specs=windows,
                 ),
             ),
@@ -288,12 +304,14 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         self.assertEqual(connector.group_metas[2].tail_tokens, 256)
         self.assertEqual(connector.group_metas[2].tail_blocks, 2)
 
-    def test_ascend_v41_rejects_unsupported_replay_or_page_ownership(self):
+    def test_ascend_v41_rejects_cacheable_replay_or_invalid_page_ownership(self):
         for change in (
             "replay",
             "disabled_transfer",
             "missing_page",
-            "folded",
+            "unknown_member",
+            "wrong_folded",
+            "missing_indexer",
             "layer_stride",
             "context_parallel",
         ):
@@ -306,15 +324,24 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     cfg.kv_cache_groups[2].enable_kv_transfer = False
                 elif change == "missing_page":
                     cfg.kv_cache_tensors.pop()
-                elif change == "folded":
-                    folded = "model.layers.0.self_attn.indexer.k_cache_folded"
-                    cfg.kv_cache_groups[0].layer_names.append(folded)
-                    cfg.kv_cache_tensors[0].layers.append(folded)
-                    cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[folded] = next(
+                elif change in ("unknown_member", "wrong_folded"):
+                    member = (
+                        "model.layers.0.self_attn.unknown_cache"
+                        if change == "unknown_member"
+                        else "model.layers.1.self_attn.indexer.k_cache_folded"
+                    )
+                    cfg.kv_cache_groups[0].layer_names.append(member)
+                    cfg.kv_cache_tensors[0].layers.append(member)
+                    cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[member] = next(
                         iter(
                             cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs.values()
                         )
                     )
+                elif change == "missing_indexer":
+                    indexer = "model.layers.0.self_attn.indexer.k_cache"
+                    cfg.kv_cache_groups[0].layer_names.remove(indexer)
+                    cfg.kv_cache_tensors[0].layers.remove(indexer)
+                    del cfg.kv_cache_groups[0].kv_cache_spec.kv_cache_specs[indexer]
                 elif change == "layer_stride":
                     cfg.kv_cache_tensors[0].layer_stride = 128
                 else:
@@ -324,8 +351,91 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     methods["_init_group_metas"](connector)
 
-    def test_ascend_v41_registers_one_page_owner_and_roundtrips_scales(self):
+    @staticmethod
+    def _enable_ascend_bounded_replay(connector, window=256):
+        """Mirror vLLM-Ascend 0.32 AscendSlidingWindowMLASpec(bounded_replay=True)."""
+        group = connector._kv_cache_config.kv_cache_groups[2]
+        for spec in group.kv_cache_spec.kv_cache_specs.values():
+            spec.prefix_cacheable = False
+            spec.prefix_replay_tokens = window
+        return group
+
+    def test_ascend_v41_bounded_replay_persists_fa_pages_only(self):
+        for flatten in (False, True):
+            with self.subTest(scheduler_flattened=flatten):
+                methods, connector = self._ascend_v41_connector()
+                self._enable_ascend_bounded_replay(connector)
+                if flatten:
+                    for group in connector._kv_cache_config.kv_cache_groups:
+                        nested = getattr(group.kv_cache_spec, "kv_cache_specs", None)
+                        if nested:
+                            group.kv_cache_spec = next(iter(nested.values()))
+                methods["_init_group_metas"](connector)
+                self.assertEqual(connector.prefix_replay_tokens, 256)
+                self.assertEqual(connector.fa_group_ids, [0])
+                self.assertEqual(connector.window_group_ids, [])
+                self.assertEqual(connector.transient_group_ids, {1, 2})
+                # Group indices stay aligned with vLLM's block tables.
+                self.assertEqual(set(connector.group_metas), {0, 1, 2})
+                self.assertEqual(connector.group_metas[2].tail_tokens, 0)
+                self.assertEqual(connector.file_size, {"FA": 524288, "WA": 0})
+                self.assertEqual(
+                    sorted(connector.whole_page_sizes),
+                    [
+                        "model.layers.0.self_attn.long_kv_cache",
+                        "model.layers.1.self_attn.long_kv_cache",
+                    ],
+                )
+
+    def test_ascend_v41_accepts_ascend_circular_buffer_subclass(self):
         methods, connector = self._ascend_v41_connector()
+        ring_group = connector._kv_cache_config.kv_cache_groups[1]
+        base = type(ring_group.kv_cache_spec)
+        sub = type("AscendCircularBufferSpec", (base,), {})
+        ring_group.kv_cache_spec = sub(block_size=32, prefix_cacheable=False)
+        methods["_init_group_metas"](connector)
+        self.assertEqual(connector.transient_group_ids, {1})
+
+    def test_ascend_v41_bounded_replay_still_rejects_unsafe_layouts(self):
+        for change in ("fa_transient", "misaligned", "swa_block"):
+            with self.subTest(change=change):
+                methods, connector = self._ascend_v41_connector()
+                cfg = connector._kv_cache_config
+                if change == "fa_transient":
+                    # Only ring and replayed SWA may be dropped; FA never.
+                    self._enable_ascend_bounded_replay(connector)
+                    group = cfg.kv_cache_groups[0]
+                    for spec in group.kv_cache_spec.kv_cache_specs.values():
+                        spec.prefix_cacheable = False
+                elif change == "misaligned":
+                    # replay_start = hit - 255 would split a ratio-2 group.
+                    self._enable_ascend_bounded_replay(connector, window=255)
+                else:
+                    group = self._enable_ascend_bounded_replay(connector)
+                    group.kv_cache_spec.block_size = 256
+                with self.assertRaises(ValueError):
+                    methods["_init_group_metas"](connector)
+
+    def test_ascend_v41_registers_one_page_owner_and_roundtrips_scales(self):
+        self._assert_ascend_v41_page_roundtrip()
+
+    def test_ascend_v41_folded_page_roundtrips_all_members(self):
+        self._assert_ascend_v41_page_roundtrip(folded=True)
+
+    def _assert_ascend_v41_page_roundtrip(self, folded=False):
+        methods, connector = self._ascend_v41_connector()
+        if folded:
+            self._enable_ascend_bounded_replay(connector)
+            cfg = connector._kv_cache_config
+            group = cfg.kv_cache_groups[0]
+            indexer = "model.layers.0.self_attn.indexer.k_cache"
+            folded_name = indexer + "_folded"
+            group.layer_names.append(folded_name)
+            group.kv_cache_spec.kv_cache_specs[folded_name] = copy.copy(
+                group.kv_cache_spec.kv_cache_specs[indexer]
+            )
+            cfg.kv_cache_tensors[0].layers.append(folded_name)
+            cfg.kv_cache_tensors[0].block_stride = 327680
         methods["_init_group_metas"](connector)
         tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
         layout_node = next(
@@ -384,19 +494,49 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         for name, size in connector.whole_page_sizes.items():
             caches[name] = Tensor(size)
         register["register_kv_caches"](connector, caches)
-        self.assertEqual(set(connector.group_layouts), {0, 2})
+        self.assertEqual(set(connector.group_layouts), {0} if folded else {0, 2})
         layout = connector.group_layouts[0]
         self.assertEqual(len(layout.base_ptrs), 2)
-        self.assertEqual(layout.segment_tensor_size_list(128, 128), [262144] * 2)
+        page_sizes = [327680, 262144] if folded else [262144, 262144]
+        self.assertEqual(layout.segment_tensor_size_list(128, 128), page_sizes)
+        self.assertEqual(
+            set(layout.kvcaches),
+            {
+                "model.layers.0.self_attn.long_kv_cache",
+                "model.layers.1.self_attn.long_kv_cache",
+            },
+        )
         np = __import__("numpy")
         src = layout.extract_addrs(np.array([1]))
         dst = layout.extract_addrs(np.array([2]))
         for col, size in enumerate(layout.segment_tensor_size_list(128, 128)):
             # Cover main KV, the separate indexer/scales, and page padding.
-            pattern = bytes(range(256)) * (size // 256)
+            if folded and col == 0:
+                regions = (
+                    ("main_kv", 65536, 17),
+                    ("indexer", 8192, 34),
+                    ("folded", 4096, 51),
+                    ("padding", size - 77824, 68),
+                )
+                pattern = b"".join(
+                    bytes([value]) * length for _, length, value in regions
+                )
+            else:
+                regions = (("page", size, 0),)
+                pattern = bytes(range(256)) * (size // 256)
             ctypes.memmove(int(src[0, col]), pattern, size)
-            ctypes.memmove(int(dst[0, col]), int(src[0, col]), size)
+            saved = ctypes.string_at(int(src[0, col]), size)
+            ctypes.memset(int(src[0, col]), 0, size)
+            ctypes.memmove(int(dst[0, col]), saved, size)
             self.assertEqual(ctypes.string_at(int(dst[0, col]), size), pattern)
+            offset = 0
+            for label, length, _ in regions:
+                with self.subTest(folded=folded, page=col, region=label):
+                    self.assertEqual(
+                        ctypes.string_at(int(dst[0, col]) + offset, length),
+                        pattern[offset : offset + length],
+                    )
+                offset += length
             self.assertEqual(
                 ctypes.string_at(int(layout.base_ptrs[col]), size), bytes(size)
             )
@@ -426,6 +566,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             with self.subTest(is_v41=is_v41, has_hit=has_hit, has_window=has_window):
                 events = []
                 request = types.SimpleNamespace(
+                    load_async=False,
                     load_keys=[b"key"] if has_hit else [],
                     load_hash_start=0,
                     load_hash_end=1,
@@ -433,31 +574,37 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 )
                 metadata = types.SimpleNamespace(request_meta={"req": request})
 
-                def submit(_request_id, kind, *_args):
-                    events.append(kind)
-                    return kind
+                def submit(_request_id, kind, *_args, **_kwargs):
+                    events.append((kind, _kwargs.get("event_handle")))
+                    return types.SimpleNamespace(request_id=_request_id, label=kind)
 
                 connector = types.SimpleNamespace(
                     is_v41_layout=is_v41,
                     device=types.SimpleNamespace(
-                        synchronize=lambda: events.append("sync")
+                        synchronize=lambda: events.append("sync"),
+                        destroy_event_handle=lambda h: events.append(("destroy", h)),
                     ),
                     _get_connector_metadata=lambda: metadata,
+                    _get_event_handle=lambda: 7,
                     fa_store=object(),
                     window_group_ids=[1] if has_window else [],
                     wa_store=object() if has_window else None,
                     _extract_fa_ptr=lambda *_args: [],
                     _extract_wa_ptr=lambda *_args: [],
                     _submit_load_task=submit,
-                    _wait_all_load_task=lambda tasks: events.append(tuple(tasks)),
+                    _pending_fawa_loads={},
+                    _wait_all_load_task=lambda tasks: events.append(
+                        tuple(task.label for task in tasks)
+                    ),
                 )
                 methods["start_load_kv"](connector, None)
-                expected = ["sync"] if is_v41 and has_hit else []
                 if has_hit:
                     labels = ["FA", "WA"] if has_window else ["FA"]
-                    expected.extend([*labels, tuple(labels)])
+                    expected = [(label, 7) for label in labels]
+                    expected.append(tuple(labels))
+                    expected.append(("destroy", 7))
                 else:
-                    expected.append(())
+                    expected = [()]
                 self.assertEqual(events, expected)
 
     def test_spec_formats_select_packed_value_scale_descriptors(self):
@@ -861,6 +1008,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 {"tensor_size": 584},
             ),
             _set_default_shm_buffer_capacity=lambda _config: None,
+            _get_world_size=lambda: 1,
+            _configure_numa_placement=lambda _config: None,
             _summarize_store_config=lambda config: config,
             _publish_block_size=lambda size, store_suffix: published_sizes.append(
                 (size, store_suffix)
@@ -883,20 +1032,14 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             create_connector=lambda _name, config, _path: config
         )
         cases = (
-            ("FA", 2, None, None),
-            ("WA", 2, None, 512),
-            ("WA", 0, None, None),
-            ("WA", 2, 256, 256),
-            ("WA", 2, 2048, 2048),
-            ("FA", 2, 256, 256),
-            ("FA", 1, None, None),
-            ("WA", 1, None, 512),
-            ("WA", 1, 2048, 2048),
+            ("FA", None, None),
+            ("WA", None, 512),
+            ("WA", 256, 256),
+            ("WA", 2048, 2048),
+            ("FA", 256, 256),
         )
-        for label, version, explicit, expected in cases:
-            with self.subTest(label=label, version=version, explicit=explicit):
-                method.__globals__["uses_partitioned_cache"] = lambda: version == 2
-                method.__globals__["cache_core_version"] = lambda: version
+        for label, explicit, expected in cases:
+            with self.subTest(label=label, explicit=explicit):
                 supplied = {
                     "cache_buffer_capacity_gb": 10,
                     "io_direct": False,
@@ -1229,6 +1372,11 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             num_computed,
             prefix,
             reverse,
+            *,
+            request_status=None,
+            num_preemptions=0,
+            request_meta=None,
+            persist_threshold=0,
         ):
             class Rank:
                 @staticmethod
@@ -1239,11 +1387,15 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 def lookup_on_reverse(_store, keys):
                     return min(reverse, len(keys) - 1)
 
-            request_meta = {}
+            if request_meta is None:
+                request_meta = {}
             self_obj = types.SimpleNamespace(
+                use_request_async_load=False,
+                _pending_async_load_dispatches={},
+                _async_load_req_ids=set(),
                 hash_block_size=32,
                 is_v41_layout=is_v41,
-                persist_token_threshold=0,
+                persist_token_threshold=persist_threshold,
                 load_tokens_threshold=load_threshold,
                 _seed=b"seed",
                 requests_meta=request_meta,
@@ -1260,6 +1412,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             )
             request = types.SimpleNamespace(
                 request_id="req",
+                status=request_status or methods["RequestStatus"].WAITING,
+                num_preemptions=num_preemptions,
                 num_tokens=num_tokens,
                 all_token_ids=list(range(num_tokens)),
             )
@@ -1268,7 +1422,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 methods["_lookup_external_hit_blocks"], self_obj
             )
             matched, need_load = method(request, num_computed)
-            return matched, need_load, request_meta["req"]
+            return matched, need_load, request_meta.get("req")
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 3)
         self.assertFalse(need_load)
@@ -1293,6 +1447,38 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         matched, _, meta = run(129, True, 96, 32, 2, 2)
         self.assertEqual(matched, 0)
         self.assertEqual(meta.token_processed, 32)
+
+        for persist_threshold, load_threshold in ((128, 0), (0, 2048)):
+            for preempted in (False, True):
+                with self.subTest(
+                    early_return="persist" if persist_threshold else "load",
+                    preempted=preempted,
+                ):
+                    old_meta = types.SimpleNamespace(vllm_block_ids=([99],))
+                    unrelated_meta = object()
+                    request_meta = {"req": old_meta, "other": unrelated_meta}
+                    matched, need_load, meta = run(
+                        128,
+                        True,
+                        load_threshold,
+                        0,
+                        3,
+                        3,
+                        request_status=(
+                            methods["RequestStatus"].PREEMPTED
+                            if preempted
+                            else methods["RequestStatus"].WAITING
+                        ),
+                        num_preemptions=int(preempted),
+                        request_meta=request_meta,
+                        persist_threshold=persist_threshold,
+                    )
+                    self.assertEqual((matched, need_load), (0, False))
+                    # Every fresh lookup clears stale metadata, including
+                    # retries of waiting requests that were never admitted.
+                    self.assertNotIn("req", request_meta)
+                    self.assertIsNone(meta)
+                    self.assertIs(request_meta["other"], unrelated_meta)
 
     def test_fawa_short_window_slice_clips_before_first_block(self):
         methods = _load_hma_methods({"_slice_group_block_ids"})
@@ -1475,7 +1661,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     _extract_fa_ptr=lambda keys, *_args, **_kwargs: __import__(
                         "numpy"
                     ).zeros((len(keys), 2), dtype="uint64"),
-                    _get_dump_event_handle=lambda: 1,
+                    _get_event_handle=lambda: 1,
                     _submit_dump_task=submit,
                     tp_size=tp_size,
                     tp_rank=rank,
@@ -1510,6 +1696,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         connector = types.SimpleNamespace(
             prefix_replay_tokens=128,
+            _pending_async_load_dispatches={},
+            _async_load_req_ids=set(),
             hash_block_size=64,
             transient_group_ids={1},
             window_group_ids=[],
@@ -1551,6 +1739,91 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             ]
             self.assertEqual(dispatch.dump_keys, expected)
             self.assertEqual(request.token_processed, computed + 64)
+
+    def test_async_resume_uses_full_snapshot_then_appends_cached_blocks(self):
+        methods = _load_hma_methods(
+            {
+                "update_state_after_alloc",
+                "build_connector_meta",
+                "_generate_dispatch_meta",
+                "_slice_group_block_ids",
+            }
+        )
+        methods["UCMFAWAConnectorMetadata"] = lambda requests, preempted: (
+            types.SimpleNamespace(request_meta=requests, preempted_req_ids=preempted)
+        )
+        for block_wise in (False, True):
+            with self.subTest(block_wise=block_wise):
+                request = types.SimpleNamespace(
+                    ucm_block_ids=[bytes([i]) for i in range(4)],
+                    total_hit_block_num=2,
+                    hbm_hit_block_num=0,
+                    token_processed=128,
+                    num_token_ids=256,
+                    vllm_block_ids=(),
+                )
+                connector = types.SimpleNamespace(
+                    use_request_async_load=True,
+                    prefix_replay_tokens=0,
+                    _pending_async_load_dispatches={},
+                    _async_load_req_ids=set(),
+                    hash_block_size=64,
+                    transient_group_ids=set(),
+                    window_group_ids=[1],
+                    group_metas={
+                        0: types.SimpleNamespace(token_block_size=64),
+                        1: types.SimpleNamespace(
+                            token_block_size=64, tail_tokens=64, tail_blocks=1
+                        ),
+                    },
+                    requests_meta={"req": request},
+                    wa_dump_block_wise=block_wise,
+                )
+                for name in ("_generate_dispatch_meta", "_slice_group_block_ids"):
+                    setattr(connector, name, types.MethodType(methods[name], connector))
+                methods["update_state_after_alloc"](
+                    connector,
+                    types.SimpleNamespace(request_id="req"),
+                    types.SimpleNamespace(get_block_ids=lambda: ([10, 11], [20, 21])),
+                    128,
+                )
+                output = types.SimpleNamespace(
+                    scheduled_new_reqs=[],
+                    scheduled_cached_reqs=types.SimpleNamespace(req_ids=[]),
+                    num_scheduled_tokens={},
+                    finished_req_ids=set(),
+                    preempted_req_ids=set(),
+                )
+                load = methods["build_connector_meta"](connector, output).request_meta[
+                    "req"
+                ]
+                self.assertTrue(load.load_async)
+                self.assertEqual(load.load_vllm_block_ids, ([10, 11], [21]))
+                # After remote completion, vLLM sends the entire block table.
+                output.scheduled_new_reqs = [
+                    types.SimpleNamespace(
+                        req_id="req", block_ids=([10, 11, 12], [20, 21, 22])
+                    )
+                ]
+                output.num_scheduled_tokens = {"req": 64}
+                resumed = methods["build_connector_meta"](
+                    connector, output
+                ).request_meta["req"]
+                self.assertEqual(request.vllm_block_ids, ([10, 11, 12], [20, 21, 22]))
+                self.assertEqual(resumed.load_keys, [])
+                self.assertEqual(resumed.dump_vllm_block_ids, ([12], [22]))
+                output.scheduled_new_reqs = []
+                output.scheduled_cached_reqs = types.SimpleNamespace(
+                    req_ids=["req"], new_block_ids=[([13], [23])], resumed_req_ids=set()
+                )
+                cached = methods["build_connector_meta"](
+                    connector, output
+                ).request_meta["req"]
+                self.assertEqual(
+                    request.vllm_block_ids, ([10, 11, 12, 13], [20, 21, 22, 23])
+                )
+                self.assertEqual(cached.load_keys, [])
+                self.assertEqual(cached.dump_vllm_block_ids, ([13], [23]))
 
     def test_invalid_resolver_result_fails_closed(self):
         methods = _load_hma_methods({"_init_group_metas"})

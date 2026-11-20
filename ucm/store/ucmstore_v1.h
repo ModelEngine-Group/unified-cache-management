@@ -147,6 +147,25 @@ public:
     virtual Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) = 0;
 
     /**
+     * @brief Load shards into cache slots, then apply per-tensor token filters.
+     *
+     * Default: unsupported. CacheStore implements DDR-only for now: ensure each
+     * shard resides in a cache slot and obtain the slot pointer; splicing selected
+     * ranges into the caller buffer is left for a later revision.
+     *
+     * @param task Description of shards (DDR: one host address per shard).
+     * @param filter Per-shard filters; filter.size() must equal task.size().
+     * @return Expected<TaskHandle> on success, or Unsupported / InvalidParam / etc.
+     */
+    virtual Expected<Detail::TaskHandle> LoadOnToken(Detail::TaskDesc task,
+                                                     const std::vector<Detail::TokenFilter>& filter)
+    {
+        (void)task;
+        (void)filter;
+        return Status::Unsupported();
+    }
+
+    /**
      * @brief Start an asynchronous dump (device → storage) transfer.
      *
      * @param task Description of shards to be stored.

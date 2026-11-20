@@ -43,6 +43,9 @@ public:
     MOCK_METHOD((UC::Status), CheckHealth, (), (override));
     MOCK_METHOD((UC::Expected<UC::Detail::TaskHandle>), Load, (UC::Detail::TaskDesc task),
                 (override));
+    MOCK_METHOD((UC::Expected<UC::Detail::TaskHandle>), LoadOnToken,
+                (UC::Detail::TaskDesc task, const std::vector<UC::Detail::TokenFilter>& filter),
+                (override));
     MOCK_METHOD((UC::Expected<UC::Detail::TaskHandle>), Dump, (UC::Detail::TaskDesc task),
                 (override));
     MOCK_METHOD((UC::Expected<bool>), Check, (UC::Detail::TaskHandle taskId), (override));

@@ -49,7 +49,7 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::vector<kv::Key> ToRouterKeys(const std::vector<CacheKey>& keys)
+std::vector<kv::Key> ToRouterKeys(const std::vector<ResolvedCacheKey>& keys)
 {
     std::vector<kv::Key> routerKeys;
     routerKeys.reserve(keys.size());
@@ -57,7 +57,7 @@ std::vector<kv::Key> ToRouterKeys(const std::vector<CacheKey>& keys)
     return routerKeys;
 }
 
-std::vector<kv::Key> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
+std::vector<kv::Key> ExtractEntryKeys(const std::vector<ResolvedKVBuffer>& entries)
 {
     std::vector<kv::Key> keys;
     keys.reserve(entries.size());
@@ -302,8 +302,8 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         }
         task->transportTasks.push_back(std::move(transportTask));
     }
-    std::vector<KVBuffer>{}.swap(task->entries);
-    std::vector<CacheKey>{}.swap(task->keys);
+    std::vector<ResolvedKVBuffer>{}.swap(task->entries);
+    std::vector<ResolvedCacheKey>{}.swap(task->keys);
     task->remainingTransportTasks.store(task->transportTasks.size(), std::memory_order_release);
     task->remainingTransportSendTasks.store(task->transportTasks.size(), std::memory_order_release);
     return Status::OK();

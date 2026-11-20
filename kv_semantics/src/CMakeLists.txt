@@ -24,6 +24,7 @@ target_include_directories(kv_transport
         ${CMAKE_CURRENT_SOURCE_DIR}/trans
         ${CMAKE_CURRENT_SOURCE_DIR}/trans_provider
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/client
         ${CMAKE_CURRENT_SOURCE_DIR}/common/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/common/ds
         ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
@@ -129,6 +130,7 @@ target_include_directories(kv_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
         ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
         ${CMAKE_CURRENT_SOURCE_DIR}/client
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/third_party/xxhash
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
 target_link_libraries(kv_client PRIVATE kv_metrics)

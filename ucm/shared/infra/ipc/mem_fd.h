@@ -78,6 +78,19 @@ public:
     int32_t Fd() const { return fd_; }
     size_t Size() const { return size_; }
 
+    /* Instantiate the backing pages without a userspace fault. HugeTLB uses
+     * the calling thread's allocation policy, not this mapping's mbind policy. */
+    Status Preallocate()
+    {
+        if (addr_ == nullptr || size_ == 0) {
+            return Status::InvalidParam("cannot preallocate an unmapped memfd");
+        }
+        if (::fallocate(fd_, 0, 0, static_cast<off_t>(size_)) != 0) {
+            return OsError("fallocate memfd failed", errno);
+        }
+        return Status::OK();
+    }
+
 private:
     Status Map(size_t size, const char* error)
     {

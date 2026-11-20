@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -24,17 +24,18 @@
 #include "kv_client_impl.h"
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <functional>
 #include <iterator>
-#include <limits>
 #include <thread>
 #include <utility>
 #include "device.h"
-#include "event.h"
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "logger.h"
 #include "router/config.h"
 #include "router/router.h"
+#include "trans_types.h"
 #include "utils/config_utils.h"
 
 namespace kv {
@@ -56,24 +57,16 @@ bool GetSubmitMetrics(AsuOpType opType, SubmitMetrics& ids)
                    &KV_METRIC("kv_client_query_errors_total")};
             return true;
         case AsuOpType::LOAD:
+        case AsuOpType::BATCH_LOAD:
             ids = {&KV_METRIC("kv_client_load_requests_total"),
                    &KV_METRIC("kv_client_load_entries_total"),
                    &KV_METRIC("kv_client_load_errors_total")};
             return true;
         case AsuOpType::STORE:
+        case AsuOpType::BATCH_STORE:
             ids = {&KV_METRIC("kv_client_store_requests_total"),
                    &KV_METRIC("kv_client_store_entries_total"),
                    &KV_METRIC("kv_client_store_errors_total")};
-            return true;
-        case AsuOpType::BATCH_LOAD:
-            ids = {&KV_METRIC("kv_client_batch_load_requests_total"),
-                   &KV_METRIC("kv_client_batch_load_entries_total"),
-                   &KV_METRIC("kv_client_batch_load_errors_total")};
-            return true;
-        case AsuOpType::BATCH_STORE:
-            ids = {&KV_METRIC("kv_client_batch_store_requests_total"),
-                   &KV_METRIC("kv_client_batch_store_entries_total"),
-                   &KV_METRIC("kv_client_batch_store_errors_total")};
             return true;
         case AsuOpType::DELETE:
             ids = {&KV_METRIC("kv_client_delete_requests_total"),
@@ -114,14 +107,6 @@ KvClientImpl::KvClientImpl(TransportFactory transportFactory, ViewServerFactory 
 
 KvClientImpl::~KvClientImpl() { Shutdown(); }
 
-Status KvClientImpl::Init(const std::string& configPath)
-{
-    KvClientConfig config;
-    auto status = LoadConfig(configPath, config);
-    if (!status.ok()) { return status; }
-    return Init(config);
-}
-
 Status KvClientImpl::Init(const KvClientConfig& config)
 {
     if (initialized_) {
@@ -133,6 +118,7 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     }
 
     config_ = config;
+    keyResolver_ = CreateDefaultKeyResolver(config.keyResolution);
     viewServer_ = viewServerFactory_(config);
     if (viewServer_ == nullptr) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "view server factory returned null");
@@ -179,6 +165,11 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     worker_ = std::thread(&KvClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
+    const auto& resolution = config_.keyResolution;
+    const char* engine = resolution.engine == InferenceEngine::VLLM_ASCEND ? "vllm_ascend"
+                         : resolution.engine == InferenceEngine::SGLANG    ? "sglang"
+                                                                           : "generic";
+    KV_INFO("KVClient initialized: engine={}", engine);
     return Status::OK();
 }
 
@@ -241,57 +232,41 @@ Status KvClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                const IoOptions& options)
 {
-    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId, options);
     RecordSubmit(AsuOpType::QUERY, keys.size(), status);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
 
-Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                               const IoOptions& options)
 {
-    auto status = SubmitAsync(AsuOpType::LOAD, entries, taskId);
-    RecordSubmit(AsuOpType::LOAD, entries.size(), status);
+    const auto useBatchIo =
+        entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
+    const auto opType = useBatchIo ? AsuOpType::BATCH_LOAD : AsuOpType::LOAD;
+    auto status = SubmitAsync(opType, entries, taskId, options);
+    RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                std::uintptr_t eventHandle)
+                                const IoOptions& options)
 {
-    auto status = SubmitAsync(AsuOpType::STORE, entries, taskId, eventHandle);
-    RecordSubmit(AsuOpType::STORE, entries.size(), status);
+    const auto useBatchIo =
+        entries.size() > 1 || (entries.size() == 1 && config_.useBatchIoForSingleKey);
+    const auto opType = useBatchIo ? AsuOpType::BATCH_STORE : AsuOpType::STORE;
+    auto status = SubmitAsync(opType, entries, taskId, options);
+    RecordSubmit(opType, entries.size(), status);
     return status;
 }
 
-Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                 const IoOptions& options)
 {
-    return StoreAsync(entries, taskId, 0);
-}
-
-Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
-{
-    auto status = SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
-    RecordSubmit(AsuOpType::BATCH_LOAD, entries.size(), status);
-    return status;
-}
-
-Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                                     std::uintptr_t eventHandle)
-{
-    auto status = SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
-    RecordSubmit(AsuOpType::BATCH_STORE, entries.size(), status);
-    return status;
-}
-
-Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
-{
-    return BatchStoreAsync(entries, taskId, 0);
-}
-
-Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
-{
-    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::DELETE, keys, taskId, options);
     RecordSubmit(AsuOpType::DELETE, keys.size(), status);
     return status;
 }
@@ -426,7 +401,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId, std::uintptr_t eventHandle)
+                                 TaskId& taskId, const IoOptions& options)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -445,9 +420,20 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
     auto ctx = std::make_unique<ClientTask>();
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
-    ctx->prerequisiteEventHandle = eventHandle;
+    ctx->prerequisite = options.prerequisite;
     ctx->viewSnapshot = snapshot;
-    ctx->entries = entries;
+    ctx->entries.reserve(entries.size());
+    for (const auto& entry : entries) {
+        ResolvedKVBuffer resolvedKVBuffer;
+        auto status = keyResolver_->Resolve(entry.key, options.kvns, resolvedKVBuffer.key);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+        resolvedKVBuffer.buffer = entry.buffer;
+        resolvedKVBuffer.offset = entry.offset;
+        ctx->entries.push_back(std::move(resolvedKVBuffer));
+    }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
         for (auto& entry : ctx->entries) {
@@ -491,7 +477,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
-                                 TaskId& taskId)
+                                 TaskId& taskId, const IoOptions& options)
 {
     const auto taskStart = std::chrono::steady_clock::now();
     auto snapshot = GetSnapshot();
@@ -510,7 +496,17 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
     ctx->submittedAt = taskStart;
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
-    ctx->keys = keys;
+    ctx->prerequisite = options.prerequisite;
+    ctx->keys.reserve(keys.size());
+    for (const auto& key : keys) {
+        ResolvedCacheKey resolvedKey;
+        auto status = keyResolver_->Resolve(key, options.kvns, resolvedKey);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+        ctx->keys.push_back(std::move(resolvedKey));
+    }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
 
@@ -556,8 +552,14 @@ void KvClientImpl::WorkerLoop()
             KV_METRIC("kv_client_task_queue_duration_seconds"),
             std::chrono::duration<double>(ctx->processingStartedAt - ctx->enqueuedAt).count());
         auto status = deviceStatus;
-        if (status.ok() && ctx->prerequisiteEventHandle != 0) {
-            status = runtime::SynchronizeEvent(ctx->prerequisiteEventHandle);
+        if (status.ok() && ctx->prerequisite) {
+            try {
+                status = ctx->prerequisite();
+            } catch (const std::exception& error) {
+                status = Status::Error(StatusCode::INTERNAL_ERROR, error.what());
+            } catch (...) {
+                status = Status::Error(StatusCode::INTERNAL_ERROR, "prerequisite callback threw");
+            }
         }
         if (status.ok()) {
             status = taskManager_.Process(ctx);
@@ -930,11 +932,6 @@ std::vector<NodeId> KvClientImpl::GetSortedAsuIds(const GlobalView& view)
     return asuIds;
 }
 
-Status KvClientImpl::LoadConfig(const std::string& configPath, KvClientConfig& config)
-{
-    return LoadKvClientConfig(configPath, config);
-}
-
 Status KvClientImpl::WithContext(Status status, const std::string& context)
 {
     if (context.empty()) { return status; }
@@ -980,7 +977,7 @@ extern "C" Status UcmAsuLoadKvClientConfig(const char* configPath, KvClientConfi
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "UcmAsuLoadKvClientConfig received null argument");
     }
-    return LoadKvClientConfig(configPath, *config);
+    return KvClientConfig::LoadFromFile(configPath, *config);
 }
 
 }  // namespace kv

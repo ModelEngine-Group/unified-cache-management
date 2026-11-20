@@ -320,9 +320,9 @@ private:
                 return iNode;
             }
         }
-        /* All ranks may pin a ready or already-owned shared key. Only the
-         * selected rank may create or take ownership of a key that needs a
-         * host-backend fill, because HAL exposes only its local segment to host. */
+        /* All ranks may pin a ready or already-owned shared key. Distributed
+         * loads use the same preferred rank for Get and next-shard Prealloc,
+         * so the selected filler owns its preallocated slot. */
         if (!mayOwn) { return kInvalid; }
 
         auto* targetLock = layout.LockOf(iBucket);
