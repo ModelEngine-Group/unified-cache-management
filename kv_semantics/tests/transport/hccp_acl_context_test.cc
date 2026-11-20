@@ -151,9 +151,9 @@ TEST_F(HccpAclContextTest, ScopedContextBindsWhenContextNull)
 
 TEST_F(HccpAclContextTest, ScopedContextSwitchesAndRestoresAcrossDevices)
 {
-    std::int32_t deviceCount = 0;
+    std::uint32_t deviceCount = 0;
     ASSERT_EQ(aclrtGetDeviceCount(&deviceCount), ACL_SUCCESS);
-    if (deviceCount < 2) { GTEST_SKIP() << "requires at least two ACL devices"; }
+    if (deviceCount < 2U) { GTEST_SKIP() << "requires at least two ACL devices"; }
 
     ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
     aclrtContext context0 = nullptr;
