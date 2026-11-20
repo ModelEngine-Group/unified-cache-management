@@ -108,6 +108,9 @@ public:
             return Status::InvalidParam("LoadOnToken filter size({}) != shards({})", filter.size(),
                                         task.size());
         }
+        if (task.empty()) {
+            return Status::InvalidParam("LoadOnToken requires at least one shard");
+        }
         for (const auto& shard : task) {
             if (shard.addrs.size() != 1 || shard.addrs.front() == nullptr) {
                 return Status::InvalidParam("ddr LoadOnToken shard({}) requires one host address",
