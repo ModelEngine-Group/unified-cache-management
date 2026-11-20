@@ -148,6 +148,25 @@ TEST_F(UCCache2TransManagerTest, LoadTaskIsRoutedToLoadQueue)
     EXPECT_EQ(task->desc[0].index, 0);
 }
 
+TEST_F(UCCache2TransManagerTest, LoadOnTokenTaskIsRoutedToLoadQueue)
+{
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{UC::Detail::TokenRange{0, 16, 4}}};
+    auto handle = mgr_.Submit({Task::Type::LOAD_ON_TOKEN, MakeDesc(1), filter});
+    ASSERT_TRUE(handle.HasValue());
+    ASSERT_EQ(FakeLoadQueue::submitted.size(), 1);
+    ASSERT_EQ(FakeDumpQueue::submitted.size(), 0);
+    const auto& task = FakeLoadQueue::submitted.front().first;
+    EXPECT_EQ(task->id, handle.Value());
+    EXPECT_EQ(task->type, Task::Type::LOAD_ON_TOKEN);
+    ASSERT_EQ(task->filter.size(), 1);
+    ASSERT_EQ(task->filter[0].ranges.size(), 1);
+    ASSERT_EQ(task->filter[0].ranges[0].size(), 1);
+    EXPECT_EQ(task->filter[0].ranges[0][0].offset, 0);
+    EXPECT_EQ(task->filter[0].ranges[0][0].length, 16);
+    EXPECT_EQ(task->filter[0].ranges[0][0].dstOffset, 4);
+}
+
 TEST_F(UCCache2TransManagerTest, DumpTaskIsRoutedToDumpQueue)
 {
     auto handle = mgr_.Submit({Task::Type::DUMP, MakeDesc(1)});

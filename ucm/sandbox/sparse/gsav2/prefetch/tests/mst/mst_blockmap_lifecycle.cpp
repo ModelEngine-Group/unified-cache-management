@@ -69,8 +69,8 @@ struct LifecycleFixture {
 
 TEST(BlockMapLifecycle, SetBlocksMapThenDelBlocksMapClearsState)
 {
-    // BUG-FOCUS: DelReqIDRun erases mSparseSeqLen but NOT mAllBlocksHash.
-    // Documented: assert the sparseSeqLen is cleared while the hash leaks.
+    // L-4 fixed: DelReqIDRun erases mAllBlocksHash as well, so the full
+    // per-request state is cleaned on DelBlocksMap.
     LifecycleFixture f;
     f.Setup();
     std::vector<BlockId> hashes = {MakeBlock(1), MakeBlock(2)};
@@ -83,8 +83,8 @@ TEST(BlockMapLifecycle, SetBlocksMapThenDelBlocksMapClearsState)
     f.engine->DelBlocksMap("req1");
     // mSparseSeqLen IS cleared:
     EXPECT_FALSE(f.engine->mSparseSeqLen.count("req1"));
-    // mAllBlocksHash is NOT cleared (bug). When fixed, flip to EXPECT_FALSE.
-    EXPECT_TRUE(f.engine->mAllBlocksHash.count("req1"));
+    // mAllBlocksHash is cleared as well (L-4 fixed).
+    EXPECT_FALSE(f.engine->mAllBlocksHash.count("req1"));
     f.TearDown();
 }
 
