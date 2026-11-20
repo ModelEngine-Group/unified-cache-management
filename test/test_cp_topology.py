@@ -621,5 +621,92 @@ class LayerLoadWaitTests(unittest.TestCase):
         wait.assert_called_once_with(task)
 
 
+class DCPRecoveryTests(unittest.TestCase):
+    def test_keys_cover_entire_logical_block_and_keep_shard_order(self):
+        import hashlib
+        import pickle
+
+        connector = next(
+            n
+            for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "UCMCPConnector"
+        )
+        method = next(
+            n
+            for n in connector.body
+            if isinstance(n, ast.FunctionDef) and n.name == "_bind_request_block_hasher"
+        )
+        source = ast.parse(
+            (MODULE.parent / "request_hasher.py").read_text(encoding="utf-8")
+        )
+        hasher_class = next(
+            n
+            for n in source.body
+            if isinstance(n, ast.ClassDef) and n.name == "RequestHasher"
+        )
+        ns = {
+            "hashlib": hashlib,
+            "pickle": pickle,
+            "_validate_request_hash_semantics": lambda request: None,
+            "_generate_extra_keys": lambda *args: (None, 0),
+            "KVConnectorRole": SimpleNamespace(SCHEDULER="scheduler"),
+        }
+        code = ast.Module(
+            body=[
+                ast.ImportFrom(
+                    module="__future__", names=[ast.alias(name="annotations")], level=0
+                ),
+                hasher_class,
+                method,
+            ],
+            type_ignores=[],
+        )
+        exec(compile(ast.fix_missing_locations(code), str(MODULE), "exec"), ns)
+        hasher = ns["RequestHasher"]("logical_block_v1")
+        worker = SimpleNamespace(
+            cp_world_size=2,
+            block_size=256,
+            _role="scheduler",
+            request_hasher=hasher,
+            _seed=hasher.seed,
+        )
+        ns["_bind_request_block_hasher"](worker)
+        a = SimpleNamespace(all_token_ids=[1] * 128 + [2] * 128)
+        b = SimpleNamespace(all_token_ids=[1] * 128 + [3] * 128)
+        ka, kb = worker.request_block_hasher(a), worker.request_block_hasher(b)
+        self.assertEqual(len(ka), 2)
+        self.assertTrue(set(ka).isdisjoint(kb))
+        self.assertEqual(worker.request_block_hasher(a), ka)
+        self.assertNotEqual(ka[0], ka[1])
+        a.all_token_ids += [4] * 255
+        self.assertEqual(worker.request_block_hasher(a), ka)
+        a.all_token_ids += [4]
+        self.assertEqual(len(worker.request_block_hasher(a)), 4)
+        self.assertEqual(worker.request_block_hasher(a)[:2], ka)
+
+    def test_direct_and_layerwise_load_disable_distributed_filler_for_dcp(self):
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and any(k.arg == "distribute_backend_load" for k in n.keywords)
+        ]
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            expr = next(
+                k.value for k in call.keywords if k.arg == "distribute_backend_load"
+            )
+            evaluate = compile(ast.Expression(expr), str(MODULE), "eval")
+            for mla in [True, False]:
+                for dcp in [1, 2, 8]:
+                    self.assertEqual(
+                        eval(
+                            evaluate,
+                            {"self": SimpleNamespace(is_mla=mla, cp_world_size=dcp)},
+                        ),
+                        mla and dcp == 1,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

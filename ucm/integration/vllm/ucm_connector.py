@@ -172,6 +172,8 @@ def build_kv_hash_meta(vllm_config: "VllmConfig", rank_id: int) -> str:
             vllm_config.parallel_config, "cp_kv_cache_interleave_size", 1
         )
         dcp_info += f":interleave={interleave}"
+    if dcp_size > 1:
+        dcp_info += ":logical_block_v1"
     layout_info = f":layout={request_hasher_module._layout_source_digest()}"
     return (
         f"{model_name}:"
@@ -2511,7 +2513,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     store_block_ids,
                     shard_indexs,
                     total_ptrs,
-                    distribute_backend_load=self.is_mla,
+                    # DCP workers request different key lists. Cache2's index-based
+                    # filler selection requires every rank to request the same keys.
+                    distribute_backend_load=self.is_mla and self.cp_world_size == 1,
                 )
                 if request.load_async:
                     self._pending_load_tasks[request_id] = PendingLoadTask(
@@ -3197,7 +3201,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     store_block_ids,
                     shard_indexs,
                     layer_ptrs,
-                    distribute_backend_load=self.is_mla,
+                    # DCP workers request different key lists. Cache2's index-based
+                    # filler selection requires every rank to request the same keys.
+                    distribute_backend_load=self.is_mla and self.cp_world_size == 1,
                 )
                 self.load_tasks[layer_id][request_id] = task
                 submitted = True
@@ -3572,6 +3578,28 @@ class UCMCPConnector(UCMLayerWiseConnector):
         self.block_size *= self.cp_world_size
         self._bind_request_block_hasher()
         logger.info("Init UCMCPConnector.")
+
+    def _bind_request_block_hasher(self) -> None:
+        if self.cp_world_size == 1:
+            return super()._bind_request_block_hasher()
+        if self._role != KVConnectorRole.SCHEDULER:
+            return
+        # Replicated indexer data covers the whole logical block. Every shard
+        # key must depend on all its tokens, including later DCP partitions.
+        logical_hasher = self.request_hasher.make_request_block_hasher(
+            self.block_size, self._seed
+        )
+        shard_count = self.cp_world_size
+        hasher = self.request_hasher
+
+        def hash_request(request):
+            return [
+                hasher(("dcp_shard_v1", logical_hash, shard))
+                for logical_hash in logical_hasher(request)
+                for shard in range(shard_count)
+            ]
+
+        self.request_block_hasher = hash_request
 
     def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
         # DCP keys have already been mapped locally. Deduplicate whole
