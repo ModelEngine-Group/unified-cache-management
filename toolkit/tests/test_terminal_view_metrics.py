@@ -989,8 +989,6 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:prompt_tokens_total",
                 "vllm:generation_tokens_total",
                 "vllm:request_generation_tokens_sum",
-                "ucm:interval_lookup_hit_rates_sum",
-                "ucm:interval_lookup_hit_rates_count",
                 "e2e_request_latency_s_bucket",
                 "vllm:request_queue_time_seconds_bucket",
                 "vllm:request_queue_time_seconds_sum",

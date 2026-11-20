@@ -567,11 +567,6 @@ def _metrics_config(consumers=None):
                 "documentation": "Cache load duration in ms.",
                 "buckets": [1, 5],
             },
-            {
-                "name": "interval_lookup_hit_rates",
-                "documentation": "Prefer vLLM external prefix cache metrics.",
-                "buckets": [0.1, 0.5, 1.0],
-            },
         ],
     }
 
@@ -628,7 +623,6 @@ def test_config_definitions_register_enable_list_and_metric_names():
         "test_health",
         "load_duration",
         "cache_load_duration_ms",
-        "interval_lookup_hit_rates",
     ]
     assert by_name["load_duration"].vllm_connector_name == "ucm:load_duration"
     assert by_name["load_duration"].vllm_connector_buckets == (50, 100)
@@ -637,14 +631,12 @@ def test_config_definitions_register_enable_list_and_metric_names():
         by_name["cache_load_duration_ms"].vllm_connector_name
         == "ucm:cache_load_duration_ms"
     )
-    assert by_name["interval_lookup_hit_rates"].vllm_connector_enabled is False
     assert by_name["test_health"].multiprocess_mode == ""
     assert fake_ucmmetrics.created == [
         ("load_bytes_total", "counter", ()),
         ("test_health", "gauge", ()),
         ("load_duration", "histogram", (50, 100)),
         ("cache_load_duration_ms", "histogram", (1, 5)),
-        ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
     ]
 
 
@@ -953,7 +945,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
         {"test_health": 0.5},
         {
             "load_duration": ([0, 1, 0], 75.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
     )
     dispatcher = get_metrics_dispatcher(config)
@@ -966,7 +957,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
     assert multiproc_stats[0] == {"load_bytes_total": 4096.0}
     assert multiproc_stats[1] == {"test_health": 0.5}
     assert multiproc_stats[2]["load_duration"] == ([0, 1, 0], 75.0)
-    assert multiproc_stats[2]["interval_lookup_hit_rates"] == ([1, 0, 0, 0], 0.1)
     assert vllm_stats[0] == {"load_bytes_total": 4096.0}
     assert vllm_stats[1] == {"test_health": 0.5}
     assert vllm_stats[2] == {"load_duration": ([0, 1, 0], 75.0)}
@@ -1066,7 +1056,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         gauge_stats={"test_health": 0.75},
         histogram_stats={
             "load_duration": ([1, 2, 0], 150.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
         worker_rank=7,
         metric_definitions=definitions,
@@ -1080,7 +1069,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         "sum": 150.0,
     }
     assert "not_configured" not in stats.data["counters_by_rank"]["7"]
-    assert "interval_lookup_hit_rates" not in stats.data["histograms_by_rank"]["7"]
 
 
 def test_stats_record_aggregate_clone_and_reset_preserve_worker_rank():
@@ -2084,11 +2072,7 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
     configured_names = set(
         re.findall(r'^\s*-\s+name:\s+"([^"]+)"', metrics_text, re.MULTILINE)
     )
-    expected_vllm_names = set()
-    for name in configured_names:
-        if name == "interval_lookup_hit_rates":
-            continue
-        expected_vllm_names.add(f"ucm:{name}")
+    expected_vllm_names = {f"ucm:{name}" for name in configured_names}
 
     for filename in GRAFANA_UCM_DASHBOARDS:
         dashboard_text = (REPO_ROOT / "examples" / "metrics" / filename).read_text(
@@ -3483,26 +3467,40 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     )
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert "Cache Load H2D Bandwidth (per task)" not in panels
-    assert "Cache Dump D2H Bandwidth (per task)" not in panels
-    assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Load Queue Status"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 49,
+        "y": 25,
     }
+    assert panels["Cache Dump Queue Status"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25,
+    }
+    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert "Cache Load H2D Bandwidth (per task)" not in panels
+    assert "Cache Dump D2H Bandwidth (per task)" not in panels
+    assert panels["Cache Load Shard Metrics"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57,
+    }
+    assert "Cache Load H2D Submit Cost" not in panels
+    assert "Cache Load Backend Wait Duration" not in panels
     assert panels["Cache Dump Wait Compute Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 49,
+        "y": 57,
     }
-    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
-    assert "Cache Dump D2H Duration (include wait compute)" in panels
+    assert panels["Cache Load H2D Sync Duration"]["gridPos"]["y"] == 65
+    assert "Cache Dump D2H Sync Duration" in panels
     assert "Cache Dump D2H Duration" not in panels
     assert panels["Cache Lookup Duration"]["gridPos"] == {
         "h": 8,
@@ -3510,11 +3508,17 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
         "x": 0,
         "y": 81,
     }
-    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Dump Backend Submit Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
         "y": 81,
+    }
+    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89,
     }
     assert panels["Cache Lookup Backend Duration"]["gridPos"] == {
         "h": 8,
@@ -3540,34 +3544,49 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     }
 
     assert set(targets) == {
-        "queue wait",
+        "H2D sync",
+        "waiting queue wait",
         "backend submit",
         "backend wait",
-        "H2D sync",
-        "h2d submit & other",
+        "cache ready wait",
+        "running queue wait & other",
     }
+    assert "cache_h2d_sync_ms" in targets["H2D sync"]["expr"]
+    assert "cache_load_queue_wait_duration_ms" in targets["waiting queue wait"]["expr"]
     assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
-    assert "cache_shard_backend_wait_ms" in targets["backend wait"]["expr"]
-    residual = targets["h2d submit & other"]["expr"]
+    assert "cache_task_total_backend_wait_ms" in targets["backend wait"]["expr"]
+    assert "cache_task_total_ready_wait_ms" in targets["cache ready wait"]["expr"]
+    residual = targets["running queue wait & other"]["expr"]
     for metric in (
         "cache_load_duration_ms",
+        "cache_h2d_sync_ms",
         "cache_load_queue_wait_duration_ms",
         "cache_load_backend_submit_duration_ms",
-        "cache_shard_backend_wait_ms",
-        "cache_h2d_sync_ms",
+        "cache_task_total_backend_wait_ms",
+        "cache_task_total_ready_wait_ms",
     ):
         assert metric in residual
+    assert "cache_shard_running_queue_wait_ms" not in residual
     description = panel["description"]
-    assert "`queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；" in description
+    assert "本面板所有曲线均为**任务级**指标" in description
+    assert (
+        "`waiting queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；"
+        in description
+    )
     assert (
         "`backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；"
         in description
     )
-    assert "`backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；" in description
+    assert (
+        "`backend wait`：指标 `ucm:cache_task_total_backend_wait_ms`；" in description
+    )
+    assert (
+        "`cache ready wait`：指标 `ucm:cache_task_total_ready_wait_ms`；" in description
+    )
     assert "`H2D sync`：指标 `ucm:cache_h2d_sync_ms`；" in description
     assert (
-        "`h2d submit & other`：计算方法 `Load 总耗时 - queue wait - "
-        "backend submit - backend wait - H2D sync`；" in description
+        "`running queue wait & other`：计算方式 `ucm:cache_load_duration_ms` "
+        "减去上面五段的平均耗时" in description
     )
 
 

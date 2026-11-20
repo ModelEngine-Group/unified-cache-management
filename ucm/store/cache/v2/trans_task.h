@@ -51,6 +51,9 @@ struct Task {
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    double totalBackendWaitMs{0.0};
+    double totalReadyWaitMs{0.0};
+    double totalH2dSubmitMs{0.0};
 
     void Fail(const Status& status)
     {
