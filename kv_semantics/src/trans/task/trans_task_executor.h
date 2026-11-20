@@ -27,6 +27,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
@@ -65,10 +67,16 @@ public:
     Status Shutdown();
 
     bool Execute(const TransportTaskPtr& task);
+    bool ExecuteAsync(const TransportTaskPtr& task,
+                      TransProvider::SendOperationPtr& operation);
+    bool WaitAsync(const TransportTaskPtr& task,
+                   TransProvider::SendOperationPtr& operation);
     bool Poll(const TransportTaskPtr& task);
     bool Cancel(const TransportTaskPtr& task);
 
 private:
+    static std::uint32_t GetSendCountAttr(
+        const std::unordered_map<std::string, std::string>& attrs, const std::string& name);
     Status RegisterBufferMemory(BufferManager& bufferManager, MRHandle& mrHandle);
     Status UnregisterBufferMemory(MRHandle& mrHandle);
     std::uint16_t AllocateRequestCid();
@@ -88,6 +96,10 @@ private:
                                   std::vector<TransProvider::SendIoBatch>& ioBatches);
     void SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
                              const std::vector<TransProvider::SendIoBatch>& ioBatches);
+    void ApplySubBatchSendStatuses(
+        std::vector<TransportSubBatchContext>& subBatchContexts,
+        const std::vector<Status>& sendStatuses, std::size_t expectedCount);
+    void RecordSendComplete(const TransportTaskPtr& task);
 
     void AbortSubBatchesBeforeSend(TransportTask& task,
                                    std::vector<TransportSubBatchContext>& subBatchContexts);

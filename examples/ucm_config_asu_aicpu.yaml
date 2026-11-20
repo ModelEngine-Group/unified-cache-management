@@ -37,6 +37,10 @@ ucm_connectors:
       asu_wait_timeout_ms: 50000
       asu_query_timeout_ms: 50000
       asu_aicpu_send_timeout_ms: 30000
+      # async queues several transport Sends on the AICPU stream before waiting.
+      # Increase gradually (2/4/8) while observing SQ depth, timeouts, and device errors.
+      asu_aicpu_send_mode: "async"
+      asu_transport_max_inflight_tasks: 1024
       asu_client_max_inflight_tasks: 1024
 
 enable_event_sync: true

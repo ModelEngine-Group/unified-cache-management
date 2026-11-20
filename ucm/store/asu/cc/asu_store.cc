@@ -214,6 +214,7 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
             transportConfig.attrs["aicpu_send_timeout_ms"] =
                 std::to_string(*config.aicpuSendTimeoutMs);
         }
+        transportConfig.attrs["aicpu_send_mode"] = config.aicpuSendMode;
     }
 
     if (!config.asuIps.empty()) {
@@ -606,6 +607,10 @@ private:
                 inConfig.GetNumber("asu_aicpu_send_timeout_ms", timeoutMs);
                 config.aicpuSendTimeoutMs = timeoutMs;
             }
+            inConfig.Get("asu_aicpu_send_mode", config.aicpuSendMode);
+            std::transform(config.aicpuSendMode.begin(), config.aicpuSendMode.end(),
+                           config.aicpuSendMode.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
@@ -744,6 +749,9 @@ private:
                 (*config.aicpuSendTimeoutMs == 0 ||
                  *config.aicpuSendTimeoutMs > std::numeric_limits<std::uint32_t>::max())) {
                 return Status::InvalidParam("asu_aicpu_send_timeout_ms must be in [1, UINT32_MAX]");
+            }
+            if (config.aicpuSendMode != "sync" && config.aicpuSendMode != "async") {
+                return Status::InvalidParam("asu_aicpu_send_mode must be sync or async");
             }
         }
         if (config.transProviderType == kv::TransProviderType::FAKE && !config.configPath.empty()) {
@@ -980,6 +988,7 @@ private:
         UC_INFO("Set AsuStore::DeviceId to {}.", config.deviceId);
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
+        UC_INFO("Set AsuStore::AicpuSendMode to {}.", config.aicpuSendMode);
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
         UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
         UC_INFO("Set AsuStore::FakeBackendCompleteImmediately to {}.",

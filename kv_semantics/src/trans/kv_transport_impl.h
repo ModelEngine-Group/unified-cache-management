@@ -58,6 +58,11 @@ public:
     Status Cancel(TaskId taskId) override;
 
 private:
+    struct PendingSend {
+        TransportTaskPtr task;
+        TransProvider::SendOperationPtr operation;
+    };
+
     Status SubmitTask(const TransportTaskPtr& task);
     void WorkerLoop();
     void CompletionLoop();
@@ -78,6 +83,8 @@ private:
     std::thread completionWorker_;
     std::atomic_bool stopWorker_{false};
     std::atomic_bool stopCompletionWorker_{false};
+    bool asyncSendEnabled_{false};
+    std::size_t asyncSendMaxInflight_{1};
 };
 
 }  // namespace kv
