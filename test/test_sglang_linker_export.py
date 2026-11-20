@@ -179,7 +179,7 @@ assert value("ucm:sglang_connector_dump_bytes_total", **labels) == 32
 assert value("ucm:sglang_linker_offload_completed_total", **labels) == 1
 assert value("ucm:sglang_linker_offload_duration_ms_count", **labels) == 1
 assert value("ucm:sglang_adapter_interface_submit_offload_duration_ms_count", **labels) == 1
-assert value("ucm:sglang_adapter_interface_wait_duration_ms_count", **labels) == 1
+assert "ucm:sglang_adapter_interface_wait_duration_ms_count" not in scrape()
 assert value("ucm:sglang_linker_load_layer_duration_ms_sum", layer="3", **labels) == 12.5
 assert "sglang:prefetch_pgs" not in scrape()
 """,

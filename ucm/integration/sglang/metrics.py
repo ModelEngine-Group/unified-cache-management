@@ -16,10 +16,17 @@ from pathlib import Path
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+_active_metrics_logger = None
+
+
+def counter_metrics_enabled():
+    """Counter patches sample only while this worker's UCM metrics logger is active."""
+    return _active_metrics_logger is not None
 
 
 def create_metrics_logger(*, enabled, model_name, ranks, launch_config):
     """Register once per worker, before Store construction, using SGLang's dir."""
+    global _active_metrics_logger
     if not enabled:
         return None
     from ucm.metrics_config import (
@@ -70,11 +77,16 @@ def create_metrics_logger(*, enabled, model_name, ranks, launch_config):
         f"{name}{ranks.get(name + '_rank', 0)}"
         for name in ("dp", "tp", "pp", "attn_cp")
     )
-    return PrometheusStatsLogger(model_name or "", worker_id, config=config)
+    metrics_logger = PrometheusStatsLogger(model_name or "", worker_id, config=config)
+    _active_metrics_logger = metrics_logger
+    return metrics_logger
 
 
 def shutdown_metrics_logger(metrics_logger):
     """Stop polling, then export the last deltas after all Store work has drained."""
+    global _active_metrics_logger
+    if _active_metrics_logger is metrics_logger:
+        _active_metrics_logger = None
     if metrics_logger is None:
         return
     metrics_logger.shutdown()

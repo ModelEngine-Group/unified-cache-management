@@ -5,6 +5,7 @@ import __future__
 import ast
 import copy
 import hashlib
+import importlib
 import json
 import logging
 import re
@@ -15,6 +16,7 @@ import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import wraps
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, List
 
@@ -73,6 +75,15 @@ def load_source(relative_path, definitions=None, **dependencies):
 
 metrics_module = load_source(
     "ucm/integration/sglang/metrics.py", contextmanager=contextmanager, time=time
+)
+counter_metrics_module = load_source(
+    "ucm/integration/sglang/patch/layerwise_counter_metrics.py",
+    importlib=importlib,
+    PackageNotFoundError=PackageNotFoundError,
+    version=version,
+    counter_metrics_enabled=metrics_module.counter_metrics_enabled,
+    start_timing=metrics_module.start_timing,
+    finish_timing=metrics_module.finish_timing,
 )
 adapter_module = load_source(
     "ucm/integration/sglang/ucm_direct_store_adapter.py",

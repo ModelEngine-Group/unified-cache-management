@@ -375,4 +375,12 @@ def get_default_sglang_metrics_config() -> dict:
                 "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
             }
         )
+    config["histogram"].append(
+        {
+            "name": "sglang_linker_load_layer_wait_duration_ms",
+            "documentation": "Consumer wait_until call duration by logical layer, including ready callbacks, cleanup and failures; not pure GPU stall time (ms)",
+            "dynamic_labels": ["layer"],
+            "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
+        }
+    )
     return config
