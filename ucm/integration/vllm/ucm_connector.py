@@ -2845,6 +2845,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         super().__init__(vllm_config, role, kv_cache_config)
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
+        self._wait_ahead_for_indexer = (
+            current_platform.is_cuda()
+            and kv_cache_config is not None
+            and any(
+                _has_layer_component(name, {"indexer", "index_cache"})
+                for group in kv_cache_config.kv_cache_groups
+                for name in (
+                    getattr(group, "layer_names", None)
+                    or getattr(group, "kv_cache_specs", None)
+                    or {}
+                )
+            )
+        )
         self.use_layerwise = True
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
@@ -3182,7 +3195,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 metadata,
                 first_layer_load_start,
             )
-            if current_platform.is_cuda():
+            if self._wait_ahead_for_indexer:
                 # CUDA indexers run before their attention load hooks.
                 self._wait_layer_and_prefetch_next(self.first_layer_id)
 
@@ -3250,8 +3263,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         current_layer_id = self.layer_name_to_id[layer_name]
         self._wait_layer_and_prefetch_next(current_layer_id)
 
-        # Keep non-CUDA platforms on the original current-layer wait schedule.
-        if current_platform.is_cuda():
+        # Only CUDA indexer models need the next layer ready before its hook.
+        if self._wait_ahead_for_indexer:
             next_layer_id = current_layer_id + 1
             if next_layer_id in self.layer_ids:
                 self._wait_layer_and_prefetch_next(next_layer_id)
