@@ -1905,6 +1905,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # allocation's one-shot async dispatch must not suppress this attempt.
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+        if request.request_id in self.requests_meta:
+            self.requests_meta.pop(request.request_id)
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
