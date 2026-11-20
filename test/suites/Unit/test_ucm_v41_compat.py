@@ -104,6 +104,9 @@ def _load_hma_methods(names):
         "FAWARequestDispatchMeta": types.SimpleNamespace,
         "UCMFAWAConnectorMetadata": object,
         "SchedulerOutput": object,
+        "RequestStatus": types.SimpleNamespace(
+            WAITING="waiting", PREEMPTED="preempted"
+        ),
         "extract_layer_index": lambda name: int(name.split(".")[1]),
         "logger": types.SimpleNamespace(
             info_once=lambda *_args: None, info=lambda *_args: None
@@ -1369,6 +1372,11 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             num_computed,
             prefix,
             reverse,
+            *,
+            request_status=None,
+            num_preemptions=0,
+            request_meta=None,
+            persist_threshold=0,
         ):
             class Rank:
                 @staticmethod
@@ -1379,14 +1387,15 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 def lookup_on_reverse(_store, keys):
                     return min(reverse, len(keys) - 1)
 
-            request_meta = {}
+            if request_meta is None:
+                request_meta = {}
             self_obj = types.SimpleNamespace(
                 use_request_async_load=False,
                 _pending_async_load_dispatches={},
                 _async_load_req_ids=set(),
                 hash_block_size=32,
                 is_v41_layout=is_v41,
-                persist_token_threshold=0,
+                persist_token_threshold=persist_threshold,
                 load_tokens_threshold=load_threshold,
                 _seed=b"seed",
                 requests_meta=request_meta,
@@ -1403,6 +1412,8 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             )
             request = types.SimpleNamespace(
                 request_id="req",
+                status=request_status or methods["RequestStatus"].WAITING,
+                num_preemptions=num_preemptions,
                 num_tokens=num_tokens,
                 all_token_ids=list(range(num_tokens)),
             )
@@ -1411,7 +1422,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 methods["_lookup_external_hit_blocks"], self_obj
             )
             matched, need_load = method(request, num_computed)
-            return matched, need_load, request_meta["req"]
+            return matched, need_load, request_meta.get("req")
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 3)
         self.assertFalse(need_load)
@@ -1436,6 +1447,38 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         matched, _, meta = run(129, True, 96, 32, 2, 2)
         self.assertEqual(matched, 0)
         self.assertEqual(meta.token_processed, 32)
+
+        for persist_threshold, load_threshold in ((128, 0), (0, 2048)):
+            for preempted in (False, True):
+                with self.subTest(
+                    early_return="persist" if persist_threshold else "load",
+                    preempted=preempted,
+                ):
+                    old_meta = types.SimpleNamespace(vllm_block_ids=([99],))
+                    unrelated_meta = object()
+                    request_meta = {"req": old_meta, "other": unrelated_meta}
+                    matched, need_load, meta = run(
+                        128,
+                        True,
+                        load_threshold,
+                        0,
+                        3,
+                        3,
+                        request_status=(
+                            methods["RequestStatus"].PREEMPTED
+                            if preempted
+                            else methods["RequestStatus"].WAITING
+                        ),
+                        num_preemptions=int(preempted),
+                        request_meta=request_meta,
+                        persist_threshold=persist_threshold,
+                    )
+                    self.assertEqual((matched, need_load), (0, False))
+                    # Every fresh lookup clears stale metadata, including
+                    # retries of waiting requests that were never admitted.
+                    self.assertNotIn("req", request_meta)
+                    self.assertIsNone(meta)
+                    self.assertIs(request_meta["other"], unrelated_meta)
 
     def test_fawa_short_window_slice_clips_before_first_block(self):
         methods = _load_hma_methods({"_slice_group_block_ids"})
