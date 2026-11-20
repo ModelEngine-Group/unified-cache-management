@@ -438,16 +438,17 @@ def _cleanup_cli_fixture(monkeypatch, tag="draft/v0.8.0-3"):
             assert selected == record
             return inventory_ops.CleanupResolution(target)
 
-        def persist_recovery(self, resolution):
+        def prepare_cleanup(self, record, resolution):
             saved.append(resolution)
+            return resolution.target
 
     monkeypatch.setattr(cleanup, "_production_remote", lambda _: remote)
     monkeypatch.setattr(cleanup, "ReleaseInventory", SelectedInventory)
     monkeypatch.setattr(
         cleanup,
         "collect_catalog",
-        lambda *args, **kwargs: SimpleNamespace(
-            records=[record], orphans=[], active_tags=set(), blocked={}
+        lambda *args, **kwargs: inventory_ops.ReleaseCatalog(
+            (record,), (), frozenset(), {}
         ),
     )
     return target, remote, saved
@@ -1000,16 +1001,17 @@ def test_retention_resolves_and_preserves_known_release_before_execution(
             target = _target(manifest, [release])
             return inventory_ops.CleanupResolution(target)
 
-        def persist_recovery(self, resolution):
+        def prepare_cleanup(self, record, resolution):
             assert self.remote.delete_calls == []
             saved.append(resolution)
+            return resolution.target
 
     monkeypatch.setattr(cleanup, "ReleaseInventory", SelectedInventory)
     monkeypatch.setattr(
         cleanup,
         "collect_catalog",
-        lambda *args, **kwargs: SimpleNamespace(
-            records=[record], orphans=[], active_tags=set(), blocked={}
+        lambda *args, **kwargs: inventory_ops.ReleaseCatalog(
+            (record,), (), frozenset(), {}
         ),
     )
     remote = FakeRemote(present={run, tag, release.reference})
