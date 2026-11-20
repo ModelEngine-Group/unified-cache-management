@@ -2,7 +2,7 @@
  * Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
  *
  * MST: cross-module flow for the indexer offload path (IndexerInitLoad,
- * SetIndexerMap, UpdateIndexerMap, AddIndexerMap, DeleteIndexerMap).  These
+ * SetIndexerMap, UpdateIndexerMap).  These
  * tie together GSAPrefetchEngineC's indexer bookkeeping maps, the UCM store
  * (Load + Wait via mock) and the ACL memcpy path (aclrtMemcpy via stub).
  */
@@ -53,6 +53,11 @@ struct IndexerFixture {
         CleanupShmFor(dpRank);
         logFile = std::make_unique<TempLogFile>();
         store = std::make_unique<MockStoreV1>();
+        /* Indexer shards point straight into 32-byte device slots (see
+         * TryAppendInitShard: indexerBaseAddr + id * mIndexerSizeBytesBlock);
+         * the mock's default 4096-byte payload would overrun the fixture's
+         * 8*32 buffer and corrupt the heap. Match the block size instead. */
+        store->SetHostBufferPayload(/*bytesPerBlock=*/32, /*kvLayerBytes=*/32);
         auto model = MakeModelInfo(layerNum, 4096, /*spaTopkLen=*/32,
                                    /*streamNum=*/1, sparseLen, 1, /*dpRank=*/dpRank,
                                    /*tpSize=*/1, /*indexerOffload=*/1, /*isSfaC8=*/0, /*maxBs=*/2);
@@ -114,7 +119,6 @@ TEST(IndexerFlow, SetIndexerMapPopulatesAllLayers)
         EXPECT_EQ(f.engine->mDocsTables["req1"][l].size(), 4u);
         EXPECT_EQ(f.engine->mBlocksMap["req1"][l].size(), 4u);
     }
-    EXPECT_EQ(f.engine->mIndexerSlot["req1"], blockSlot);
     f.TearDown();
 }
 
@@ -130,28 +134,10 @@ TEST(IndexerFlow, UpdateIndexerMapAddAppendsAcrossLayers)
     std::vector<int> blockSlot = {10, 20, 30, 40};
     f.engine->SetIndexerMap("req1", blockTable, remain, prefetch, blockSlot, dsaSBT);
 
-    f.engine->UpdateIndexerMap("req1", /*idx=*/99, /*blockID=*/7, "add");
+    f.engine->UpdateIndexerMap("req1", /*idx=*/99);
     for (int l = 0; l < f.layerNum; ++l) {
         EXPECT_EQ(f.engine->mUseBlockTableIdx["req1"][l].back(), 99);
     }
-    f.TearDown();
-}
-
-TEST(IndexerFlow, UpdateIndexerMapLastDelPopsAcrossLayers)
-{
-    IndexerFixture f;
-    f.Setup();
-    f.SeedBlocksMap(4);
-    auto dsaSBT = MakeDsaSBT(f.layerNum, f.sparseLen);
-    std::vector<int> blockTable = {0, 1, 2, 3};
-    std::vector<std::vector<int>> remain(f.layerNum, std::vector<int>{0, 1});
-    std::vector<std::vector<int>> prefetch(f.layerNum, std::vector<int>{2, 3});
-    std::vector<int> blockSlot = {10, 20, 30, 40};
-    f.engine->SetIndexerMap("req1", blockTable, remain, prefetch, blockSlot, dsaSBT);
-
-    size_t before = f.engine->mUseBlockTableIdx["req1"][0].size();
-    f.engine->UpdateIndexerMap("req1", 0, 0, "lastdel");
-    EXPECT_EQ(f.engine->mUseBlockTableIdx["req1"][0].size(), before - 1);
     f.TearDown();
 }
 
@@ -202,28 +188,5 @@ TEST(IndexerFlow, IndexerInitLoadStoreFailureIsLoggedNotCrashed)
         if (c.name == "Load") { hasLoad = true; }
     }
     EXPECT_TRUE(hasLoad);
-    f.TearDown();
-}
-
-TEST(IndexerFlow, AddDeleteIndexerMapOnKnownReqIDMutatesMaps)
-{
-    IndexerFixture f;
-    f.Setup();
-    f.SeedBlocksMap(4);
-    auto dsaSBT = MakeDsaSBT(f.layerNum, f.sparseLen);
-    std::vector<int> blockTable = {0, 1, 2, 3};
-    std::vector<std::vector<int>> remain(f.layerNum, std::vector<int>{0, 1});
-    std::vector<std::vector<int>> prefetch(f.layerNum, std::vector<int>{2, 3});
-    std::vector<int> blockSlot = {10, 20, 30, 40};
-    f.engine->SetIndexerMap("req1", blockTable, remain, prefetch, blockSlot, dsaSBT);
-
-    f.engine->mIndexerAdd["req1"].emplace_back(50, 7);
-    f.engine->AddIndexerMap();
-    EXPECT_GT(f.engine->mIndexerSlot["req1"].size(), 4u);
-    EXPECT_FALSE(f.engine->mIndexerAdd.count("req1"));
-
-    f.engine->mIndexerDel["req1"] = {0};
-    f.engine->DeleteIndexerMap();
-    EXPECT_FALSE(f.engine->mIndexerDel.count("req1"));
     f.TearDown();
 }

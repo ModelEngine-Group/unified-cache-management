@@ -55,12 +55,7 @@ class UcmSparseMetadata(ABC):  # noqa: B024
 
 
 class UcmSparseCpuGpuBuffer:
-    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM.
-
-    Kept for backward compatibility: ``ucm/sparse/gsa_on_device/gsa_on_device.py``
-    still imports this class. New implementations (e.g. GSA v2) may use their own
-    buffer helpers instead.
-    """
+    """Buffer to easily copy tensors between CPU and GPU. Inferred by vLLM."""
 
     def __init__(
         self,
@@ -200,15 +195,13 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_finished(self, rec_result=None):
+    def execute_finished(
+        self, logits_indices: torch.Tensor, rec_result=None
+    ) -> torch.Tensor:
         """
         This is called at the end of "ModelRunner->execute_model" function.
-
-        Kept for backward compatibility: returns ``rec_result`` unchanged so that
-        existing callers that rely on ``return ucm_sparse.execute_finished(...)``
-        (e.g. the v0110 integration patches) keep receiving the value back.
         """
-        return rec_result
+        return logits_indices
 
     def warmup(self):
         """
@@ -259,19 +252,6 @@ class UcmSparseBase(ABC):
         """
         This is called at the beginning of "ModelRunner->execute_model" function.
         Update the cached states with the scheduler output.
-
-        Kept for backward compatibility with the v0110 integration patches.
-        """
-        pass
-
-    def set_sparse_topk(
-        self,
-        layer_name: str,
-        kv_cache: List[torch.Tensor],
-        attn_metadata,
-    ) -> None:
-        """
-        This is called at the end of "indexer_select" for native sparsity attention.
         """
         pass
 
@@ -358,10 +338,4 @@ class UcmSparseBase(ABC):
         pass
 
     def allocate_slots(self, kv_cache_manager, request, num_slots_sparsed):
-        pass
-
-    def shutdown(self):
-        pass
-
-    def print_log(self, msg):
         pass
