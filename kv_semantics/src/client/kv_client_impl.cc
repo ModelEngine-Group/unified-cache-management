@@ -33,6 +33,7 @@
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "logger.h"
+#include "parser_common.h"
 #include "router/config.h"
 #include "router/router.h"
 #include "trans_types.h"
@@ -116,9 +117,17 @@ Status KvClientImpl::Init(const KvClientConfig& config)
         config.sharedProviderMode != SharedProviderMode::SHARED) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "sharedProviderMode must be 0 or 1");
     }
+    if (config.transportConfigs.empty()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "at least one transport config is required");
+    }
+    const auto namespaceAttr = config.transportConfigs.front().attrs.find("kv_ns_id");
+    const auto configuredNamespaceId = namespaceAttr == config.transportConfigs.front().attrs.end()
+                                           ? 0U
+                                           : ParseConfigUint32(namespaceAttr->second, 0);
 
     config_ = config;
-    keyResolver_ = CreateDefaultKeyResolver(config.keyResolution);
+    keyResolver_ = CreateDefaultKeyResolver(config.keyResolution, configuredNamespaceId);
     viewServer_ = viewServerFactory_(config);
     if (viewServer_ == nullptr) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "view server factory returned null");
@@ -126,10 +135,6 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     transportConfigs_.clear();
     for (const auto& transportConfig : config.transportConfigs) {
         transportConfigs_[transportConfig.nodeId] = transportConfig;
-    }
-    if (config.transportConfigs.empty()) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "at least one transport config is required");
     }
     const auto queueDepth =
         std::max<std::size_t>(2, static_cast<std::size_t>(config.maxInflightTasks));
