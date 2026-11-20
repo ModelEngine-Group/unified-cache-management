@@ -51,39 +51,64 @@ class LinkerMetricsTest(unittest.TestCase):
         )
         self.adapter._ensure_store_schema = lambda *a, **kw: self.store
 
-    def test_layer_timing_and_dump_has_no_layer_samples(self):
-        load = metrics_module.AsyncIoObservation.begin(True, False, 2, 8, layers=(3,))
-        self.now = 12.0
-        load.submitted = True
-        load.finish()
-        self.assertEqual(self.total("sglang_linker_load_layer_duration_ms_3"), 2000)
-        dump = metrics_module.AsyncIoObservation.begin(True, True, 4, 8, layers=(1, 3, 3))
-        self.now = 15.0
-        dump.finish(failed=True)
-        dump.finish(failed=True)
-        self.assertFalse(any(
-            "dump_layer" in key for sample in self.samples for key in sample
-        ))
+    def test_interface_timer_measures_call_not_async_lifetime(self):
+        def submit(*args, **kwargs):
+            self.now += 0.25
+            return 42
+
+        self.store.load_data.side_effect = submit
+        prepared = self.adapter.prepare_load([self.fixture.transfer()])
+        tasks = self.adapter.submit_prepared_load_layer(prepared, 0)
+        self.assertEqual(
+            self.total(
+                "sglang_adapter_interface_submit_prepared_load_layer_duration_ms"
+            ),
+            250,
+        )
+        self.now += 10
+        self.adapter.wait(tasks)
+        self.assertEqual(self.total("sglang_adapter_interface_wait_duration_ms"), 0)
+        self.assertFalse(
+            any(
+                key.startswith("sglang_linker_load_layer_duration_ms_")
+                for sample in self.samples
+                for key in sample
+            )
+        )
+
+    def test_interface_failure_is_timed_and_disabled_calls_do_not_read_clock(self):
+        def fail(*args):
+            self.now += 0.5
+            raise RuntimeError("check")
+
+        task = self.adapter.submit_offload([self.fixture.transfer()])[0]
+        timed_wait = metrics_module._record_interface_duration(type(self.adapter).wait)
+        self.store.wait.side_effect = fail
+        with self.assertRaisesRegex(RuntimeError, "check"):
+            timed_wait(self.adapter, [task])
+        self.assertEqual(self.total("sglang_adapter_interface_wait_duration_ms"), 500)
+        self.store.wait.side_effect = None
+        self.adapter.metrics_enabled = False
+        with patch.object(
+            metrics_module,
+            "time",
+            types.SimpleNamespace(
+                perf_counter=Mock(side_effect=AssertionError("clock"))
+            ),
+        ):
+            timed_wait(self.adapter, [task])
+
+    def test_phase_failure_records_endpoints(self):
+        timings = {}
+        with self.assertRaisesRegex(RuntimeError, "prepare"):
+            with metrics_module.measure_phase(True, "load_prepare", timings):
+                self.now += 2
+                raise RuntimeError("prepare")
+        self.assertEqual(timings["load_prepare"], {"started": 10, "ended": 12})
+        self.assertEqual(self.total("sglang_linker_load_prepare_duration_ms"), 2000)
 
     def total(self, name):
         return sum(sample.get(name, 0) for sample in self.samples)
-
-    def test_prefetched_layers_record_at_wait_with_shard_bytes(self):
-        prepared = self.adapter.prepare_load([self.fixture.transfer()])
-        first = self.adapter.submit_prepared_load_layer(prepared, 0)
-        self.now = 11
-        second = self.adapter.submit_prepared_load_layer(prepared, 2)
-        self.assertEqual(self.samples, [])
-        self.now = 13
-        self.adapter.wait(second)
-        self.now = 15
-        self.adapter.wait(first)
-        self.assertEqual(self.total("sglang_connector_load_requests_total"), 2)
-        self.assertEqual(self.total("sglang_connector_load_bytes_total"), 32)
-        self.assertEqual(self.total("sglang_connector_load_pages"), 4)
-        self.assertEqual(self.total("sglang_connector_load_duration_ms"), 7000)
-        first[0].observation.finish()
-        self.assertEqual(self.total("sglang_connector_load_requests_total"), 2)
 
     def test_distributed_load_options_preserve_completion_metrics(self):
         self.store.supports_distributed_backend_load = True
@@ -100,7 +125,6 @@ class LinkerMetricsTest(unittest.TestCase):
                     if event:
                         expected["prerequisite_handle"] = event
                     self.assertEqual(self.store.load_data.call_args.kwargs, expected)
-                    self.assertEqual(self.samples, [])
                     self.adapter.wait(tasks)
                     self.assertEqual(
                         self.total("sglang_connector_load_requests_total"), 1
@@ -180,21 +204,6 @@ class LinkerMetricsTest(unittest.TestCase):
         self.assertEqual(self.total("sglang_connector_dump_wait_errors_total"), 1)
         self.assertEqual(self.total("sglang_connector_dump_bytes_total"), 0)
 
-    def test_disabled_and_empty_observations_do_not_read_clock(self):
-        self.adapter.metrics_enabled = False
-        with patch.object(
-            metrics_module.time, "perf_counter", side_effect=AssertionError("clock")
-        ):
-            tasks = self.adapter.submit_offload(
-                [self.fixture.transfer(), self.fixture.transfer()]
-            )
-            self.adapter.wait(tasks)
-            self.assertIsNone(
-                metrics_module.AsyncIoObservation.begin(True, False, 0, 8)
-            )
-            self.assertIsNone(metrics_module.LinkerOperation.begin(False, "load"))
-        self.assertEqual(self.samples, [])
-
     def test_operation_queue_and_completion_have_separate_boundaries(self):
         obs = metrics_module.LinkerOperation.begin(True, "offload")
         self.now = 12
@@ -248,7 +257,6 @@ class LinkerMetricsTest(unittest.TestCase):
         self.assertEqual(self.total("sglang_linker_lookup_errors_total"), 1)
         self.assertEqual(self.total("sglang_linker_lookup_requests_total"), 1)
         self.assertEqual(self.total("sglang_linker_lookup_query_pages_total"), 0)
-        self.assertEqual(len(self.samples), 1)
         self.assertNotIn("r", obj._lookup_progress)
 
     def test_lookup_records_one_batch_without_including_export_time(self):
@@ -265,7 +273,6 @@ class LinkerMetricsTest(unittest.TestCase):
         obj.adapter.lookup.side_effect = lookup
         with patch.object(linker_module, "record_metrics", record):
             self.assertEqual(obj.lookup("r", transfers), [2, 4])
-        self.assertEqual(len(self.samples), 1)
         self.assertEqual(self.total("sglang_linker_lookup_duration_ms"), 250)
         self.assertEqual(self.total("sglang_linker_lookup_query_pages_total"), 4)
         self.assertEqual(self.total("sglang_linker_lookup_hit_pages_total"), 4)
@@ -281,7 +288,6 @@ class LinkerMetricsTest(unittest.TestCase):
             obj.adapter.lookup.side_effect = RuntimeError("lookup")
             with self.assertRaisesRegex(RuntimeError, "lookup"):
                 obj.lookup("failed", transfers)
-        self.assertEqual(self.samples, [])
         self.assertNotIn("failed", obj._lookup_progress)
 
     def test_resume_fallback_records_actual_probe(self):
@@ -322,7 +328,6 @@ class LinkerMetricsTest(unittest.TestCase):
         self.assertEqual(self.store.wait.call_count, 2)
         self.assertEqual(self.total("sglang_linker_load_errors_total"), 1)
         self.assertEqual(self.total("sglang_linker_load_completed_total"), 1)
-        self.assertEqual(self.total("sglang_connector_load_bytes_total"), 16)
         self.assertEqual(obj._load_queue.unfinished_tasks, 0)
 
     def test_config_overrides_and_disabled_default_adapter(self):

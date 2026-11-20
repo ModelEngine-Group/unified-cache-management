@@ -114,6 +114,9 @@ class OffloadWorkerTest(unittest.TestCase):
         self.assertEqual(
             sum(s.get("sglang_linker_offload_completed_total", 0) for s in samples), 1
         )
+        self.assertEqual(
+            sum("sglang_linker_offload_io_duration_ms" in s for s in samples), 1
+        )
         self.complete["A"].set()
         self.assertTrue(self.obj._offload_results.get(timeout=2))
         self.assertTrue(self.obj._offload_results.get(timeout=2))
@@ -125,6 +128,52 @@ class OffloadWorkerTest(unittest.TestCase):
         )
         self.assertEqual(
             sum(s.get("sglang_linker_offload_errors_total", 0) for s in samples), 0
+        )
+
+    def test_phase_timers_settle_once_on_failure(self):
+        samples = []
+        self.enterContext(
+            patch.object(metrics_module, "record_metrics", samples.append)
+        )
+        self.enterContext(patch.object(linker_module, "record_metrics", samples.append))
+        self.obj._metrics_enabled = True
+        self.submit_fail.add("A")
+        self.wait_fail.add("B")
+        self.complete["B"].set()
+        with self.assertLogs(linker_module.logger, level="ERROR"):
+            self.enqueue("A")
+            self.assertFalse(self.obj._offload_results.get(timeout=2))
+            self.enqueue("B")
+            self.assertFalse(self.obj._offload_results.get(timeout=2))
+        for name in ("offload_prepare", "offload_io"):
+            values = [
+                s[f"sglang_linker_{name}_duration_ms"]
+                for s in samples
+                if f"sglang_linker_{name}_duration_ms" in s
+            ]
+            self.assertEqual(len(values), 2)
+            self.assertTrue(all(v >= 0 for v in values))
+
+    def test_prepare_failure_does_not_emit_io_duration(self):
+        samples = []
+        self.enterContext(
+            patch.object(metrics_module, "record_metrics", samples.append)
+        )
+        self.enterContext(patch.object(linker_module, "record_metrics", samples.append))
+        self.obj._metrics_enabled = True
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("prepare failed")
+
+        self.obj._page_transfers = fail
+        with self.assertLogs(linker_module.logger, level="ERROR"):
+            self.enqueue("A")
+            self.assertFalse(self.obj._offload_results.get(timeout=2))
+        self.assertEqual(
+            sum("sglang_linker_offload_prepare_duration_ms" in s for s in samples), 1
+        )
+        self.assertFalse(
+            any("sglang_linker_offload_io_duration_ms" in s for s in samples)
         )
 
     def test_pending_tasks_do_not_block_new_submissions(self):

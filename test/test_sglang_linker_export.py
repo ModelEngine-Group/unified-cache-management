@@ -168,17 +168,19 @@ transfer = UcmLayerTransfer(
 operation = io_metrics.LinkerOperation.begin(True, "offload")
 operation.start()
 tasks = adapter.submit_offload([transfer])
-assert not any("sglang_connector_dump_requests_total" in s for s in observations)
 adapter.wait(tasks)
 operation.finish(True)
+io_metrics.record_metrics({"sglang_linker_load_layer_duration_ms_3": 12.5})
 io_metrics.shutdown_metrics_logger(metrics_logger)
 assert not metrics_logger.thread.is_alive()
 labels = {"model_name": "linker-model", "worker_id": "dp1_tp2_pp3_attn_cp0"}
 assert value("ucm:sglang_connector_dump_requests_total", **labels) == 1
 assert value("ucm:sglang_connector_dump_bytes_total", **labels) == 32
-assert value("ucm:sglang_connector_dump_duration_ms_count", **labels) == 1
 assert value("ucm:sglang_linker_offload_completed_total", **labels) == 1
 assert value("ucm:sglang_linker_offload_duration_ms_count", **labels) == 1
+assert value("ucm:sglang_adapter_interface_submit_offload_duration_ms_count", **labels) == 1
+assert value("ucm:sglang_adapter_interface_wait_duration_ms_count", **labels) == 1
+assert value("ucm:sglang_linker_load_layer_duration_ms_sum", layer="3", **labels) == 12.5
 assert "sglang:prefetch_pgs" not in scrape()
 """,
     )

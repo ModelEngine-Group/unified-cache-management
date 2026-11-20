@@ -1,10 +1,17 @@
-"""Per-worker storage-call observations; export uses the existing UCM logger."""
+"""SGLang synchronous call timers and worker phase metrics.
+
+Interface durations measure only Python call lifetime. Worker load-layer and
+offload-I/O durations end at Wait/cleanup, including ordered-reaping delay.
+Legacy connector I/O duration/bandwidth definitions remain available for HiCache;
+the direct adapter emits physical counts/bytes/pages, not those timing samples.
+"""
 
 import logging
 import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Callable
 
@@ -87,58 +94,6 @@ def record_metrics(values):
         ucmmetrics.update_stats(values)
     except Exception:
         logger.warning("Failed to record SGLang UCM metrics", exc_info=True)
-
-
-@dataclass
-class AsyncIoObservation:
-    """One actual shard submission, retained until Wait confirms final status."""
-
-    is_set: bool
-    pages: int
-    byte_count: int
-    started: float
-    layers: tuple[int, ...] = ()
-    submitted: bool = False
-    failed: bool = False
-    check_failed: bool = False
-    finished: bool = False
-
-    @classmethod
-    def begin(cls, enabled, is_set, pages, shard_size, layers=()):
-        if not enabled or pages == 0:
-            return None
-        return cls(is_set, pages, pages * shard_size, time.perf_counter(), tuple(dict.fromkeys(layers)))
-
-    def fail_check(self):
-        self.failed = True
-        if not self.check_failed:
-            self.check_failed = True
-            operation = "dump" if self.is_set else "load"
-            record_metrics({f"sglang_linker_{operation}_check_errors_total": 1})
-
-    def finish(self, failed=False):
-        if self.finished:
-            return
-        self.finished = True
-        elapsed = max(time.perf_counter() - self.started, 0.0)
-        prefix = "sglang_connector_dump" if self.is_set else "sglang_connector_load"
-        values = {
-            f"{prefix}_requests_total": 1,
-            f"{prefix}_duration_ms": elapsed * 1000,
-        }
-        if not self.is_set:
-            for layer in self.layers:
-                values[f"sglang_linker_load_layer_duration_ms_{layer}"] = elapsed * 1000
-        # Attribute submit/wait errors only to the call that actually failed.
-        if failed:
-            phase = "wait" if self.submitted else "submit"
-            values[f"{prefix}_{phase}_errors_total"] = 1
-        elif not self.failed:
-            values[f"{prefix}_bytes_total"] = self.byte_count
-            values[f"{prefix}_pages"] = self.pages
-            if elapsed > 0:
-                values[f"{prefix}_bandwidth_gbps"] = self.byte_count / elapsed / 1e9
-        record_metrics(values)
 
 
 @dataclass
@@ -238,3 +193,55 @@ def measure_io(enabled: bool, is_set: bool, pages: int, byte_count: Callable[[],
             logger.warning(
                 "Failed to record SGLang connector I/O metrics", exc_info=True
             )
+
+
+def _record_interface_duration(func):
+    """Measure synchronous call time only, including exceptional returns."""
+    owner, method = func.__qualname__.split(".")[-2:]
+    scope = "adapter" if owner == "UcmDirectStoreAdapter" else "linker"
+    name = f"sglang_{scope}_interface_{method.lstrip('_')}_duration_ms"
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        enabled = getattr(
+            self, "_metrics_enabled", getattr(self, "metrics_enabled", False)
+        )
+        if not enabled:
+            return func(self, *args, **kwargs)
+        started = time.perf_counter()
+        try:
+            return func(self, *args, **kwargs)
+        finally:
+            record_metrics({name: max(0.0, time.perf_counter() - started) * 1000})
+
+    return wrapper
+
+
+@contextmanager
+def measure_phase(enabled, name, timings=None):
+    """Keep local timestamps and emit one phase sample even on failure."""
+    if not enabled:
+        yield
+        return
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        ended = time.perf_counter()
+        if timings is not None:
+            timings[name] = {"started": started, "ended": ended}
+        record_metrics(
+            {f"sglang_linker_{name}_duration_ms": max(0.0, ended - started) * 1000}
+        )
+
+
+def start_timing(timings, name, enabled):
+    if enabled:
+        timings[name] = time.perf_counter()
+
+
+def finish_timing(timings, name):
+    started = timings.pop(name, None)
+    if started is not None:
+        ended = time.perf_counter()
+        record_metrics({f"sglang_linker_{name}": max(0.0, ended - started) * 1000})

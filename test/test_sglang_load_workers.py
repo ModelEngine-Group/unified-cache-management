@@ -5,7 +5,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from common.sglang_utils import linker_module
+from common.sglang_utils import linker_module, metrics_module
 
 
 class LoadWorkerTest(unittest.TestCase):
@@ -18,12 +18,13 @@ class LoadWorkerTest(unittest.TestCase):
         forward_event=False,
         supports_prerequisite=False,
         handle=42,
+        metrics=False,
     ):
         events = []
         submitted = []
         reaped = set()
         obj = object.__new__(linker_module.UcmDirectLinker)
-        obj._metrics_enabled = False
+        obj._metrics_enabled = metrics
         obj.num_layers = 4
         obj._dp_rank = obj._attn_dp_rank = obj._tp_rank = 0
         obj._requires_load_finish = True
@@ -94,6 +95,26 @@ class LoadWorkerTest(unittest.TestCase):
         self.assertEqual(obj._load_queue.unfinished_tasks, 0)
         self.assertEqual(reaped, set(submitted))
         return events
+
+    def test_worker_emits_one_sample_per_layer_including_failure_cleanup(self):
+        for failure in ({}, {"fail_submit": 2}, {"fail_wait": 1}, {"fail_check": 0}):
+            with self.subTest(failure=failure):
+                samples = []
+                with patch.object(metrics_module, "record_metrics", samples.append):
+                    self.run_worker(metrics=True, **failure)
+                names = [
+                    name
+                    for sample in samples
+                    for name in sample
+                    if name.startswith("sglang_linker_load_layer_duration_ms_")
+                ]
+                self.assertEqual(len(names), len(set(names)))
+                expected = (
+                    3
+                    if "fail_submit" in failure
+                    else (1 if "fail_check" in failure else 4)
+                )
+                self.assertEqual(len(names), expected)
 
     def test_submission_continues_and_ready_layers_publish_early(self):
         events = self.run_worker()

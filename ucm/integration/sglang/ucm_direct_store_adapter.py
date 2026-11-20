@@ -15,7 +15,10 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import yaml
 
-from ucm.integration.sglang.metrics import AsyncIoObservation, record_metrics
+from ucm.integration.sglang.metrics import (
+    _record_interface_duration,
+    record_metrics,
+)
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -57,7 +60,7 @@ class _StoreTask:
     task: Task
     # Keep address arrays alive until the native task is reaped.
     addresses: np.ndarray
-    observation: AsyncIoObservation | None = None
+    stats: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,7 @@ class UcmDirectStoreAdapter:
         }
         return adapter
 
+    @_record_interface_duration
     def _estimate_gc_capacities(
         self, by_group: dict[str, list[UcmPoolMetadata]]
     ) -> dict[str, int]:
@@ -252,6 +256,7 @@ class UcmDirectStoreAdapter:
             )
         return capacities
 
+    @_record_interface_duration
     def register_device_pools(self, pools: list[UcmPoolMetadata]) -> None:
         for pool in pools:
             previous = self._pool_metadata.get(pool.name)
@@ -416,6 +421,7 @@ class UcmDirectStoreAdapter:
             for group in groups
         }
 
+    @_record_interface_duration
     def _ensure_store_schema(
         self,
         store_group: str,
@@ -543,6 +549,7 @@ class UcmDirectStoreAdapter:
             )
             return store
 
+    @_record_interface_duration
     def _block_ids(
         self, transfer: UcmLayerTransfer, page_keys: Iterable[str] | None = None
     ) -> list[bytes]:
@@ -569,6 +576,7 @@ class UcmDirectStoreAdapter:
             == end - max(0, end - trailing)
         ]
 
+    @_record_interface_duration
     def lookup(
         self,
         transfers: list[UcmLayerTransfer],
@@ -651,6 +659,7 @@ class UcmDirectStoreAdapter:
                 raise
         return candidates
 
+    @_record_interface_duration
     def _transfer_layout(self, transfer: UcmLayerTransfer) -> _TransferLayout:
         signature = (
             transfer.layers,
@@ -723,6 +732,7 @@ class UcmDirectStoreAdapter:
             bool(self._identity.get("rank_replicated", False)),
         )
 
+    @_record_interface_duration
     def _prepare_transfers(
         self, transfers: list[UcmLayerTransfer], *, is_offload: bool
     ) -> list[_PreparedStoreTransfer]:
@@ -770,6 +780,7 @@ class UcmDirectStoreAdapter:
                 raise
         return prepared
 
+    @_record_interface_duration
     def prepare_load(
         self, transfers: list[UcmLayerTransfer]
     ) -> dict[int, list[_PreparedStoreTransfer]]:
@@ -779,6 +790,7 @@ class UcmDirectStoreAdapter:
                 by_layer.setdefault(layer, []).append(item)
         return by_layer
 
+    @_record_interface_duration
     def _submit_dump(
         self,
         item: _PreparedStoreTransfer,
@@ -789,9 +801,7 @@ class UcmDirectStoreAdapter:
         addresses = transfer.addresses.reshape(-1, len(transfer.tensor_size_list))
         if not len(addresses):
             return
-        observation = AsyncIoObservation.begin(
-            self.metrics_enabled, True, len(addresses), transfer.shard_size
-        )
+        stats = self._io_stats(True, len(addresses), transfer.shard_size)
         try:
             if item.prepared_io is not None:
                 task = item.prepared_io.dump_data(addresses, prerequisite_handle)
@@ -812,13 +822,10 @@ class UcmDirectStoreAdapter:
                     if prerequisite_handle
                     else item.store.dump_data(block_ids, indexes, addresses)
                 )
+            tasks.append(_StoreTask(item.store, task, addresses, stats))
         except BaseException:
-            if observation is not None:
-                observation.finish(failed=True)
+            self._finish_io_stats(stats, "submit")
             raise
-        if observation is not None:
-            observation.submitted = True
-        tasks.append(_StoreTask(item.store, task, addresses, observation))
 
     def _submit_prepared(
         self,
@@ -867,22 +874,15 @@ class UcmDirectStoreAdapter:
                             addresses,
                         )
                     )
-                    observation = AsyncIoObservation.begin(
-                        self.metrics_enabled,
-                        is_offload,
-                        len(transfer.page_keys),
-                        transfer.shard_size,
-                        layers=(logical_layer,),
+                    stats = self._io_stats(
+                        False, len(transfer.page_keys), transfer.shard_size
                     )
                     try:
                         task = operation(*args, **transfer_options)
                     except BaseException:
-                        if observation is not None:
-                            observation.finish(failed=True)
+                        self._finish_io_stats(stats, "submit")
                         raise
-                    if observation is not None:
-                        observation.submitted = True
-                    tasks.append(_StoreTask(item.store, task, addresses, observation))
+                    tasks.append(_StoreTask(item.store, task, addresses, stats))
             except BaseException:
                 # A later layer, batch or group can fail after earlier tasks
                 # started. Reap those handles before their device buffers can
@@ -906,6 +906,7 @@ class UcmDirectStoreAdapter:
                 raise
         return tasks
 
+    @_record_interface_duration
     def submit_prepared_load_layer(
         self,
         prepared: dict[int, list[_PreparedStoreTransfer]],
@@ -919,6 +920,7 @@ class UcmDirectStoreAdapter:
             prerequisite_handle=prerequisite_handle,
         )
 
+    @_record_interface_duration
     def submit_offload(
         self, transfers: list[UcmLayerTransfer], prerequisite_handle: int = 0
     ) -> list[_StoreTask]:
@@ -940,8 +942,7 @@ class UcmDirectStoreAdapter:
                 if first_error is None:
                     first_error = error
             finally:
-                if item.observation is not None:
-                    item.observation.finish(failed=failed)
+                self._finish_io_stats(item.stats, "wait" if failed else None)
         if first_error is not None:
             raise first_error
 
@@ -949,9 +950,35 @@ class UcmDirectStoreAdapter:
         try:
             return bool(task.store.check(task.task))
         except BaseException:
-            if task.observation is not None:
-                task.observation.fail_check()
+            if task.stats is not None and not task.stats.get("check_failed"):
+                task.stats["check_failed"] = True
+                record_metrics(
+                    {f"sglang_linker_{task.stats['operation']}_check_errors_total": 1}
+                )
             raise
+
+    def _io_stats(self, is_dump, pages, shard_size):
+        if not self.metrics_enabled or not pages:
+            return None
+        return {
+            "operation": "dump" if is_dump else "load",
+            "pages": pages,
+            "bytes": pages * shard_size,
+        }
+
+    @staticmethod
+    def _finish_io_stats(stats, error=None):
+        if stats is None or stats.get("finished"):
+            return
+        stats["finished"] = True
+        prefix = f"sglang_connector_{stats['operation']}"
+        values = {f"{prefix}_requests_total": 1}
+        if error:
+            values[f"{prefix}_{error}_errors_total"] = 1
+        elif not stats.get("check_failed"):
+            values[f"{prefix}_bytes_total"] = stats["bytes"]
+            values[f"{prefix}_pages"] = stats["pages"]
+        record_metrics(values)
 
     def close(self) -> None:
         with self._store_lock:

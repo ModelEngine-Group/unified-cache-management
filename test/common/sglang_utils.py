@@ -14,6 +14,7 @@ import time
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import wraps
 from pathlib import Path
 from typing import Any, List
 
@@ -44,6 +45,7 @@ def _load_source(relative_path, definitions=None, **dependencies):
 
 def load_source(relative_path, definitions=None, **dependencies):
     defaults = dict(
+        wraps=wraps,
         dataclass=dataclass,
         replace=replace,
         field=field,
@@ -74,12 +76,16 @@ metrics_module = load_source(
 )
 adapter_module = load_source(
     "ucm/integration/sglang/ucm_direct_store_adapter.py",
-    AsyncIoObservation=metrics_module.AsyncIoObservation,
+    _record_interface_duration=metrics_module._record_interface_duration,
     record_metrics=metrics_module.record_metrics,
 )
 linker_module = load_source(
     "ucm/integration/sglang/ucm_direct_linker.py",
     LinkerOperation=metrics_module.LinkerOperation,
+    _record_interface_duration=metrics_module._record_interface_duration,
+    measure_phase=metrics_module.measure_phase,
+    start_timing=metrics_module.start_timing,
+    finish_timing=metrics_module.finish_timing,
     record_metrics=metrics_module.record_metrics,
     shutdown_metrics_logger=metrics_module.shutdown_metrics_logger,
     create_metrics_logger=metrics_module.create_metrics_logger,

@@ -161,14 +161,218 @@ def get_default_sglang_metrics_config() -> dict:
         },
     ] + config["histogram"]
     for name, documentation in (
-        ("load_layer_duration_ms", "Per physical load task submission-to-wait completion duration by logical layer, including failures (ms)"),
+        (
+            "load_layer_duration_ms",
+            "Per logical layer submission through worker wait and cleanup, including failures and ordered-reaping delay (ms)",
+        ),
     ):
-        config["histogram"].append({
-            "name": f"sglang_linker_{name}",
-            "documentation": documentation,
-            "dynamic_labels": ["layer"],
-            "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
-        })
+        config["histogram"].append(
+            {
+                "name": f"sglang_linker_{name}",
+                "documentation": documentation,
+                "dynamic_labels": ["layer"],
+                "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
+            }
+        )
     for kind, definitions in get_linker_metric_definitions().items():
         config[kind].extend(definitions)
+
+    # Nested interface samples overlap; do not sum them into end-to-end time.
+    for name, documentation in (
+        (
+            "sglang_linker_interface_build_layer_pointer_layouts_duration_ms",
+            "Synchronous linker._build_layer_pointer_layouts call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_build_pool_bundles_duration_ms",
+            "Synchronous linker._build_pool_bundles call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_create_adapter_duration_ms",
+            "Synchronous linker._create_adapter call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_entry_layer_rows_duration_ms",
+            "Synchronous linker._entry_layer_rows call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_expand_duration_ms",
+            "Synchronous linker._expand call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_freeze_gc_once_duration_ms",
+            "Synchronous linker._freeze_gc_once call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_log_pool_topology_duration_ms",
+            "Synchronous linker._log_pool_topology call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_page_transfers_duration_ms",
+            "Synchronous linker._page_transfers call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_partition_offload_duration_ms",
+            "Synchronous linker._partition_offload call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_pool_metadata_duration_ms",
+            "Synchronous linker._pool_metadata call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_record_transfer_events_duration_ms",
+            "Synchronous linker._record_transfer_events call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_select_store_ranks_duration_ms",
+            "Synchronous linker._select_store_ranks call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_wait_transfer_events_duration_ms",
+            "Synchronous linker._wait_transfer_events call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_cancel_queued_load_duration_ms",
+            "Synchronous linker.cancel_queued_load call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_finish_layer_wise_loading_duration_ms",
+            "Synchronous linker.finish_layer_wise_loading call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_load_duration_ms",
+            "Synchronous linker.load call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_lookup_duration_ms",
+            "Synchronous linker.lookup call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_num_completed_loads_duration_ms",
+            "Synchronous linker.num_completed_loads call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_num_completed_offloads_duration_ms",
+            "Synchronous linker.num_completed_offloads call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_offload_duration_ms",
+            "Synchronous linker.offload call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_pop_completed_load_duration_ms",
+            "Synchronous linker.pop_completed_load call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_pop_completed_offload_duration_ms",
+            "Synchronous linker.pop_completed_offload call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_interface_start_layer_wise_loading_duration_ms",
+            "Synchronous linker.start_layer_wise_loading call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_block_ids_duration_ms",
+            "Synchronous adapter._block_ids call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_ensure_store_schema_duration_ms",
+            "Synchronous adapter._ensure_store_schema call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_estimate_gc_capacities_duration_ms",
+            "Synchronous adapter._estimate_gc_capacities call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_identity_suffix_duration_ms",
+            "Synchronous adapter._identity_suffix call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_prepare_backend_paths_duration_ms",
+            "Synchronous adapter._prepare_backend_paths call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_prepare_pipeline_io_duration_ms",
+            "Synchronous adapter._prepare_pipeline_io call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_prepare_transfers_duration_ms",
+            "Synchronous adapter._prepare_transfers call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_store_unique_id_duration_ms",
+            "Synchronous adapter._store_unique_id call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_submit_dump_duration_ms",
+            "Synchronous adapter._submit_dump call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_submit_prepared_duration_ms",
+            "Synchronous adapter._submit_prepared call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_transfer_layout_duration_ms",
+            "Synchronous adapter._transfer_layout call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_check_duration_ms",
+            "Synchronous adapter.check call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_lookup_duration_ms",
+            "Synchronous adapter.lookup call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_prepare_load_duration_ms",
+            "Synchronous adapter.prepare_load call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_register_device_pools_duration_ms",
+            "Synchronous adapter.register_device_pools call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_submit_offload_duration_ms",
+            "Synchronous adapter.submit_offload call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_submit_prepared_load_layer_duration_ms",
+            "Synchronous adapter.submit_prepared_load_layer call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_adapter_interface_wait_duration_ms",
+            "Synchronous adapter.wait call duration including failures; not asynchronous I/O latency (ms)",
+        ),
+        (
+            "sglang_linker_load_prepare_duration_ms",
+            "Worker/lookup load_prepare phase wall-clock duration including failures (ms)",
+        ),
+        (
+            "sglang_linker_offload_prepare_duration_ms",
+            "Worker/lookup offload_prepare phase wall-clock duration including failures (ms)",
+        ),
+        (
+            "sglang_linker_offload_io_duration_ms",
+            "Worker/lookup offload_io phase wall-clock duration including failures (ms)",
+        ),
+        (
+            "sglang_linker_lookup_expand_duration_ms",
+            "Completed lookup_expand phase wall-clock duration (ms); failures are covered by interface timing",
+        ),
+        (
+            "sglang_linker_lookup_prepare_duration_ms",
+            "Completed lookup_prepare phase wall-clock duration (ms); failures are covered by interface timing",
+        ),
+        (
+            "sglang_linker_lookup_result_duration_ms",
+            "Completed lookup_result phase wall-clock duration (ms); failures are covered by interface timing",
+        ),
+    ):
+        config["histogram"].append(
+            {
+                "name": name,
+                "documentation": documentation,
+                "buckets": [0.01, 0.1, 0.5, 1, 5, 10, 50, 100, 500, 1000, 5000, 10000],
+            }
+        )
     return config
