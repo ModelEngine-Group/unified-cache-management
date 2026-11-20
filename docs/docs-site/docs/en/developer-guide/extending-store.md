@@ -225,7 +225,7 @@ The V1 factory registers `UcmPipelineStore`. Pipeline loads registered builders 
 ### pipeline
 
 - `ucm/store/pipeline/connector.py` defines the registered compositions and loaded libraries.
-- `ucm/store/cache/cc/cache_store.cc` owns buffer defaults and minimum-size checks.
+- `ucm/store/cache/v2/global_config.h` owns buffer defaults and minimum-size checks.
 - `ucm/store/posix/cc/posix_store.cc` owns filesystem configuration and health probes.
 - `ucm/integration/vllm/ucm_connector.py` supplies layout, shared-buffer defaults, and GC ownership.
 

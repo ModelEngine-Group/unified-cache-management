@@ -1,6 +1,7 @@
 import copy
 import math
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
@@ -24,9 +25,9 @@ from ucm.integration.vllm.cache_config import configure_cache_capacity
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
+    KVConnectorTransferResults,
     UCMDirectConnector,
     UCMLiteConnector,
-    _check_shm_capacity,
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
@@ -35,7 +36,6 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -657,10 +657,18 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
         nested = getattr(spec, "kv_cache_specs", None)
         specs = list(nested.values()) if nested else [spec]
         if not all(getattr(s, "prefix_cacheable", True) for s in specs):
-            if not all(type(s).__name__ == "CircularBufferSpec" for s in specs):
+            if not all(
+                any(cls.__name__ == "CircularBufferSpec" for cls in type(s).__mro__)
+                or (
+                    getattr(s, "sliding_window", None) is not None
+                    and not getattr(s, "prefix_cacheable", True)
+                    and getattr(s, "prefix_replay_tokens", 0) > 0
+                )
+                for s in specs
+            ):
                 raise ValueError(
-                    "Ascend V4.1 UCM requires persisted SWA windows; "
-                    "bounded replay and other transient groups are not supported."
+                    "Ascend V4.1 UCM supports only compressor-ring and SWA "
+                    "bounded-replay transient groups."
                 )
             continue
         if not getattr(group, "enable_kv_transfer", True):
@@ -688,7 +696,8 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
                     raise ValueError("Ascend V4.1 FA page needs one long KV owner.")
                 owner = owners[0]
                 indexer = owner.removesuffix(".long_kv_cache") + ".indexer.k_cache"
-                if members != {owner, indexer}:
+                folded = indexer + "_folded"
+                if members not in ({owner, indexer}, {owner, indexer, folded}):
                     raise ValueError("Unsupported Ascend V4.1 FA page contents.")
             sizes[owner] = tensor.block_stride
             remaining.difference_update(members)
@@ -751,6 +760,7 @@ class FAWARequestDispatchMeta:
     dump_hash_start: int = 0
     dump_hash_end: int = 0
     dump_vllm_block_ids: tuple[list[int], ...] = field(default_factory=tuple)
+    load_async: bool = field(default=False, kw_only=True)
 
 
 @dataclass
@@ -763,13 +773,25 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
 
 @dataclass
 class FAWALoadTask:
-    """Outstanding FAWA load task plus scheduler-visible failure anchors."""
+    """One FA/WA Store transfer and its optional background wait."""
 
     request_id: str
     label: str
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
+    wait_future: Optional[Future] = None
+
+
+@dataclass
+class FAWAPendingLoad:
+    """Request-level async load, spanning the FA and WA store tasks."""
+
+    request_id: str
+    tasks: list[FAWALoadTask] = field(default_factory=list)
+    failed: bool = False
+    successful_bytes: int = 0
+    event_handle: int = 0
 
 
 @dataclass
@@ -825,6 +847,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
     ASCEND_C4_COMPRESS_RATIO = 4
 
+    @classmethod
+    def _supports_request_async_load(cls) -> bool:
+        return cls is UCMFAWAConnector
+
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -844,6 +870,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.resume_token_alignment = 1
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
         self.file_size = {}
+        self._pending_fawa_loads: dict[str, FAWAPendingLoad] = {}
+        self._failed_fawa_loads: set[str] = set()
+        self._load_wait_executor: Optional[ThreadPoolExecutor] = None
+        self._load_wait_workers = 2 * vllm_config.scheduler_config.max_num_seqs
 
         # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
         self.max_token_block_size = 0
@@ -855,6 +885,50 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.requests_meta: dict[str, FAWARequestMeta] = {}
         self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
         self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
+
+        # PCP expands the dump-ownership domain: with PCP>1 and DCP=1 every
+        # PCP peer holds a full KV replica after the step's PCP gather, so
+        # exactly one of the TP*PCP workers must dump each block (same idea
+        # as the TP-only dedup, spanning the PCP axis too). DCP>1 shards the
+        # KV cache, so the PCP axis must not be merged there.
+        self.pcp_world_size = 1
+        self.pcp_rank = 0
+        if (
+            role == KVConnectorRole.WORKER
+            and getattr(
+                self._vllm_config.parallel_config,
+                "prefill_context_parallel_size",
+                1,
+            )
+            > 1
+        ):
+            try:
+                from vllm.distributed import get_dcp_group, get_pcp_group
+
+                if get_dcp_group().world_size == 1:
+                    self.pcp_world_size = get_pcp_group().world_size
+                    self.pcp_rank = get_pcp_group().rank_in_group
+                else:
+                    logger.warning(
+                        "FAWA dump dedup keeps the TP-only domain because "
+                        "DCP>1 shards the KV cache across ranks."
+                    )
+            except (ImportError, AssertionError):
+                logger.warning(
+                    "FAWA dump dedup keeps the TP-only domain because the "
+                    "PCP process group is unavailable."
+                )
+        self.dump_owner_size = self.tp_size * self.pcp_world_size
+        self.dump_owner_rank = (
+            self.tp_rank % self.tp_size
+        ) + self.tp_size * self.pcp_rank
+        logger.info(
+            "FAWA dump ownership: tp_rank=%s, pcp_rank=%s, " "dump_owner_rank=%s/%s",
+            self.tp_rank,
+            self.pcp_rank,
+            self.dump_owner_rank,
+            self.dump_owner_size,
+        )
 
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
@@ -922,6 +996,18 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def get_block_size(self) -> int:
         return self.hash_block_size
+
+    def _get_mla_dump_slice(self, dump_block_start: int = 0) -> slice:
+        """Select this worker's MLA records across the TP*PCP replica domain.
+
+        The base implementation selects by absolute block position modulo
+        tp_size only. With PCP>1 (DCP=1) both PCP peers share a tp_rank, so
+        both would dump the same keys into the shared store concurrently.
+        The ownership domain here is TP*PCP; with PCP=1 this is identical
+        to the upstream TP-only slice.
+        """
+        first_index = (self.dump_owner_rank - dump_block_start) % self.dump_owner_size
+        return slice(first_index, None, self.dump_owner_size)
 
     @staticmethod
     def ascend_compression_ratio(spec) -> int:
@@ -1117,11 +1203,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(parallel, name, 1) != 1
                 for name in (
                     "pipeline_parallel_size",
-                    "prefill_context_parallel_size",
                     "decode_context_parallel_size",
                 )
             ):
-                raise ValueError("Ascend V4.1 UCM currently requires PP=PCP=DCP=1.")
+                # PCP>1 is allowed here: after the step's PCP gather every PCP
+                # peer holds a full KV replica and FAWA dump ownership already
+                # spans TP*PCP (see dump_owner_size), so each block is stored
+                # once. DCP shards the KV cache, so DCP>1 stays rejected.
+                raise ValueError("Ascend V4.1 UCM currently requires PP=DCP=1.")
             self.whole_page_sizes = _ascend_v41_whole_page_sizes(self._kv_cache_config)
             # Ascend already expresses block_size in original tokens. Use a
             # complete logical page, even when the engine hashes finer chunks.
@@ -1135,8 +1224,27 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     "Ascend V4.1 needs one positive logical FA block size."
                 )
             self.hash_block_size = self.ascend_base_block_size = block_sizes.pop()
-            if self.prefix_replay_tokens:
-                raise ValueError("Ascend V4.1 UCM does not support bounded replay.")
+            for group_id, group in enumerate(groups):
+                replay_tokens = max(
+                    getattr(spec, "prefix_replay_tokens", 0)
+                    for spec in [group.kv_cache_spec, *self._specs_for_group(group)]
+                )
+                if not replay_tokens:
+                    continue
+                if group_id not in self.transient_group_ids:
+                    raise ValueError(
+                        "Ascend V4.1 replay groups must not be prefix-cacheable."
+                    )
+                self.prefix_replay_tokens = max(
+                    self.prefix_replay_tokens, replay_tokens
+                )
+                replay_block = group.kv_cache_spec.block_size
+                if replay_block <= 0 or self.hash_block_size % replay_block:
+                    raise ValueError(
+                        "Ascend V4.1 bounded replay needs UCM hits aligned to "
+                        f"the replayed SWA block: hash_block_size="
+                        f"{self.hash_block_size}, swa_block_size={replay_block}."
+                    )
         else:
             self.whole_page_sizes = (
                 _v41_whole_page_sizes(self._kv_cache_config)
@@ -1267,6 +1375,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     "DeepSeek V4.1 hash block size must be divisible by the "
                     "KV compression group size: "
                     f"hash_block_size={self.hash_block_size}, "
+                    f"compression_group_size={self.resume_token_alignment}."
+                )
+            if (
+                self.is_ascend_v41_layout
+                and self.prefix_replay_tokens % self.resume_token_alignment
+            ):
+                raise ValueError(
+                    "DeepSeek V4.1 bounded replay window must be divisible by "
+                    "the KV compression group size: "
+                    f"prefix_replay_tokens={self.prefix_replay_tokens}, "
                     f"compression_group_size={self.resume_token_alignment}."
                 )
         # Ascend V4 and V4.1 use runtime page payloads, including FP8 and
@@ -1474,7 +1592,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
-        # This selects shared MLA keys versus rank-specific GQA keys in Cache2.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
             config["storage_backends"] = [
@@ -1491,33 +1608,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return name, module_path, config
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
-        if uses_partitioned_cache() or cache_core_version() == 1:
-            configure_cache_capacity(
-                config, self._vllm_config.parallel_config, stores_per_dp=2
-            )
-            if not uses_partitioned_cache() and config.get(
-                "share_buffer_enable", False
-            ):
-                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]) * 2)
-            return
-        if not bool(config.get("share_buffer_enable", False)):
-            return
-
-        # HMA creates two shared-buffer stores, FA and WA, so split the
-        # shared-buffer capacity evenly between them, whether user-set or the
-        # 128GB direct-connector default.
-        if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
-        capacity = int(config["cache_buffer_capacity_gb"])
-        config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
-        logger.info(
-            f"Set FAWA cache_buffer_capacity_gb to "
-            f"{config['cache_buffer_capacity_gb']}GB by splitting the "
-            f"{capacity}GB shared-buffer capacity across FA/WA stores."
+        configure_cache_capacity(
+            config, self._vllm_config.parallel_config, stores_per_dp=2
         )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold the FA+WA total.
-        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
@@ -1550,10 +1643,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
-        if label == "WA" and (uses_partitioned_cache() or cache_core_version() == 1):
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
+        if label == "WA":
             # WA loads one boundary snapshot per request.
             config.setdefault("cache_load_exclusive_buffer_number", 512)
         self._set_default_shm_buffer_capacity(config)
@@ -1595,9 +1687,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # Count load/save metrics with the same per-record size as GC.
             self.file_size[label] = gc_size
             self._publish_block_size(gc_size, store_suffix=store_suffix)
-            # MLA stores aggregate TP shards under one logical rank group.
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -1812,6 +1901,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
+        # A fresh lookup follows preemption/rescheduling; the previous
+        # allocation's one-shot async dispatch must not suppress this attempt.
+        self._pending_async_load_dispatches.pop(request.request_id, None)
+        self._async_load_req_ids.discard(request.request_id)
+        if request.request_id in self.requests_meta:
+            self.requests_meta.pop(request.request_id)
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
@@ -1907,7 +2002,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}, "
             f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
-        return external_hit_tokens, False
+        return external_hit_tokens, (
+            self.use_request_async_load and external_hit_tokens > 0
+        )
 
     def update_state_after_alloc(
         self,
@@ -1915,7 +2012,28 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        pass
+        if not self.use_request_async_load or num_external_tokens <= 0:
+            return
+        req_meta = self.requests_meta.get(request.request_id)
+        if not isinstance(req_meta, FAWARequestMeta):
+            return
+        block_ids = tuple(list(group) for group in blocks.get_block_ids())
+        if len(block_ids) != len(self.group_metas):
+            raise RuntimeError(
+                f"FAWA allocated {len(block_ids)} groups, expected {len(self.group_metas)}"
+            )
+        # Seed the accumulated rows without appending them twice when the
+        # load-only metadata is generated below.
+        req_meta.vllm_block_ids = block_ids
+        async_meta = self._generate_dispatch_meta(
+            req_meta,
+            0,
+            tuple([] for _ in block_ids),
+            need_load=True,
+        )
+        async_meta.load_async = True
+        self._pending_async_load_dispatches[request.request_id] = async_meta
+        self._async_load_req_ids.add(request.request_id)
 
     def _slice_group_block_ids(
         self,
@@ -2077,10 +2195,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             request_id, vllm_block_ids = request.req_id, request.block_ids
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
+                # New-request metadata contains the complete block table, including
+                # rows already seeded by an asynchronous external-prefix load.
+                req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     tuple(vllm_block_ids),
+                    need_load=request_id not in self._async_load_req_ids,
                     computed_tokens=(
                         request.num_computed_tokens
                         if self.prefix_replay_tokens
@@ -2111,7 +2233,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     new_block_ids,
-                    need_load=resumed_from_preemption,
+                    need_load=resumed_from_preemption
+                    and request_id not in self._async_load_req_ids,
                     computed_tokens=(
                         scheduled_cached_reqs.num_computed_tokens[i]
                         if self.prefix_replay_tokens
@@ -2121,6 +2244,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._pending_async_load_dispatches.pop(request_id, None)
+            self._async_load_req_ids.discard(request_id)
+
+        requests_dispatch_meta.update(self._pending_async_load_dispatches)
+        self._pending_async_load_dispatches = {}
 
         preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
         return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
@@ -2132,6 +2260,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
+        event_handle: int = 0,
     ) -> FAWALoadTask:
         """Submit one store load and retain block ids for failure reporting."""
 
@@ -2142,6 +2271,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             keys,
             shard_indices,
             ptrs,
+            distribute_backend_load=self.is_mla,
+            event_handle=event_handle,
         )
         return FAWALoadTask(
             request_id=request_id,
@@ -2158,6 +2289,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             affected_block_ids,
         )
         self._connector_worker_meta.mark_failed(request_id)
+
+    def _record_fawa_load_error(
+        self, pending: FAWAPendingLoad, metric_name: str
+    ) -> None:
+        """Retain request failures until all FA/WA writes have drained.
+
+        Physical block IDs are only unique within each KV group. Never export
+        a flattened set of them for a multi-group async failure.
+        """
+        ucmmetrics.update_stats({metric_name: 1.0})
+        pending.failed = True
 
     def _wait_load_task(
         self,
@@ -2303,23 +2445,39 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.is_v41_layout and any(
-            request.load_keys for request in metadata.request_meta.values()
+        # Fence load DMA behind pending zeroing: sync loads share one event
+        # destroyed below; each async request owns one, released at drain.
+        load_event_handle = 0
+        if any(
+            request.load_keys and (not request.load_async or not self.enable_event_sync)
+            for request in metadata.request_meta.values()
         ):
-            # Finish pending KV page writes before the store starts its H2D copies.
-            self.device.synchronize()
-            logger.info_once("V4.1 compute stream synchronized before external KV load")
+            load_event_handle = self._get_event_handle()
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
                 continue
+            if request.load_async and request_id in self._pending_fawa_loads:
+                logger.warning(
+                    "Ignore duplicate async FAWA load metadata for request %s.",
+                    request_id,
+                )
+                continue
 
+            pending = FAWAPendingLoad(request_id=request_id)
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
                 if self.window_group_ids and self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
+
+                # Async requests fence with one event of their own, shared by
+                # the FA/WA tasks and released when the pending drains.
+                submit_handle = load_event_handle
+                if request.load_async and self.enable_event_sync:
+                    pending.event_handle = self._get_event_handle()
+                    submit_handle = pending.event_handle
 
                 # FA groups are loaded for every external-hit canonical block.
                 fa_ptrs = self._extract_fa_ptr(
@@ -2334,10 +2492,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.fa_store,
                     request.load_keys,
                     fa_ptrs,
+                    event_handle=submit_handle,
                 )
                 tasks.append(fa_task)
+                pending.tasks.append(fa_task)
 
                 if not self.window_group_ids:
+                    if request.load_async:
+                        self._pending_fawa_loads[request_id] = pending
                     continue
                 # WA groups only need the final matched boundary.
                 window_keys = request.load_keys[-1:]
@@ -2351,16 +2513,107 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     self.wa_store,
                     window_keys,
                     window_ptrs,
+                    event_handle=submit_handle,
                 )
                 tasks.append(wa_task)
+                pending.tasks.append(wa_task)
+                if request.load_async:
+                    self._pending_fawa_loads[request_id] = pending
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                self._handle_load_err(request_id)
+                pending.failed = True
+                if request.load_async:
+                    self._record_fawa_load_error(
+                        pending, "connector_load_submit_errors_total"
+                    )
+                    if pending.tasks:
+                        self._pending_fawa_loads[request_id] = pending
+                    else:
+                        self._finished_async_load_req_ids.add(request_id)
+                        self._failed_fawa_loads.add(request_id)
+                        self._connector_worker_meta.mark_failed(request_id)
+                        # No submitted task ever referenced the event.
+                        if pending.event_handle:
+                            self.device.destroy_event_handle(pending.event_handle)
+                            pending.event_handle = 0
+                else:
+                    # Keep the historical sync behavior: invalidate both the
+                    # load and dump blocks through the request metadata.
+                    self._handle_load_err(request_id)
 
-        self._wait_all_load_task(tasks)
+        # Store.check() alone cannot trigger native timeout/cancel/drain. Start
+        # real waits off the model thread and poll their completion instead.
+        # Rank-consistency bookkeeping stays on the model thread below.
+        for pending in self._pending_fawa_loads.values():
+            for load_task in pending.tasks:
+                if load_task.wait_future is None:
+                    if self._load_wait_executor is None:
+                        self._load_wait_executor = ThreadPoolExecutor(
+                            max_workers=self._load_wait_workers,
+                            thread_name_prefix="ucm-fawa-load",
+                        )
+                    load_task.wait_future = self._load_wait_executor.submit(
+                        load_task.store.wait, load_task.task
+                    )
+
+        sync_tasks = [
+            task
+            for request_id, request in metadata.request_meta.items()
+            if not request.load_async
+            for task in tasks
+            if task.request_id == request_id
+        ]
+        self._wait_all_load_task(sync_tasks)
+
+        if load_event_handle:
+            self.device.destroy_event_handle(load_event_handle)
+
+    def _poll_pending_fawa_loads(self) -> set[str]:
+        finished = set(self._finished_async_load_req_ids)
+        self._finished_async_load_req_ids.clear()
+        for request_id, pending in list(self._pending_fawa_loads.items()):
+            remaining = []
+            for load_task in pending.tasks:
+                # A waiter that could not be started has not drained its I/O.
+                future = load_task.wait_future
+                if future is None or not future.done():
+                    remaining.append(load_task)
+                    continue
+                try:
+                    self._rank_consistency.wait_load(load_task.task, wait=future.result)
+                    pending.successful_bytes += (
+                        load_task.key_count * self.file_size[load_task.label]
+                    )
+                except Exception as e:
+                    pending.failed = True
+                    self._record_fawa_load_error(
+                        pending, "connector_load_wait_errors_total"
+                    )
+                    logger.error(
+                        "request %s async FAWA %s load failed: %s",
+                        request_id,
+                        load_task.label,
+                        e,
+                    )
+            pending.tasks = remaining
+            if not remaining:
+                self._pending_fawa_loads.pop(request_id, None)
+                # Drained: the lazy WaitEvents have run; release the event.
+                if pending.event_handle:
+                    self.device.destroy_event_handle(pending.event_handle)
+                    pending.event_handle = 0
+                finished.add(request_id)
+                if pending.failed:
+                    self._failed_fawa_loads.add(request_id)
+                    self._connector_worker_meta.mark_failed(request_id)
+                else:
+                    ucmmetrics.update_stats(
+                        {"load_bytes_total": pending.successful_bytes}
+                    )
+        return finished
 
     def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
         load_bytes = 0
@@ -2390,9 +2643,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
-        if self.tp_size > 1:
+        if self.dump_owner_size > 1:
             # Split FA rows by canonical block index. Block-wise WA follows the same
-            # TP key slice; chunk-wise WA assigns one final boundary per request.
+            # owner key slice (TP*PCP dedup domain); chunk-wise WA assigns one final
+            # boundary per request.
             wa_dump_ring_idx = 0
             for request_id, request in metadata.request_meta.items():
                 if not request.dump_keys:
@@ -2452,7 +2706,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                                 wa_dump_vllm_block_ids,
                             )
                         )
-                elif wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                elif wa_dump_ring_idx % self.dump_owner_size == self.dump_owner_rank:
                     request_wa_dump_keys = request.dump_keys[-1:]
                     wa_dump_blocks_by_request[request_id] = set(request_wa_dump_keys)
                     wa_dump_keys.extend(request_wa_dump_keys)
@@ -2501,7 +2755,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
 
         if fa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             fa_ptrs = np.vstack(fa_ptr_rows)
             try:
                 fa_dump_task = self._submit_dump_task(
@@ -2519,7 +2773,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
         if wa_dump_keys:
-            event_handle = self._get_dump_event_handle()
+            event_handle = self._get_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
             try:
                 wa_dump_task = self._submit_dump_task(
@@ -2623,9 +2877,45 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         finished_req_ids: set[str],
     ) -> tuple[set[str] | None, set[str] | None]:
         # Worker side method
+        # A request can be reported as finished by the scheduler while its
+        # remote FA/WA loads are still in flight (notably on cancellation).
+        # Do not let that release/recycle its HBM blocks until the load reaches
+        # a terminal state.  Capture this before polling because a task that
+        # completes in this call must not appear in both result sets.
+        pending_async_loads = set(getattr(self, "_pending_fawa_loads", {}))
+        finished_recving = self._poll_pending_fawa_loads()
+        if KVConnectorTransferResults is None and self._failed_fawa_loads:
+            # Legacy engines cannot identify failed multi-group requests. Fail
+            # closed after draining, rather than resuming with partially loaded
+            # KV or reporting ambiguous physical IDs through the flat protocol.
+            raise RuntimeError(
+                "Async FAWA load failed after draining Store I/O; this vLLM "
+                "version lacks KVConnectorTransferResults.failed_recving: "
+                f"{sorted(self._failed_fawa_loads)}"
+            )
         self._drain_best_effort_dump_tasks(finished_req_ids)
         self._rank_consistency.finish_dump(finished_req_ids)
-        return finished_req_ids, None
+        finished_sending = set(finished_req_ids)
+        finished_sending.difference_update(pending_async_loads)
+        finished_sending.difference_update(finished_recving)
+        return finished_sending or None, finished_recving or None
+
+    def get_transfer_results(self, finished_req_ids: set[str]):
+        sending, recving = self.get_finished(finished_req_ids)
+        failed = self._failed_fawa_loads.intersection(recving or ())
+        self._failed_fawa_loads.difference_update(failed)
+        return KVConnectorTransferResults(
+            finished_sending=sending or set(),
+            finished_recving=recving or set(),
+            failed_recving=failed,
+        )
+
+    def shutdown(self) -> None:
+        if self._load_wait_executor is not None:
+            # Do not cancel queued waits: each submitted Store task needs its
+            # timeout/cancel/drain path to run before HBM can be reclaimed.
+            self._load_wait_executor.shutdown(wait=True)
+            self._load_wait_executor = None
 
     def request_finished_all_groups(
         self,

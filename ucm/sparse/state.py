@@ -15,6 +15,7 @@ from vllm.forward_context import ForwardContext
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
+from ucm.sparse.utils import IS_OPEN_GSA
 from ucm.utils import Config
 
 logger = init_logger(__name__)
@@ -42,14 +43,17 @@ def ensure_ucm_sparse_initialized(
     ucm_config = Config(vllm_config.kv_transfer_config)
     ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
     if not ucm_sparse_config:
-        return
+        if not IS_OPEN_GSA:
+            return
+        # GSAV2 通过 UCM_SPARSE_GSA_ENABLE 开关启用，无需在配置文件中显式声明。
+        ucm_sparse_config = {"GSAV2": {}}
 
-    sparse_method_name = ucm_sparse_config
+    sparse_method_name = next(iter(ucm_sparse_config))
 
     if _UCM_SPARSE_AGENT is None:
         logger.info(f"Initializing UCM sparse agent with method: {sparse_method_name}")
         _UCM_SPARSE_AGENT = UcmSparseFactory.create_sparse_method(
-            vllm_config, role=role
+            vllm_config, ucm_sparse_config, role=role
         )
     else:
         # Update role if needed (for debugging/logging purposes)
@@ -119,7 +123,14 @@ def maybe_execute_sparse_attention_begin(
     k_hash: Optional[torch.Tensor] = None,
     decode_ql_nope: Optional[torch.Tensor] = None,
     decode_q_pe: Optional[torch.Tensor] = None,
+    **kwargs,
 ):
+    """All UcmSparseBase methods (GSAV2 / GSA / Blend / ESA / ...) share this hook.
+
+    通用参数走具名形参（与 UcmSparseBase.attention_begin 的契约一致）；
+    个别实现的专属扩展参数（如 GSAV2 的 indexer_cache / has_indexer 等）
+    通过 ``**kwargs`` 原样透传，由实现方自行声明。
+    """
     if not has_ucm_sparse():
         return query, key, value, output
 
@@ -140,6 +151,7 @@ def maybe_execute_sparse_attention_begin(
         k_hash,
         decode_ql_nope,
         decode_q_pe,
+        **kwargs,
     )
 
 
@@ -151,6 +163,7 @@ def maybe_execute_sparse_attention_finished(
     layer_name: str,
     forward_context: ForwardContext,
     phase: Optional[str] = None,
+    **kwargs,
 ):
     if not has_ucm_sparse():
         return
@@ -162,5 +175,5 @@ def maybe_execute_sparse_attention_finished(
         return
 
     ucm_sparse.attention_finished(
-        query, key, value, attn_output, layer_name, forward_context, phase
+        query, key, value, attn_output, layer_name, forward_context, phase, **kwargs
     )

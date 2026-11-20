@@ -35,4 +35,4 @@ Cache 阶段隐藏缓冲管理，Posix 阶段隐藏文件 I/O；Connector 提供
 - `ucm/integration/vllm/ucm_connector.py`：块标识、调度匹配和 Worker 传输。
 - `ucm/store/ucmstore_v1.py`：查询与任务接口的定义。
 - `ucm/store/pipeline/connector.py`：阶段组合与 Python/原生边界。
-- `ucm/store/cache/cc/load_queue.cc`、`ucm/store/posix/`：主机缓冲等待与后端 I/O。
+- `ucm/store/cache/v2/load_queue.h`、`ucm/store/posix/`：主机缓冲等待与后端 I/O。

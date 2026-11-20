@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 #include "status/status.h"
 
 namespace UC::Cache2::Numa {
@@ -61,6 +62,23 @@ Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> 
  * device registration. Registration pins pages, so binding afterwards would
  * lock them onto the wrong node. Memfd path. */
 Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan);
+
+/* Temporarily bind file preallocation to one node on the calling thread.
+ * Restore() must be checked before continuing setup; the destructor is a
+ * best-effort guard for exceptional exits. No other thread's policy changes. */
+class ScopedThreadPolicy {
+    int originalMode_{0};
+    std::vector<unsigned long> originalMask_;
+    bool active_{false};
+
+public:
+    ScopedThreadPolicy() = default;
+    ScopedThreadPolicy(const ScopedThreadPolicy&) = delete;
+    ScopedThreadPolicy& operator=(const ScopedThreadPolicy&) = delete;
+    ~ScopedThreadPolicy();
+    Status Bind(const Plan& plan);
+    Status Restore();
+};
 
 /* Bounded sampling of actual page placement, for diagnostics only: a failed
  * query must not affect service. */

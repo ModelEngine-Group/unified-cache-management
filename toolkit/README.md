@@ -17,3 +17,9 @@ The package includes dev-sandbox sources. Compile them for your local SDK with
 Network monitoring requires Linux and ethtool. Storage bandwidth benchmarks
 require an installed UCM native backend and numpy. The basic CLI does not install
 a CUDA or Ascend backend automatically.
+
+`sglang-model-check` checks SGLang model structure and UCM host-cache storage
+compatibility without starting a service or loading checkpoint weights.
+Use `--mode inspect` for structure checks or `--mode roundtrip` for storage IO.
+See the [sglang-model-check README](ucm_toolkit/tools/sglang_model_check/README.md)
+for usage and validation scope.

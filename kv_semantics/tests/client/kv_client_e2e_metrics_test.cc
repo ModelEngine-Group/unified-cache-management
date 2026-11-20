@@ -45,22 +45,22 @@ namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     if (text.size() <= key.size()) {
         if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
-        return key;
+        return CacheKey::FromBytes(key);
     }
     const auto hash = std::hash<std::string_view>{}(text);
     std::memcpy(key.data(), &hash, key.size());
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 struct CacheKeyHasher {
     std::size_t operator()(const CacheKey& key) const
     {
         std::uint64_t hash = 1469598103934665603ULL;
-        for (auto byte : key) {
-            hash ^= static_cast<std::uint64_t>(std::to_integer<unsigned char>(byte));
+        for (auto byte : CacheKeyView(key)) {
+            hash ^= static_cast<std::uint64_t>(static_cast<unsigned char>(byte));
             hash *= 1099511628211ULL;
         }
         return static_cast<std::size_t>(hash);
@@ -333,7 +333,7 @@ public:
                                             "fake ASU transport is not initialized");
     }
 
-    Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
+    Status RunQuery(BatchView<ResolvedCacheKey> keys, QueryResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -348,7 +348,8 @@ public:
         result.exists.assign(keys.size, 0);
         result.prefixHitKeys = 0;
         for (std::size_t index = 0; index < keys.size; ++index) {
-            result.exists[index] = store.find(keys[index]) == store.end() ? 0 : 1;
+            result.exists[index] =
+                store.find(CacheKey::FromBytes(keys[index].keyBytes)) == store.end() ? 0 : 1;
         }
         return Status::OK();
     }
@@ -380,7 +381,8 @@ public:
         }
     }
 
-    Status SubmitQuery(BatchView<CacheKey> keys, TaskId& taskId, TaskCompletionCallback onComplete)
+    Status SubmitQuery(BatchView<ResolvedCacheKey> keys, TaskId& taskId,
+                       TaskCompletionCallback onComplete)
     {
         QueryResult queryResult;
         auto status = RunQuery(keys, queryResult);
@@ -398,7 +400,7 @@ public:
         return status;
     }
 
-    Status SubmitLoad(BatchView<KVBuffer> entries, TaskId& taskId,
+    Status SubmitLoad(BatchView<ResolvedKVBuffer> entries, TaskId& taskId,
                       TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
@@ -414,7 +416,7 @@ public:
         auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < entries.size; ++index) {
             const auto& entry = entries[index];
-            auto iter = store.find(entry.key);
+            auto iter = store.find(CacheKey::FromBytes(entry.key.keyBytes));
             if (iter == store.end()) {
                 entryStatus.emplace_back(
                     Status::Error(StatusCode::NOT_FOUND, "fake ASU key not found"));
@@ -437,7 +439,7 @@ public:
         return status;
     }
 
-    Status SubmitStore(BatchView<KVBuffer> entries, TaskId& taskId,
+    Status SubmitStore(BatchView<ResolvedKVBuffer> entries, TaskId& taskId,
                        TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
@@ -460,7 +462,8 @@ public:
             }
 
             const auto* data = reinterpret_cast<const std::uint8_t*>(entry.buffer.region.addr);
-            store[entry.key] = std::vector<std::uint8_t>(data, data + entry.buffer.region.size);
+            store[CacheKey::FromBytes(entry.key.keyBytes)] =
+                std::vector<std::uint8_t>(data, data + entry.buffer.region.size);
             entryStatus.emplace_back(Status::OK());
         }
         auto result = BuildTaskResult(entryStatus);
@@ -469,7 +472,8 @@ public:
         return status;
     }
 
-    Status SubmitDelete(BatchView<CacheKey> keys, TaskId& taskId, TaskCompletionCallback onComplete)
+    Status SubmitDelete(BatchView<ResolvedCacheKey> keys, TaskId& taskId,
+                        TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -484,7 +488,7 @@ public:
         auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < keys.size; ++index) {
             const auto& key = keys[index];
-            if (store.erase(key) == 0) {
+            if (store.erase(CacheKey::FromBytes(key.keyBytes)) == 0) {
                 entryStatus.emplace_back(
                     Status::Error(StatusCode::NOT_FOUND, "fake ASU key not found"));
             } else {

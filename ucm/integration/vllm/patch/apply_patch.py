@@ -41,6 +41,68 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
     "on",
 )
 ENABLE_UCM_PATCH = os.environ.get("ENABLE_UCM_PATCH", "").lower() in ("1", "true")
+ENABLE_GSA_PATCH = os.environ.get("ENABLE_GSA_PATCH", "").lower() in ("1", "true")
+
+
+def _preflight_gsa_cust_opapi() -> bool:
+    """预检 libcust_opapi.so 提供 GSA aclnn 符号（部署问题前移到启动期）。"""
+    import ctypes
+
+    try:
+        # 默认 mode（RTLD_LOCAL）即可：仅检查符号存在性，与 C++ 侧
+        # dlopen(RTLD_LAZY) 命中同一进程内已加载的 libcust_opapi.so。
+        lib = ctypes.CDLL("libcust_opapi.so")
+    except OSError as exc:
+        logger.error(
+            "GSA custom op lib libcust_opapi.so not loadable (dlopen search = "
+            "this process's LD_LIBRARY_PATH). torch.ops._C_gsa."
+            "npu_kv_quant_sparse_flash_attention_gsa will fail at the first "
+            "decode step with 'aclnnKvQuantSparseFlashAttentionGsa ... not in "
+            "libopapi.so'. Fix: (1) bash "
+            "ucm/sandbox/sparse/gsav2/ops/ascend/install.sh (installs "
+            "GSA-custom_ops*.run into opp/vendors/gsa and writes setenv.bash); "
+            "(2) source .../opp/vendors/gsa/setenv.bash, or prepend "
+            ".../opp/vendors/gsa/op_api/lib to LD_LIBRARY_PATH, in the service "
+            "launch environment (start_online_pdmix.sh / gsa_online.sh / "
+            "start_decode_glm52.sh already do this); (3) restart the service. "
+            "dlopen error: %s",
+            exc,
+        )
+        return False
+    if not hasattr(lib, "aclnnKvQuantSparseFlashAttentionGsaGetWorkspaceSize"):
+        logger.error(
+            "libcust_opapi.so loaded but lacks aclnnKvQuantSparseFlashAttentionGsa "
+            "symbols: the first libcust_opapi.so on this process's "
+            "LD_LIBRARY_PATH belongs to another vendor (ucm/custom_transformer/"
+            "...). npu_kv_quant_sparse_flash_attention_gsa will fail at the "
+            "first decode step. Fix: prepend .../opp/vendors/gsa/op_api/lib to "
+            "LD_LIBRARY_PATH (before other vendors) and restart the service."
+        )
+        return False
+    logger.info("GSA custom op lib libcust_opapi.so OK (aclnn symbols present)")
+    return True
+
+
+def _ensure_gsa_ops_loaded() -> None:
+    """加载 gsa_ops C++ 扩展，注册 torch.ops._C_gsa 命名空间。"""
+    if not ENABLE_GSA_PATCH:
+        return
+    try:
+        import gsa_ops  # noqa: F401  触发 torch.ops._C_gsa 注册
+
+        logger.info("gsa_ops C++ extension loaded; torch.ops._C_gsa registered")
+        # 注册成功不等于 aclnn 符号可解析：gsa_ops.so 只在首次调用算子时才
+        # dlopen libcust_opapi.so，部署问题会晚到首个 decode step 才爆——
+        # 此处预检前移（参照 gsa_on_device import ucm_custom_ops 的显式化模式）。
+        _preflight_gsa_cust_opapi()
+    except ImportError as e:
+        logger.warning(
+            "ENABLE_GSA_PATCH=1 but gsa_ops C++ extension not installed; "
+            "torch.ops._C_gsa.* ops will be unavailable. "
+            "Build & install via `pip install -v -e ucm/sandbox/sparse/gsav2/ops`. "
+            "Detail: %s",
+            e,
+        )
 
 
 def _strip_build(v: Optional[str]) -> Optional[str]:
@@ -211,6 +273,22 @@ def apply_all_patches() -> None:
             case "0.19.1":
                 logger.info("UCM patching vllm for pc...")
                 import ucm.integration.vllm.patch.v0191.vllm.pc_patch
+            case "0.23.0":
+                if ENABLE_GSA_PATCH:
+                    _ensure_gsa_ops_loaded()
+                    logger.info("UCM patching vllm 0.23.0 for GSA sparse attention...")
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.block_table_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.engine_core_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.gpu_model_runner_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.gpu_worker_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.kv_cache_manager_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.mla_attention_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.sched_output_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm.scheduler_patch
+                else:
+                    logger.info(
+                        "UCM GSA vllm patches skipped (ENABLE_GSA_PATCH is not set)."
+                    )
             case _:
                 pass
 
@@ -291,7 +369,35 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.cpu_binding_patch
-                import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
+
+                if ENABLE_GSA_PATCH:
+                    # GSA-aware SFA forward (drives
+                    # maybe_execute_sparse_attention_begin/finished and the
+                    # gsa_prefetch/warmup/swap top-k bookkeeping). Replaces
+                    # the plain SFA KV-transfer forward below.
+                    logger.info(
+                        "UCM patching vllm-ascend 0.23.0 SFA with the GSA "
+                        "forward (ENABLE_GSA_PATCH is set)..."
+                    )
+                    # GSA runtime monkey-patches (Python portions of
+                    # vllm-ascend-adapt-1020-c8.patch). The C++ ops registered
+                    # in csrc/torch_binding*.cpp still require the build-time
+                    # patch vllm-ascend-csrc-build-1020-c8.patch to be applied
+                    # before `pip install -v -e .` so the gsa_* ops are
+                    # compiled in.
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.block_table_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.device_op_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.model_runner_v1_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.sfa_v1_patch
+                    import ucm.sandbox.sparse.gsav2.patch.v0230.vllm_ascend.worker_patch
+                else:
+                    # Plain SFA KV-transfer forward (no GSA hooks).
+                    logger.info(
+                        "UCM patching vllm-ascend 0.23.0 SFA with the plain "
+                        "KV-transfer forward (ENABLE_GSA_PATCH is not set)..."
+                    )
+                    import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
             case "0.24.0":
                 logger.info(
                     "UCM patching vllm-ascend 0.24.0 for hybrid cache "
@@ -310,10 +416,15 @@ def apply_all_patches() -> None:
                 logger.info(
                     "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
                 )
-                import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
+
+        # Both release lines can omit the synchronous-load flag in Ascend's
+        # copied balance scheduler. Reuse the idempotent metadata-driven fix;
+        # do not enable unrelated v0300 patches on the v0320 release line.
+        if ascend_version in {"0.30.0", "0.32.0"}:
+            import ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch
 
         if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (0, 26):
             import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch

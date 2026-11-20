@@ -1,0 +1,18 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "pybind11>=2.10.0",
+]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-verson = "py39"
+
+[tool.ruff.lint]
+extend-select = [
+    "B",
+    "I",
+    "PGH",
+    "RUF",
+    "UP",
+]

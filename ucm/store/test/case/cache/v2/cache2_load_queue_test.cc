@@ -21,11 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -299,14 +301,6 @@ std::uint64_t HistogramCount(const UC::Metrics::HistogramStat& histogram)
 {
     return std::accumulate(histogram.bucketCounts.begin(), histogram.bucketCounts.end(),
                            std::uint64_t{0});
-}
-
-TEST(UCCache2ConfigTest, ReadsSharedBufferMode)
-{
-    UC::Detail::Dictionary dict;
-    EXPECT_FALSE(UC::Cache2::Config::From(dict).shareBufferEnable);
-    dict.Set("share_buffer_enable", true);
-    EXPECT_TRUE(UC::Cache2::Config::From(dict).shareBufferEnable);
 }
 
 TEST(UCCache2ConfigTest, ReadsFallbackNumaWorkerGeometry)
@@ -726,11 +720,11 @@ TEST_F(UCCache2LoadQueueTest, RearrangeOrderFollowsLocalRankInterleave)
     auto config = config_;
     config.localRankSize = 4;
     config.deviceId = 2;
-    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     const auto block = TypesHelper::MakeBlockIdRandomly();
     UC::Detail::TaskDesc desc;
+    desc.distributeBackendLoad = true;
     desc.prerequisiteHandle = 0x5678;
     FakeStream::onScatter = [](const FakeStream::ScatterCall&) {
         EXPECT_EQ(FakeStream::waitedEvents, std::vector<uintptr_t>{0x5678});
@@ -796,16 +790,16 @@ TEST_F(UCCache2LoadQueueTest, PreallocNextShardSlots)
     EXPECT_EQ(preallocs[2].preferredRank, UC::Cache2::kInvalid);
 }
 
-TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
+TEST_F(UCCache2LoadQueueTest, DistributedPreallocUsesPreferredRankDespiteRemoteCacheHit)
 {
     TestedQueue loadQ;
     auto config = config_;
     config.blockSize = 2 * kShardSize;
     config.localRankSize = 4;
-    config.shareBufferEnable = true;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
     UC::Detail::TaskDesc desc;
+    desc.distributeBackendLoad = true;
     for (size_t i = 0; i < config.localRankSize; ++i) {
         const auto block = TypesHelper::MakeBlockIdRandomly();
         buffer_.SetExisting(block, SlotState::Ready, 0, (i + 1) % config.localRankSize);
@@ -825,7 +819,44 @@ TEST_F(UCCache2LoadQueueTest, SharedBufferPreallocFollowsCurrentSlotSegment)
         EXPECT_EQ(preallocs[i].block, task->desc[i].owner);
         EXPECT_EQ(preallocs[i].offset, 1);
         EXPECT_TRUE(preallocs[i].allowReserved);
-        EXPECT_EQ(preallocs[i].preferredRank, (i + 1) % config.localRankSize);
+        EXPECT_EQ(preallocs[i].preferredRank, i % config.localRankSize);
+        EXPECT_EQ(buffer_.GetCalls()[i].preferredRank, preallocs[i].preferredRank);
+    }
+}
+
+TEST_F(UCCache2LoadQueueTest, PrivateTaskKeepsOriginalOrderAndLocalPrealloc)
+{
+    TestedQueue loadQ;
+    auto config = config_;
+    config.localRankSize = 4;
+    config.deviceId = 2;
+    config.blockSize = 2 * kShardSize;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    UC::Detail::TaskDesc desc;
+    for (size_t i = 0; i < 4; ++i) {
+        desc.push_back(
+            {TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x1000 * (i + 1))}});
+    }
+    EXPECT_CALL(backend_, Load).Times(4).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).Times(4).WillRepeatedly(testing::Return(UC::Status::OK()));
+    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    loadQ.Close();
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    ASSERT_EQ(buffer_.GetCalls().size(), 4);
+    ASSERT_EQ(buffer_.PreallocCalls().size(), 4);
+    ASSERT_EQ(FakeStream::scatters.size(), 4);
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(buffer_.GetCalls()[i].block, task->desc[i].owner);
+        EXPECT_EQ(buffer_.GetCalls()[i].preferredRank, UC::Cache2::kInvalid);
+        EXPECT_EQ(buffer_.PreallocCalls()[i].block, task->desc[i].owner);
+        EXPECT_EQ(buffer_.PreallocCalls()[i].preferredRank, UC::Cache2::kInvalid);
+        EXPECT_EQ(FakeStream::scatters[i].dsts, task->desc[i].addrs);
     }
 }
 
@@ -977,6 +1008,182 @@ TEST_F(UCCache2LoadQueueTest, StageMetrics)
     EXPECT_EQ(counters.count("cache_backend_load_submit_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_load_wait_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_h2d_errors_total"), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadMissCopiesSlotIntoCallerBuffer)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> payload(kShardSize, std::byte{0x5a});
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc desc) {
+        EXPECT_EQ(desc.size(), 1U);
+        EXPECT_NE(desc.front().addrs.front(), caller.data());
+        std::memcpy(desc.front().addrs.front(), payload.data(), kShardSize);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.prerequisiteHandle = 0x1111;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize), 0);
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_TRUE(FakeStream::d2dScatters.empty());
+    EXPECT_TRUE(FakeStream::waitedEvents.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    EXPECT_EQ(buffer_.MarkedReady(), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadHitCopiesExistingSlot)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    std::vector<std::byte> payload(kShardSize, std::byte{0xa5});
+    std::memcpy(gSlotBase + slotIdx * kShardSize, payload.data(), kShardSize);
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+    EXPECT_CALL(backend_, Wait).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize), 0);
+    EXPECT_EQ(std::memcmp(gSlotBase + slotIdx * kShardSize, payload.data(), kShardSize), 0);
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    auto stats = UC::Metrics::GetAllStatsAndClear();
+    EXPECT_EQ(std::get<0>(stats).at("cache_load_success_shards_total"), 1);
+    EXPECT_EQ(std::get<0>(stats).at("cache_posix_load_success_shards_total"), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadHostInaccessibleHitFails)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block, SlotState::Ready);
+    buffer_.SetHostAccessible(block, false);
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
+    EXPECT_TRUE(std::all_of(caller.begin(), caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_EQ(buffer_.MarkedFailed(), 0);
+    EXPECT_TRUE(FakeStream::d2dScatters.empty());
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadOnTokenSplicesSelectedRange)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> payload(kShardSize, std::byte{0x5a});
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc desc) {
+        std::memcpy(desc.front().addrs.front(), payload.data(), kShardSize);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{UC::Detail::TokenRange{0, kShardSize / 2, 0}}};
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ_.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize / 2), 0);
+    EXPECT_TRUE(std::all_of(caller.begin() + kShardSize / 2, caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadOnTokenUsesTensorBase)
+{
+    constexpr size_t tensorSize = 4;
+    constexpr size_t shardSize = tensorSize * 2;
+    TestedQueue loadQ;
+    auto config = config_;
+    config.tensorSizes = {tensorSize, tensorSize};
+    config.shardSize = shardSize;
+    config.blockSize = shardSize;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    auto* slot = reinterpret_cast<std::byte*>(gSlotBase + slotIdx * kShardSize);
+    std::fill_n(slot, tensorSize, std::byte{0x11});
+    std::fill_n(slot + tensorSize, tensorSize, std::byte{0x22});
+    std::vector<std::byte> caller(shardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{}, {UC::Detail::TokenRange{1, 2, 0}}};
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(caller[0], std::byte{0x22});
+    EXPECT_EQ(caller[1], std::byte{0x22});
+    EXPECT_TRUE(std::all_of(caller.begin() + 2, caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_EQ(slot[tensorSize], std::byte{0x22});
+}
+
+TEST_F(UCCache2LoadQueueTest, LoadOnTokenInvalidFilterFailsTask)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{UC::Detail::TokenRange{0, 0, 0}}};
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ_.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_TRUE(buffer_.GetCalls().empty());
+    EXPECT_TRUE(FakeStream::scatters.empty());
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadRejectsMissingHostAddress)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    std::memset(gSlotBase + slotIdx * kShardSize, 0x3c, kShardSize);
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_TRUE(FakeStream::scatters.empty());
 }
 
 }  // namespace

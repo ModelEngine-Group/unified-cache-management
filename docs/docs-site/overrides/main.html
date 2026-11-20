@@ -32,6 +32,25 @@
   {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
     <link rel="stylesheet" href="{{ 'assets/stylesheets/home.css' | url }}">
   {% endif %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <style>
+      html {
+        scrollbar-gutter: stable;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+      }
+
+      .md-content__inner {
+        max-width: 1120px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+    </style>
+  {% endif %}
   <link rel="stylesheet" href="https://unpkg.com/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700&display=swap">
   <style>
@@ -84,9 +103,62 @@
   </style>
 {% endblock %}
 
+{% block site_nav %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <div class="md-sidebar md-sidebar--primary ucm-blog-sidebar" data-md-component="sidebar" data-md-type="navigation">
+      <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+          {% include "partials/blog-timeline.html" %}
+          <div class="ucm-blog-native-nav">
+            <nav class="md-nav md-nav--primary" aria-label="{{ config.site_name }}">
+              <label class="md-nav__title" for="__drawer">
+                <a href="{{ nav.homepage.url | url }}" title="{{ config.site_name }}" class="md-nav__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
+                  {% include "partials/logo.html" %}
+                </a>
+                {{ config.site_name }}
+              </label>
+              {% if config.repo_url %}
+                <div class="md-nav__source">
+                  {% include "partials/source.html" %}
+                </div>
+              {% endif %}
+              <ul class="md-nav__list" data-md-scrollfix>
+                {% for item in nav.items %}
+                  {% set target = item.url or (item.children[0].url if item.children else '') %}
+                  <li class="md-nav__item{% if item.active %} md-nav__item--active{% endif %}{% if item.children %} md-nav__item--nested{% endif %}">
+                    <a href="{{ target | url }}" class="md-nav__link{% if item.active %} md-nav__link--active{% endif %}">
+                      <span class="md-ellipsis">{{ item.title }}</span>
+                      {% if item.children %}<span class="md-nav__icon md-icon"></span>{% endif %}
+                    </a>
+                  </li>
+                {% endfor %}
+              </ul>
+            </nav>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% if not page.file.src_uri.endswith('blog/index.md') and "toc.integrate" not in features %}
+      <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc">
+        <div class="md-sidebar__scrollwrap">
+          <div class="md-sidebar__inner">
+            {% include "partials/toc.html" %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
 {% block content %}
   {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
     <div class="ucm-home">
+      {{ super() }}
+    </div>
+  {% elif page and page.file.src_uri.endswith('blog/index.md') %}
+    <div class="ucm-blog-content">
       {{ super() }}
     </div>
   {% else %}
@@ -98,6 +170,9 @@
   {{ super() }}
   {% if page and page.file.src_uri in ["en/user-guide/quick_start/index.md", "zh/user-guide/quick_start/index.md"] %}
     <script src="{{ 'assets/quickstart.js' | url }}"></script>
+  {% endif %}
+  {% if page and '/blog/' in ('/' + page.file.src_uri) %}
+    <script src="{{ 'assets/blog.js' | url }}"></script>
   {% endif %}
   <script src="https://unpkg.com/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js"></script>

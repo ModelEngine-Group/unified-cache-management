@@ -200,7 +200,12 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
 {
     auto status = CpuAffinity::SetCurrentThreadName("ucm_health_be");
     if (status.Failure()) { UC_WARN("Failed to name backend health monitor: {}.", status); }
-    Detail::HealthCheckExecutor executor(std::chrono::milliseconds{ioTimeoutMs_}, 8);
+    // Each backend has its own executor, so threads stuck on one backend cannot use up all
+    // slots and stop the other backends from being probed.
+    std::deque<Detail::HealthCheckExecutor> executors;
+    for (size_t index = 0; index < storageBackends_.size(); ++index) {
+        executors.emplace_back(std::chrono::milliseconds{ioTimeoutMs_}, 8);
+    }
     std::unique_lock<std::mutex> stopLock(stopMutex_);
     auto delay = config.healthCheckInterval;
     while (!stopCv_.wait_for(stopLock, delay, [this] { return stop_; })) {
@@ -222,7 +227,7 @@ void BackendManager::ProbeBackends(const Detail::StoreHealthConfig& config)
                 return CheckPathHealth(healthProbeFilePath, ioDirect);
             };
             const auto generation = health.Generation();
-            status = executor.Run(std::move(check));
+            status = executors[index].Run(std::move(check));
             // Timed-out I/O may still access this file through any backend path.
             // So we use a new file after timeout.
             if (status == Status::Timeout()) { healthBlockId_ = Detail::RandomBlockId(); }

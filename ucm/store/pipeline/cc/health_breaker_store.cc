@@ -157,6 +157,13 @@ Expected<Detail::TaskHandle> HealthBreakerStore::Load(Detail::TaskDesc task)
     return store_->Load(std::move(task));
 }
 
+Expected<Detail::TaskHandle> HealthBreakerStore::LoadOnToken(
+    Detail::TaskDesc task, const std::vector<Detail::TokenFilter>& filter)
+{
+    if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
+    return store_->LoadOnToken(std::move(task), filter);
+}
+
 Expected<Detail::TaskHandle> HealthBreakerStore::Dump(Detail::TaskDesc task)
 {
     if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }

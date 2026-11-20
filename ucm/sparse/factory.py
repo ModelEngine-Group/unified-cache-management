@@ -5,7 +5,6 @@ from vllm.config import VllmConfig
 
 from ucm.logger import init_logger
 from ucm.sparse.base import UcmSparseBase, UcmSparseRole
-from ucm.utils import Config
 
 logger = init_logger(__name__)
 
@@ -29,12 +28,12 @@ class UcmSparseFactory:
 
     @classmethod
     def create_sparse_method(
-        cls, config: "VllmConfig", role: UcmSparseRole
+        cls,
+        config: "VllmConfig",
+        ucm_config: dict,
+        role: UcmSparseRole,
     ) -> UcmSparseBase:
-        ucm_config = Config(config.kv_transfer_config)
-        ucm_cfg = ucm_config.get_config().get("ucm_sparse_config")
-
-        sparse_method_name, _ = next(iter(ucm_cfg.items()))
+        sparse_method_name, _ = next(iter(ucm_config.items()))
         if sparse_method_name in cls._registry:
             sparse_method_cls = cls._registry[sparse_method_name]()
         else:
@@ -50,6 +49,9 @@ UcmSparseFactory.register_sparse_method(
     "GSAOnDevice", "ucm.sparse.gsa_on_device.gsa_on_device", "GSAOnDevice"
 )
 # UcmSparseFactory.register_sparse_method("GSA", "ucm.sparse.gsa.gsa", "GSA")
+UcmSparseFactory.register_sparse_method(
+    "GSAV2", "ucm.sandbox.sparse.gsav2.gsa", "GSAV2"
+)
 UcmSparseFactory.register_sparse_method(
     "KVStarMultiStep", "ucm.sparse.kvstar.multistep", "KVStarMultiStep"
 )

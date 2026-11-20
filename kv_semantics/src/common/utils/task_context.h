@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "trans_types.h"
@@ -88,11 +89,12 @@ struct TransportTask {
     TransportTask();
 
     NodeId nodeId{0};
+    std::uint32_t namespaceId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;
-    std::vector<CacheKey> keys;
-    std::vector<KVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -125,10 +127,10 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::LOAD};
-    std::uintptr_t prerequisiteEventHandle{0};
+    std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
-    std::vector<KVBuffer> entries;
-    std::vector<CacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;

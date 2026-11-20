@@ -24,8 +24,11 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
+#include <cstring>
 #include <future>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -53,9 +56,11 @@ namespace UC::Cache2 {
  *    -> submit backend loads for cold owned slots -> push shard tasks in a
  *    rank-interleaved order -> prealloc follow-up shard slots.
  *  - transfer_: per shard, wait until the slot is ready (backend wait for
- *    owned slots, state polling for others) -> H2D scatter. Only the last
- *    shard of a task carries the waiter and performs the single stream
- *    synchronize covering all pending H2D copies of the task.
+ *    owned slots, state polling for others). HBM then does an H2D scatter;
+ *    only the last shard of that task carries the waiter and performs the
+ *    single stream synchronize covering all pending H2D copies. DDR skips the
+ *    device copy: Load memcpy's the whole shard, LoadOnToken splices the
+ *    selected tensor ranges into the caller buffer.
  */
 template <typename BufferT = Buffer, typename StreamT = CopyStream>
 class LoadQ {
@@ -65,6 +70,7 @@ class LoadQ {
     struct ShardTask {
         TaskPtr task;
         Detail::Shard* shard{nullptr};
+        size_t filterIndex{0};
         std::optional<Handle> bufferHandle;
         Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
@@ -81,9 +87,9 @@ class LoadQ {
     bool sdmaDirect_{false};
     bool ioAggregation_{false};
     bool useGdr_{false};
-    bool shareBufferEnable_{false};
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
+    size_t shardSize_{0};
     std::vector<size_t> tensorSizes_{};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
@@ -108,9 +114,9 @@ public:
         sdmaDirect_ = config.sdmaDirect;
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
-        shareBufferEnable_ = config.shareBufferEnable;
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
+        shardSize_ = config.shardSize;
         tensorSizes_ = config.tensorSizes;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
@@ -165,19 +171,32 @@ private:
     {
         const auto startTp = NowTime::Now();
         const auto nShard = task->desc.size();
-        const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
-        std::vector<size_t> preallocRanks;
-        if (shareBufferEnable_) { preallocRanks.reserve(nShard); }
+        if (task->type == Task::Type::LOAD_ON_TOKEN) {
+            auto s = ValidateTokenFilter(task);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("LoadOnToken task({}) invalid filter: {}.", task->id, s);
+                RecordFailedShards(nShard);
+                task->Fail(s);
+                FailTask(task, waiter);
+                return;
+            }
+        }
+        std::vector<size_t> indexes(nShard);
+        if (task->desc.distributeBackendLoad) {
+            indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
+        } else {
+            std::iota(indexes.begin(), indexes.end(), 0);
+        }
         size_t backendSubmitCount = 0;
         size_t waitShardCount = 0;
         for (size_t i = 0; i < nShard; ++i) {
             const auto originalIndex = indexes[i];
             auto& shard = task->desc[originalIndex];
             ShardTask shardTask;
-            auto handle = shareBufferEnable_ ? buffer_->Get(shard.owner, shard.index, true,
-                                                            originalIndex % localRankSize_)
-                                             : buffer_->Get(shard.owner, shard.index, true);
-            if (shareBufferEnable_) { preallocRanks.push_back(handle.Segment()); }
+            auto handle =
+                task->desc.distributeBackendLoad
+                    ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_)
+                    : buffer_->Get(shard.owner, shard.index, true);
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
@@ -195,6 +214,7 @@ private:
             }
             shardTask.task = task;
             shardTask.shard = &shard;
+            if (task->type == Task::Type::LOAD_ON_TOKEN) { shardTask.filterIndex = originalIndex; }
             shardTask.bufferHandle = std::move(handle);
             shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
             shardTask.firstShard = i == 0;
@@ -205,7 +225,7 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
         RecordLoadSourceShards(nShard, waitShardCount);
-        PreallocNextShards(task, indexes, preallocRanks);
+        PreallocNextShards(task, indexes);
     }
     Expected<Detail::TaskHandle> SubmitBackendLoad(const TaskPtr& task, const Detail::Shard& shard,
                                                    Handle& handle)
@@ -228,15 +248,13 @@ private:
         }
         return res;
     }
-    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes,
-                            const std::vector<size_t>& preallocRanks)
+    void PreallocNextShards(const TaskPtr& task, const std::vector<size_t>& indexes)
     {
-        for (size_t order = 0; order < indexes.size(); ++order) {
-            const auto i = indexes[order];
+        for (const auto i : indexes) {
             auto& shard = task->desc[i];
             if (shard.index + 1 != nShardPerBlock_) {
-                if (shareBufferEnable_) {
-                    buffer_->Prealloc(shard.owner, shard.index + 1, true, preallocRanks[order]);
+                if (task->desc.distributeBackendLoad) {
+                    buffer_->Prealloc(shard.owner, shard.index + 1, true, i % localRankSize_);
                 } else {
                     buffer_->Prealloc(shard.owner, shard.index + 1, true);
                 }
@@ -277,8 +295,43 @@ private:
         BindCpuAffinity();
         running_.ConsumerLoop(stop_, &LoadQ::TransferOneTask, this, stream);
     }
+    Status ValidateTokenFilter(const TaskPtr& task) const
+    {
+        const auto nShard = task->desc.size();
+        if (task->filter.size() != nShard) {
+            return Status::InvalidParam("filter size({}) != shards({})", task->filter.size(),
+                                        nShard);
+        }
+        for (size_t i = 0; i < nShard; ++i) {
+            const auto& tokenFilter = task->filter[i];
+            if (tokenFilter.ranges.size() != tensorSizes_.size()) {
+                return Status::InvalidParam("shard({}) tensor filter size({}) != tensorSizes({})",
+                                            task->desc[i].index, tokenFilter.ranges.size(),
+                                            tensorSizes_.size());
+            }
+            for (size_t t = 0; t < tokenFilter.ranges.size(); ++t) {
+                const auto tensorSize = tensorSizes_[t];
+                for (const auto& range : tokenFilter.ranges[t]) {
+                    if (range.length == 0) {
+                        return Status::InvalidParam("shard({}) tensor({}) has empty token range",
+                                                    task->desc[i].index, t);
+                    }
+                    if (range.offset >= tensorSize || range.length > tensorSize - range.offset) {
+                        return Status::InvalidParam(
+                            "shard({}) tensor({}) range({},{}) exceeds size({})",
+                            task->desc[i].index, t, range.offset, range.length, tensorSize);
+                    }
+                }
+            }
+        }
+        return Status::OK();
+    }
     void TransferOneTask(StreamT& stream, ShardTask&& task)
     {
+        if (task.task->desc.memoryType == Detail::TaskDesc::MemoryType::DDR) {
+            TransferDdr(std::move(task));
+            return;
+        }
         if (failureSet_->Contains(task.task->id)) {
             DiscardFailedShard(task);
             FinishShard(stream, std::move(task), Status::Error());
@@ -307,6 +360,57 @@ private:
         RecordShardResults(holder_, &task, s.Success());
         holder_.clear();
         FinishShard(stream, std::move(task), s);
+    }
+    void TransferDdr(ShardTask&& task)
+    {
+        if (failureSet_->Contains(task.task->id)) {
+            DiscardFailedShard(task);
+            FinishDdrShard(std::move(task), Status::Error());
+            return;
+        }
+        auto s = WaitShardReady(task);
+        if (s.Success()) { s = CopyDdrShard(task); }
+        RecordShardResults({}, &task, s.Success());
+        FinishDdrShard(std::move(task), s);
+    }
+    Status CopyDdrShard(ShardTask& task)
+    {
+        if (!task.bufferHandle->HostAccessible()) {
+            UC_ERROR("DDR load task({}) shard is not host-accessible.", task.task->id);
+            return Status::Error("ddr load on host-inaccessible slot");
+        }
+        auto* src = task.bufferHandle->Data();
+        auto* dst = task.shard->addrs.empty() ? nullptr : task.shard->addrs.front();
+        if (src == nullptr || dst == nullptr || task.shard->addrs.size() != 1) [[unlikely]] {
+            UC_ERROR("DDR load shard({}) requires one host address.", task.shard->index);
+            return Status::InvalidParam();
+        }
+        if (task.task->type == Task::Type::LOAD_ON_TOKEN) {
+            return SpliceTokenRanges(src, static_cast<std::byte*>(dst), task);
+        }
+        std::memcpy(dst, src, shardSize_);
+        return Status::OK();
+    }
+    Status SpliceTokenRanges(void* src, std::byte* dst, const ShardTask& task) const
+    {
+        const auto& tokenFilter = task.task->filter[task.filterIndex];
+        auto* bytes = static_cast<const std::byte*>(src);
+        size_t tensorBase = 0;
+        for (size_t t = 0; t < tokenFilter.ranges.size(); ++t) {
+            for (const auto& range : tokenFilter.ranges[t]) {
+                std::memcpy(dst + range.dstOffset, bytes + tensorBase + range.offset, range.length);
+            }
+            tensorBase += tensorSizes_[t];
+        }
+        return Status::OK();
+    }
+    void FinishDdrShard(ShardTask&& task, const Status& s)
+    {
+        if (s.Failure()) [[unlikely]] {
+            task.task->Fail(s);
+            failureSet_->Insert(task.task->id);
+        }
+        if (task.waiter) { task.waiter->Done(); }
     }
     void DiscardFailedShard(ShardTask& task)
     {

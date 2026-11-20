@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,7 +33,6 @@ bool TryParseAsuInfoKey(const std::string& key, NodeId& nodeId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
 NodeEndpoint ParseClientViewEndpoint(const std::string& value);
 NodeInfo ParseAsuInfo(const std::string& value);
-Status LoadKvClientConfig(const std::string& configPath, KvClientConfig& config);
 void ApplyAsuInfoToTransportConfig(const NodeInfo& info, TransportConfig& config);
 
 }  // namespace kv

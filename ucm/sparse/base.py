@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.request import Request
     from vllm.config import VllmConfig
 
+import numpy as np
 import torch
 from vllm.forward_context import ForwardContext
 
@@ -182,17 +183,31 @@ class UcmSparseBase(ABC):
         """
         pass
 
-    def execute_begin(self, scheduler_output: SchedulerOutput):
+    def execute_begin(self, scheduler_output: SchedulerOutput, attn_metadata=None):
         """
         This is called at the beginning of "ModelRunner->execute_model" function.
         """
         pass
 
-    def execute_finished(self, logits_indices: torch.Tensor) -> torch.Tensor:
+    def init_dsa_data(self, model_runner):
+        """
+        This is called at the init of sparse for dsa.
+        """
+        pass
+
+    def execute_finished(
+        self, logits_indices: torch.Tensor, rec_result=None
+    ) -> torch.Tensor:
         """
         This is called at the end of "ModelRunner->execute_model" function.
         """
         return logits_indices
+
+    def warmup(self):
+        """
+        This is called at the end of "ModelRunner->execute_model" function.
+        """
+        pass
 
     def attention_begin(
         self,
@@ -201,6 +216,10 @@ class UcmSparseBase(ABC):
         value: torch.Tensor,
         layer_name: str,
         forward_context: ForwardContext,
+        indexer_cache: Optional[torch.Tensor] = None,
+        indexer_scale: Optional[torch.Tensor] = None,
+        vllm_indexer_cache: Optional[torch.Tensor] = None,
+        vllm_indexer_scale: Optional[torch.Tensor] = None,
         output: Optional[torch.Tensor] = None,
         phase: Optional[str] = None,
         k_hash: Optional[torch.Tensor] = None,

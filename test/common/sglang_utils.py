@@ -10,8 +10,9 @@ import logging
 import re
 import sys
 import threading
+import time
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, List
 
@@ -43,11 +44,14 @@ def _load_source(relative_path, definitions=None, **dependencies):
 def load_source(relative_path, definitions=None, **dependencies):
     defaults = dict(
         dataclass=dataclass,
+        replace=replace,
         np=np,
         copy=copy,
         hashlib=hashlib,
         json=json,
         logging=logging,
+        init_logger=logging.getLogger,
+        time=time,
         re=re,
         threading=threading,
         Path=Path,

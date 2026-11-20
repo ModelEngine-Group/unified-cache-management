@@ -362,6 +362,7 @@ TEST(UCHealthBreakerStoreTest, UnhealthyOperationMatrix)
     breaker.Prefetch(blocks.data(), blocks.size());
 
     EXPECT_EQ(breaker.Load({}).Error(), Status::StoreUnhealthy());
+    EXPECT_EQ(breaker.LoadOnToken({}, {}).Error(), Status::StoreUnhealthy());
     EXPECT_EQ(breaker.Dump({}).Error(), Status::StoreUnhealthy());
 
     EXPECT_CALL(store, Check(17)).WillOnce(Return(true));
@@ -388,6 +389,8 @@ TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow
     breaker.Prefetch(blocks.data(), blocks.size());
     EXPECT_CALL(store, Load(testing::_)).WillOnce(Return(21));
     EXPECT_EQ(breaker.Load({}).Value(), 21);
+    EXPECT_CALL(store, LoadOnToken(testing::_, testing::_)).WillOnce(Return(23));
+    EXPECT_EQ(breaker.LoadOnToken({}, {}).Value(), 23);
     EXPECT_CALL(store, Dump(testing::_)).WillOnce(Return(22));
     EXPECT_EQ(breaker.Dump({}).Value(), 22);
     EXPECT_TRUE(breaker.Enabled());
