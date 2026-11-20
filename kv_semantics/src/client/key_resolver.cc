@@ -47,6 +47,9 @@ Status ParseRank(std::string_view value, std::uint32_t& rank)
 }
 
 class VllmKeyResolver final : public KeyResolver {
+public:
+    using KeyResolver::KeyResolver;
+
 private:
     Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
     {
@@ -88,6 +91,9 @@ private:
 };
 
 class SglangKeyResolver final : public KeyResolver {
+public:
+    using KeyResolver::KeyResolver;
+
 private:
     Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
     {
@@ -127,6 +133,9 @@ private:
 };
 
 class GenericKeyResolver final : public KeyResolver {
+public:
+    using KeyResolver::KeyResolver;
+
 private:
     Status ParseEngineKey(std::string_view input, ParsedKey& result) const override
     {
@@ -141,13 +150,14 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
                             ResolvedCacheKey& result) const
 {
     ResolvedCacheKey resolvedKey;
-    std::string kvns(baseKvns);
     if (const auto* bytes = input.TryGetBinaryKey()) {
         resolvedKey.keyBytes = *bytes;
+        resolvedKey.gnsid = configuredNamespaceId_;
     } else {
         ParsedKey parsed;
         auto status = ParseEngineKey(*input.TryGetStringKey(), parsed);
         if (!status.ok()) { return status; }
+        std::string kvns(baseKvns);
         if (parsed.component) { kvns += "_" + *parsed.component; }
         if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }
         auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), HASH_SEED_VALUE);
@@ -155,18 +165,21 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
             byte = static_cast<std::byte>(hash & 0xff);
             hash >>= 8;
         }
+        resolvedKey.gnsid = HashNamespace(kvns);
     }
-    resolvedKey.gnsid = HashNamespace(kvns);
     result = resolvedKey;
     return Status::OK();
 }
 
-std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config)
+std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config,
+                                                      std::uint32_t configuredNamespaceId)
 {
     switch (config.engine) {
-        case InferenceEngine::VLLM_ASCEND: return std::make_unique<VllmKeyResolver>();
-        case InferenceEngine::SGLANG: return std::make_unique<SglangKeyResolver>();
-        default: return std::make_unique<GenericKeyResolver>();
+        case InferenceEngine::VLLM_ASCEND:
+            return std::make_unique<VllmKeyResolver>(configuredNamespaceId);
+        case InferenceEngine::SGLANG:
+            return std::make_unique<SglangKeyResolver>(configuredNamespaceId);
+        default: return std::make_unique<GenericKeyResolver>(configuredNamespaceId);
     }
 }
 

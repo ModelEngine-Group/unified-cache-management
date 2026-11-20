@@ -1,0 +1,29 @@
+# UCM Configuration File Example
+# 
+# This file demonstrates how to configure UCM using YAML.
+# Published UCM Runtime images include this example at /workspace/ucm_config_example.yaml.
+# In a source checkout, use examples/ucm_config_example.yaml instead.
+# You can use this config file by setting its path in kv_connector_extra_config:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
+#
+# Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
+# for backward compatibility.
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/mnt/test"
+      posix_capacity_gb: 1536
+      cache_buffer_capacity_gb: 128
+  
+
+enable_event_sync: true
+
+use_layerwise: true
+
+enable_record_traces: false
+
+use_lite: false
+
+persist_token_threshold: 0

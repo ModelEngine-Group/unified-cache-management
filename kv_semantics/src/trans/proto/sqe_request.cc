@@ -25,6 +25,7 @@
 #include <cctype>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -169,11 +170,11 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
 KvBatchStoreRequest BuildBatchStoreRequest(
     const BatchView<ResolvedKVBuffer>& entries,
     const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
-    const ScatterGatherEntry& flagBuffer)
+    const ScatterGatherEntry& flagBuffer, std::uint32_t namespaceId)
 {
     KvBatchStoreRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
     request.response_buffer_addr = flagBuffer.device_addr;
@@ -196,11 +197,11 @@ KvBatchStoreRequest BuildBatchStoreRequest(
 
 KvStoreRequest BuildStoreRequest(const ResolvedKVBuffer& entry,
                                  const std::unordered_map<std::string, std::string>& attrs,
-                                 std::uint16_t cid)
+                                 std::uint16_t cid, std::uint32_t namespaceId)
 {
     KvStoreRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
     request.buffer_addr = entry.buffer.region.addr;
@@ -215,11 +216,11 @@ KvStoreRequest BuildStoreRequest(const ResolvedKVBuffer& entry,
 
 KvRetrieveRequest BuildRetrieveRequest(const ResolvedKVBuffer& entry,
                                        const std::unordered_map<std::string, std::string>& attrs,
-                                       std::uint16_t cid)
+                                       std::uint16_t cid, std::uint32_t namespaceId)
 {
     KvRetrieveRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.buffer_addr = entry.buffer.region.addr;
     request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
     request.mr_key = *entry.mrKey;
@@ -233,11 +234,11 @@ KvRetrieveRequest BuildRetrieveRequest(const ResolvedKVBuffer& entry,
 KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     const BatchView<ResolvedKVBuffer>& entries,
     const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
-    const ScatterGatherEntry& flagBuffer)
+    const ScatterGatherEntry& flagBuffer, std::uint32_t namespaceId)
 {
     KvBatchRetrieveRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
@@ -266,13 +267,12 @@ std::vector<BinaryKey> CopyKeys(const BatchView<ResolvedCacheKey>& keys)
     return requestKeys;
 }
 
-KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys,
-                                   const std::unordered_map<std::string, std::string>& attrs,
-                                   std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
+KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys, std::uint16_t cid,
+                                   const ScatterGatherEntry& flagBuffer, std::uint32_t namespaceId)
 {
     KvDeleteRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
@@ -283,11 +283,12 @@ KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys,
 
 KvExistRequest BuildExistRequest(const BatchView<ResolvedCacheKey>& keys,
                                  const std::unordered_map<std::string, std::string>& attrs,
-                                 std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
+                                 std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
+                                 std::uint32_t namespaceId)
 {
     KvExistRequest request;
     request.cid = cid;
-    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.kv_ns_id = namespaceId;
     request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
@@ -310,32 +311,33 @@ KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherE
 std::unique_ptr<SqeRequest> BuildSqeRequest(
     KvOpcode opcode, const SubBatchRequestSource& source,
     const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
-    const ScatterGatherEntry& flagBuffer, TransportSubBatchContext& subBatchContext)
+    const ScatterGatherEntry& flagBuffer, TransportSubBatchContext& subBatchContext,
+    std::uint32_t namespaceId)
 {
     switch (opcode) {
         case KvOpcode::Store:
             if (source.entries == nullptr || source.entries->size != 1) { return nullptr; }
             return std::make_unique<KvStoreRequest>(
-                BuildStoreRequest(source.entries->data[0], attrs, cid));
+                BuildStoreRequest(source.entries->data[0], attrs, cid, namespaceId));
         case KvOpcode::Retrieve:
             if (source.entries == nullptr || source.entries->size != 1) { return nullptr; }
             return std::make_unique<KvRetrieveRequest>(
-                BuildRetrieveRequest(source.entries->data[0], attrs, cid));
+                BuildRetrieveRequest(source.entries->data[0], attrs, cid, namespaceId));
         case KvOpcode::BatchRetrieve:
             if (source.entries == nullptr) { return nullptr; }
             return std::make_unique<KvBatchRetrieveRequest>(
-                BuildBatchRetrieveRequest(*source.entries, attrs, cid, flagBuffer));
+                BuildBatchRetrieveRequest(*source.entries, attrs, cid, flagBuffer, namespaceId));
         case KvOpcode::BatchStore:
             if (source.entries == nullptr) { return nullptr; }
             return std::make_unique<KvBatchStoreRequest>(
-                BuildBatchStoreRequest(*source.entries, attrs, cid, flagBuffer));
+                BuildBatchStoreRequest(*source.entries, attrs, cid, flagBuffer, namespaceId));
         case KvOpcode::Delete:
             if (source.keys == nullptr) { return nullptr; }
             return std::make_unique<KvDeleteRequest>(
-                BuildDeleteRequest(*source.keys, attrs, cid, flagBuffer));
+                BuildDeleteRequest(*source.keys, cid, flagBuffer, namespaceId));
         case KvOpcode::Exist: {
             if (source.keys == nullptr) { return nullptr; }
-            auto request = BuildExistRequest(*source.keys, attrs, cid, flagBuffer);
+            auto request = BuildExistRequest(*source.keys, attrs, cid, flagBuffer, namespaceId);
             subBatchContext.useSeekControl = request.sc;
             return std::make_unique<KvExistRequest>(std::move(request));
         }
@@ -369,8 +371,9 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
                                          flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
-    auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, subBatchContext);
+    auto request =
+        BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
+                        subBatchContext.flagBuffer, subBatchContext, subBatchContext.namespaceId);
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -387,8 +390,9 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
                                          flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
-    auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, subBatchContext);
+    auto request =
+        BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
+                        subBatchContext.flagBuffer, subBatchContext, subBatchContext.namespaceId);
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -404,8 +408,9 @@ Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& s
                                          flagBufferManager_, subBatchContext);
     if (!status.ok()) { return status; }
 
-    auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, subBatchContext);
+    auto request =
+        BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
+                        subBatchContext.flagBuffer, subBatchContext, subBatchContext.namespaceId);
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }

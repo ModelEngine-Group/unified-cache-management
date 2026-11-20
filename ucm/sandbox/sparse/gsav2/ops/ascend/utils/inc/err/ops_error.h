@@ -12,7 +12,7 @@
 #ifndef GSA_COMMON_OPS_ERROR_H
 #define GSA_COMMON_OPS_ERROR_H
 
-#include "error/error.h"
 #include "log/log.h"
+#include "error/error.h"
 
-#endif  // GSA_COMMON_OPS_ERROR_H
+#endif // GSA_COMMON_OPS_ERROR_H

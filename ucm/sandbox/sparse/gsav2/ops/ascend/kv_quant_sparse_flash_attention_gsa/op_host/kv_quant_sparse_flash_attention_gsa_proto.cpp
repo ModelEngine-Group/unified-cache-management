@@ -11,7 +11,7 @@ using namespace ge;
 
 namespace ops {
 constexpr size_t QUERY_INPUT_INDEX = 0;
-constexpr uint32_t LAYOUT_QUERY_ATTR_INDEX = 4;  // 与 v1 def 属性顺序一致
+constexpr uint32_t LAYOUT_QUERY_ATTR_INDEX = 4;   // 与 v1 def 属性顺序一致
 constexpr uint32_t ROPE_HEAD_DIM_ATTR_INDEX = 12;
 constexpr uint32_t RETURN_SOFTMAX_LSE_ATTR_INDEX = 13;
 constexpr uint32_t DIM_INDEX_0 = 0;
@@ -47,7 +47,7 @@ ge::graphStatus InferShapeKvQuantSparseFlashAttentionGsa(gert::InferShapeContext
         if (queryShape->GetDim(DIM_INDEX_3) != -1) {
             attentionOutShape->SetDim(DIM_INDEX_3, queryShape->GetDim(DIM_INDEX_3) - ropeHeadDim);
         }
-    } else {  // TND
+    } else { // TND
         attentionOutShape->SetDimNum(DIM_NUM_3);
         attentionOutShape->SetDim(DIM_INDEX_0, queryShape->GetDim(DIM_INDEX_0));
         attentionOutShape->SetDim(DIM_INDEX_1, queryShape->GetDim(DIM_INDEX_1));
@@ -67,16 +67,16 @@ ge::graphStatus InferShapeKvQuantSparseFlashAttentionGsa(gert::InferShapeContext
         // 实际运行时由 kernel 按实际有效长度填充
         if (inputLayoutQueryPtrStr == "BSND") {
             softmaxMaxShape->SetDimNum(DIM_NUM_4);
-            softmaxMaxShape->SetDim(DIM_INDEX_0, queryShape->GetDim(DIM_INDEX_0));  // B
-            softmaxMaxShape->SetDim(DIM_INDEX_1, 1);  // KV_N (运行时由 tiling 修正)
-            softmaxMaxShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_1));  // Q_S
-            softmaxMaxShape->SetDim(DIM_INDEX_3, queryShape->GetDim(DIM_INDEX_2));  // Q_N
+            softmaxMaxShape->SetDim(DIM_INDEX_0, queryShape->GetDim(DIM_INDEX_0)); // B
+            softmaxMaxShape->SetDim(DIM_INDEX_1, 1); // KV_N (运行时由 tiling 修正)
+            softmaxMaxShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_1)); // Q_S
+            softmaxMaxShape->SetDim(DIM_INDEX_3, queryShape->GetDim(DIM_INDEX_2)); // Q_N
             *softmaxSumShape = *softmaxMaxShape;
-        } else {  // TND
+        } else { // TND
             softmaxMaxShape->SetDimNum(DIM_NUM_3);
-            softmaxMaxShape->SetDim(DIM_INDEX_0, 1);                                // KV_N
-            softmaxMaxShape->SetDim(DIM_INDEX_1, queryShape->GetDim(DIM_INDEX_0));  // Q_T
-            softmaxMaxShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_1));  // Q_N
+            softmaxMaxShape->SetDim(DIM_INDEX_0, 1); // KV_N
+            softmaxMaxShape->SetDim(DIM_INDEX_1, queryShape->GetDim(DIM_INDEX_0)); // Q_T
+            softmaxMaxShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_1)); // Q_N
             *softmaxSumShape = *softmaxMaxShape;
         }
     } else {
@@ -102,4 +102,4 @@ ge::graphStatus InferDataTypeKvQuantSparseFlashAttentionGsa(gert::InferDataTypeC
 IMPL_OP_INFERSHAPE(KvQuantSparseFlashAttentionGsa)
     .InferShape(InferShapeKvQuantSparseFlashAttentionGsa)
     .InferDataType(InferDataTypeKvQuantSparseFlashAttentionGsa);
-}  // namespace ops
+} // namespace ops

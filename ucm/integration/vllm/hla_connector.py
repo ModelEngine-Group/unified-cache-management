@@ -1735,12 +1735,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         self.pcp_rank = 0
         self._pcp_shard_hasher = None
+        if getattr(parallel_config, "pipeline_parallel_size", 1) > 1:
+            raise ValueError(
+                "Pipeline parallelism is not supported for the current "
+                "model. Set pipeline_parallel_size=1."
+            )
         if getattr(parallel_config, "decode_context_parallel_size", 1) > 1:
             raise ValueError(
-                "Hybrid linear-attention models support pure PCP only: DCP "
-                "token-sharding needs the position-stride connector, and "
-                "GLM-5.3-Flash bans PCP+DCP in its sparse indexer. Set "
-                "decode_context_parallel_size=1."
+                "Decode context parallelism is not supported for the "
+                "current model. Set decode_context_parallel_size=1."
             )
         if self.pcp_world_size == 1:
             return

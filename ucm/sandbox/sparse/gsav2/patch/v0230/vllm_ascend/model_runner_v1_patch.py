@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import FunctionType
 
+import torch
+
 from ucm.integration.vllm.patch.utils import patch_or_inject, when_imported
 from ucm.logger import init_logger
 
@@ -445,7 +447,6 @@ def _prepare_inputs(
     """
     from ucm.sparse.base import INVALID_SLOT
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
     assert total_num_scheduled_tokens > 0
@@ -871,7 +872,7 @@ def _prepare_inputs(
             + self.query_pos.gpu[:total_num_scheduled_tokens]
         )
 
-    if has_ucm_sparse() and PTOPK_PREFETCH_ENABLE:
+    if has_ucm_sparse():
         self.sparse_positions[:total_num_scheduled_tokens].copy_(
             torch.from_numpy(sparsed_positions[:total_num_scheduled_tokens]),
             non_blocking=True,
@@ -1451,7 +1452,8 @@ def execute_model(
 
         self.maybe_execute_ucm_sparse_warmup()
         if self.vllm_config.speculative_config is None:
-            self.maybe_execute_ucm_sparse_finished()
+            # GSAV2 may rewrite logits_indices; keep the returned one for sampling.
+            logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
 
     with record_function_or_nullcontext("post process"):
         aux_hidden_states = None
@@ -1676,7 +1678,7 @@ def sample_tokens(
             valid_counts = (sampler_output.sampled_token_ids != -1).sum(dim=1)
             if has_ucm_sparse() and self.vllm_config.speculative_config:
                 self.maybe_execute_ucm_sparse_finished(
-                    torch.where(
+                    rec_result=torch.where(
                         valid_counts > 0, valid_counts - 1, torch.tensor(-1)
                     ).tolist()
                 )
@@ -1791,7 +1793,7 @@ def _build_attention_metadata(
     :return: tuple[attn_metadata, spec_decode_common_attn_metadata]
     """
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import IS_INDEXER_OFFLOAD, PTOPK_PREFETCH_ENABLE
+    from ucm.sparse.utils import IS_INDEXER_OFFLOAD
 
     # Attention metadata is not needed for attention free models
     if len(self.kv_cache_config.kv_cache_groups) == 0:
@@ -2000,7 +2002,6 @@ def _build_attention_metadata(
                 hasattr(self.vllm_config.model_config, "hf_text_config")
                 and hasattr(self.vllm_config.model_config.hf_text_config, "index_topk")
                 and has_ucm_sparse()
-                and PTOPK_PREFETCH_ENABLE
                 and (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
             ):
                 attn_metadata_i.gsa_slot_len = common_attn_metadata.num_input_tokens
@@ -2036,7 +2037,6 @@ def _build_attention_metadata(
             hasattr(self.vllm_config.model_config, "hf_text_config")
             and hasattr(self.vllm_config.model_config.hf_text_config, "index_topk")
             and has_ucm_sparse()
-            and PTOPK_PREFETCH_ENABLE
             and (is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
         ):
             attn_metadata_i.num_padding_reqs = common_attn_metadata.num_input_tokens
@@ -2057,6 +2057,14 @@ def _build_attention_metadata(
             ]
             attn_metadata_i.gsa_swap_index = self.gsa_swap_index.npu[
                 : common_attn_metadata.num_input_tokens
+            ]
+            # actual_sparse_lengths: per-req 真实 topk 长度，传给
+            # npu_kv_quant_sparse_flash_attention_gsa。kernel 按 bIdx=req 索引读取
+            # （batchSize = len(cum_query_lens) = req 数），故按 num_reqs 切片
+            # （req 域），勿用 num_input_tokens（token 域）。最终下发值由
+            # GSA._update_attn_gsa_lens 按 has_prefill 决定（prefill 步置 None）。
+            attn_metadata_i.actual_sparse_lengths = self.actual_sparse_lengths.npu[
+                : common_attn_metadata.num_reqs
             ]
             attn_metadata_i.gsa_warmup_index = self.gsa_warmup_index.npu
             attn_metadata_i.gsa_prefetch_topk = self.gsa_prefetch_topk.npu[
@@ -2215,14 +2223,13 @@ def maybe_execute_ucm_sparse_warmup(self):
     ucm_sparse.warmup()
 
 
-def maybe_execute_ucm_sparse_finished(self, rec_result=None):
+def maybe_execute_ucm_sparse_finished(self, logits_indices=None, rec_result=None):
     from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 
     if not has_ucm_sparse():
-        return
+        return logits_indices
     ucm_sparse = get_ucm_sparse()
-    # return ucm_sparse.execute_finished(logits_indices)
-    ucm_sparse.execute_finished(rec_result)
+    return ucm_sparse.execute_finished(logits_indices, rec_result)
 
 
 def ucm_sparse_request_finished_in_worker(self, request_id: str | int):
@@ -2298,6 +2305,7 @@ def _patch(mod):
         )
         _patched.__annotations__ = execute_model.__annotations__
         _patched.__kwdefaults__ = execute_model.__kwdefaults__
+        _patched = torch.inference_mode()(_patched)
         patch_or_inject(mod.NPUModelRunner, "execute_model", _patched)
         logger.info("UCM GSA NPUModelRunner.execute_model patch applied")
 
@@ -2311,6 +2319,7 @@ def _patch(mod):
         )
         _patched.__annotations__ = sample_tokens.__annotations__
         _patched.__kwdefaults__ = sample_tokens.__kwdefaults__
+        _patched = torch.inference_mode()(_patched)
         patch_or_inject(mod.NPUModelRunner, "sample_tokens", _patched)
         logger.info("UCM GSA NPUModelRunner.sample_tokens patch applied")
 
