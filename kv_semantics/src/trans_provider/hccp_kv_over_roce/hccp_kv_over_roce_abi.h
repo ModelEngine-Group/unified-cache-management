@@ -97,7 +97,7 @@ typedef struct HccpKvRoceMemoryInfo {
  * This size is an ABI contract with the library: the provider copies exactly
  * HCCP_KV_ROCE_QPC_BYTES bytes into one HBM slot, so the slot size and this
  * value must stay equal. */
-#define HCCP_KV_ROCE_QPC_BYTES 256u
+#define HCCP_KV_ROCE_QPC_BYTES 512u
 
 typedef struct HccpKvRoceQpc {
     uint8_t data[HCCP_KV_ROCE_QPC_BYTES];
