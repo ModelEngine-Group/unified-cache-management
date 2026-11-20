@@ -147,6 +147,7 @@ Parameters inside `ucm_connector_config`:
 
 * **timeout_ms** *(optional, default: 30000)*  
   Timeout in milliseconds for external interfaces (applies to both Cache Store and Posix Store).
+  If set to `0`, distributed Cache Store loads use the default timeout for slot waits.
 
 Top-level parameters (outside `ucm_connector_config`):
 

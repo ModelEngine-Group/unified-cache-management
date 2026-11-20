@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -152,6 +153,12 @@ public:
         slots_.emplace(key, slotIdx);
         return Handle{this, slotIdx, true, HostAccessibleOf(key)};
     }
+    std::optional<Handle> TryGet(const UC::Detail::BlockId& blockId, size_t offset,
+                                 bool allowReserved, size_t preferredRank)
+    {
+        if (canAcquire && !canAcquire(blockId)) { return std::nullopt; }
+        return Get(blockId, offset, allowReserved, preferredRank);
+    }
     void Prealloc(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                   size_t preferredRank = UC::Cache2::kInvalid)
     {
@@ -181,6 +188,7 @@ public:
     size_t SegmentOf(size_t slotIdx) const { return slotSegments_[slotIdx]; }
     const std::vector<GetCall>& GetCalls() const { return getCalls_; }
     const std::vector<PreallocCall>& PreallocCalls() const { return preallocCalls_; }
+    std::function<bool(const UC::Detail::BlockId&)> canAcquire;
     std::function<void(size_t)> onGetState;
 
 private:
@@ -612,6 +620,105 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendSubmitFails)
     const auto& counters = std::get<0>(stats);
     EXPECT_EQ(counters.at("cache_backend_load_submit_errors_total"), 1);
     EXPECT_EQ(counters.at("cache_load_failed_shards_total"), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, BreakerRejectionWaitsForAcceptedBackendRead)
+{
+    UC::Latch releaseRead;
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load)
+        .WillOnce(testing::Invoke(
+            [] { return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle()); }))
+        .WillOnce(testing::Invoke(
+            [] { return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy()); }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&](UC::Detail::TaskHandle) {
+        releaseRead.WaitFor(kWaitMs);
+        return UC::Status::OK();
+    }));
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+
+    EXPECT_TRUE(AwaitTrue([&] { return failureSet_.Contains(task->id); }));
+    EXPECT_FALSE(waiter->Check());
+    releaseRead.Done();
+
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::StoreUnhealthy());
+    EXPECT_EQ(buffer_.MarkedReady(), 1);
+    EXPECT_EQ(buffer_.MarkedFailed(), 1);
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, PeerFailureInterruptsDispatchWaitingForUnpublishedSlot)
+{
+    const auto failed = TypesHelper::MakeBlockIdRandomly();
+    const auto local = TypesHelper::MakeBlockIdRandomly();
+    const auto missing = TypesHelper::MakeBlockIdRandomly();
+    const auto slot = buffer_.SetExisting(failed, SlotState::Loading);
+    buffer_.SetExisting(local);
+    std::atomic<bool> attemptedMissing{false};
+    buffer_.canAcquire = [&](const UC::Detail::BlockId& block) {
+        if (block != missing) { return true; }
+        attemptedMissing.store(true);
+        return false;
+    };
+    EXPECT_CALL(backend_, Load).Times(0);
+    EXPECT_CALL(backend_, Wait).Times(0);
+
+    TaskIdSet peerFailures;
+    TestedQueue peerQueue;
+    auto config = config_;
+    config.deviceId = 1;
+    config.localRankSize = 2;
+    ASSERT_TRUE(peerQueue.Setup(config, &peerFailures, &buffer_).Success());
+    auto desc = MakeDesc(failed);
+    desc.push_back({local, 0, {reinterpret_cast<void*>(0x2000)}});
+    desc.push_back({missing, 0, {reinterpret_cast<void*>(0x3000)}});
+    desc.distributeBackendLoad = true;
+    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    peerQueue.Submit(task, waiter);
+
+    EXPECT_TRUE(AwaitTrue([&] { return attemptedMissing.load(); }));
+    buffer_.SetSlotStateByIdx(slot, SlotState::Failed);
+
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(peerFailures.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
+    EXPECT_EQ(FakeStream::scatters.size(), 1);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionAndReadyWaitTimeOut)
+{
+    const auto missing = TypesHelper::MakeBlockIdRandomly();
+    const auto loading = TypesHelper::MakeBlockIdRandomly();
+    buffer_.canAcquire = [&](const UC::Detail::BlockId& block) { return block != missing; };
+    buffer_.SetExisting(loading, SlotState::Loading);
+    EXPECT_CALL(backend_, Load).Times(0);
+    EXPECT_CALL(backend_, Wait).Times(0);
+
+    TaskIdSet peerFailures;
+    TestedQueue peerQueue;
+    auto config = config_;
+    config.deviceId = 1;
+    config.localRankSize = 2;
+    config.timeoutMs = 20;
+    ASSERT_TRUE(peerQueue.Setup(config, &peerFailures, &buffer_).Success());
+    for (const auto& block : {missing, loading}) {
+        auto desc = MakeDesc(block);
+        desc.distributeBackendLoad = true;
+        auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+        auto waiter = std::make_shared<UC::Latch>();
+        peerQueue.Submit(task, waiter);
+        ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+        EXPECT_TRUE(peerFailures.Contains(task->id));
+        EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    }
+    EXPECT_TRUE(FakeStream::scatters.empty());
 }
 
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)
