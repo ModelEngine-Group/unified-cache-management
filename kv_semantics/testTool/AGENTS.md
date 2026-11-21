@@ -1,0 +1,60 @@
+# AGENTS.md — testTool
+
+kv_semantics 测试工具（C++17）子树的 agent 约定。仓库根 `AGENTS.md` 与 `kv_semantics/AGENTS.md` 的通用规则同样适用；本文件只覆盖 testTool 特有内容，冲突时以本文件为准。
+
+## 变更范围（硬性）
+
+- **只允许修改 `testTool/` 目录内的内容**。其余目录（`src/`、`tests/`、`metrics/`、`cmake/` 等）一律只读：构建脚本可按需引用（如 `../cmake/vendor/dep-*.cmake`），但不得改动其中任何文件。
+
+## 构建环境与命令
+
+Docker 开发容器内编译（宿主机 Windows，源码目录整体挂载进容器）：
+
+```bash
+docker exec -it testtool-dev bash            # 进入容器，落地即 /workspace/testTool
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug # 首次配置（不指定 BUILD_TYPE 时走 Release 选项）
+cmake --build build -j                        # 增量编译
+./build/testTool
+```
+
+- 镜像由 `testTool/Dockerfile` 构建（Ubuntu 24.04 + g++ / cmake / git / gdb）；ubuntu:24.04 为多架构镜像，x86_64 / arm64 主机通用。
+- fmt / spdlog 经 FetchContent 在线拉取，版本由父工程 `cmake/vendor/dep-*.cmake` 锁定，与主工程保持一致；首次配置需网络，失败时先检查网络再查脚本。
+- 依赖缓存位于 `build/_deps/`，删除整个 `build/` 目录即可重置。
+
+## 验证流程约定（硬性）
+
+- agent 自测需要改配置时，**复制默认配置为独立测试配置文件**（如 `conf/test_config_agent_verify.conf`），只改副本、用副本运行验证，结束后删除副本；**不得原地修改 `conf/test_config.conf` 等交付给使用方的默认配置**。验证用临时 input 文件同样遵循"新建独立文件、用完删除"模式，不改 `input/` 下已有样例。
+- 配置文件的修改一律使用 edit 工具或新建文件完成；**禁止经 docker exec 用 sed 原地改写**（PowerShell 传参会破坏 sed 表达式，已发生过 conf 损坏事故）。
+
+## 编码规范
+
+- **版权标记**：`src/` 下所有 C/C++ 源码文件（`.h` / `.cc` / `.cpp`）文件顶部必须包含如下版权声明（其后接头文件守卫或代码正文；CMakeLists.txt、Dockerfile、conf 等非 C/C++ 文件不加）：
+
+  ```c
+  /*
+   * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+   */
+  ```
+
+- **clang-format 风格（硬性）**：全部 C/C++ 代码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、IndentWidth 4、ColumnLimit 100）保持一致，改动的源文件交付前必须过 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。开发容器内工具与格式文件均未预置，且容器挂载根为 kv_semantics（看不到仓库一级目录）：首次使用先 `apt-get update && apt-get install clang-format`，再 `docker cp <仓库根>/.clang-format testtool-dev:/root/.clang-format` 导入格式文件，执行形如 `clang-format --style=file:/root/.clang-format -i <文件>`。
+- 头文件统一使用 `#pragma once` 防止重复包含，不使用传统 include 守卫。
+
+- 模块化设计：`src/` 根放置顶层编排（`main`、`scheduler`），功能按 `src/` 下模块目录（`log` / `request` / `utils` / `worker` / `test`）划分，职责单一；模块间通过头文件公开接口交互，不直接依赖其他模块内部实现细节。`test/` 为临时测试代码目录，全部模块开发完成后整体删除。
+- 方法（函数）前需有中文注释说明职责，一句话即可；仅参数较多或含义不直观时补充 `@param` / `@return`，简单参数不写；方法体内只在关键逻辑处注释，不逐行注释。
+- CMake 文件分段编写，每段以注释标明该段内容的作用。
+- 默认不使用 namespace，类名直接全局命名；确需 namespace 时另行约定。
+- 类名与文件名保持一致：CamelCase 类名对应 snake_case 文件名（如 `LoggerManager` → `logger_manager.h`），仅允许大小写与下划线差异。
+- 新增源文件放入 `src/` 对应模块目录（扩展名优先 `.cc`，兼容 `.cpp`）；GLOB 自动收集（CONFIGURE_DEPENDS），无需修改 CMakeLists。
+- 头文件引用以 `src/` 为根，形如 `#include "log/xxx.h"`，保持模块前缀语义清晰。
+
+## 可移植性约束（硬性）
+
+代码后续可能在 CPU / GPU / NPU 上执行，架构覆盖 ARM / x86，现阶段：
+
+- **禁止引入难以适配的第三方库**：新增依赖前必须确认 arm64 与 x86_64 均可编译，首选纯 C++ 实现的库。
+- 优先使用 C++17 标准库等可移植能力，禁止直接调用平台相关接口。
+- 禁止使用无编译开关保护的 SIMD / 内联汇编等架构相关特性；确需优化时通过预处理宏隔离，并提供通用回退实现。
+- GPU / NPU 设备相关能力一律通过接口抽象隔离，实现可替换，业务代码不感知具体设备。
+- 编译选项（编译器、FLAGS）保持架构无关，由目标平台原生工具链编译，不做交叉编译特殊处理。
+
+以上规范同时以人类可读形式记录于 `README.md`（「编码规范」「可移植性约束」两节），两处修改必须保持同步。
