@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -116,7 +117,17 @@ std::uint32_t ResolveSlotCapacity(const TransportConfig& config)
     auto configured =
         GetConfigAttr(config, {"hccp_kv_roce_max_connections", "hccp_max_connections"});
     if (configured.empty()) { return kHccpKvRoceDefaultSlotCapacity; }
-    return ParseConfigUint32(configured, kHccpKvRoceDefaultSlotCapacity);
+
+    constexpr std::uint64_t kInvalidConfigValue = std::numeric_limits<std::uint64_t>::max();
+    const auto parsed = ParseConfigUint64(configured, kInvalidConfigValue);
+    if (parsed == kInvalidConfigValue || parsed > std::numeric_limits<std::uint32_t>::max()) {
+        KV_WARN(
+            "HccpKvOverRoceTransProvider: ignoring invalid hccp_kv_roce_max_connections "
+            "value=\"{}\"; using the default capacity {}",
+            configured, kHccpKvRoceDefaultSlotCapacity);
+        return kHccpKvRoceDefaultSlotCapacity;
+    }
+    return static_cast<std::uint32_t>(parsed);
 }
 
 int32_t ToAbiMemoryType(TransProvider::MemType memoryType)

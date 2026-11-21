@@ -102,11 +102,18 @@ The provider resolves its device in this order:
 3. The caller's current ACL device.
 4. Device 0, with a warning.
 
-The first binding calls `aclInit(nullptr)` and `aclrtSetDevice`, then captures the
-resulting context. Every provider entry point calls `aclrtSetCurrentContext` with
-that context and restores the caller's context on exit, so the provider can share
-a thread with other ACL users. `aclInit` may already have been called by the
-process; `ACL_ERROR_REPEAT_INITIALIZE` is treated as success.
+A device attribute that is not an integer in `[0, INT32_MAX]` is ignored with a
+warning and treated as unconfigured, so resolution continues with the caller's
+current ACL device (step 3), or device 0 (step 4) when there is none. This keeps
+a typo from silently binding device 0.
+
+The first binding happens during provider construction: it calls
+`aclInit(nullptr)` and `aclrtSetDevice`, then captures the resulting context.
+Construction fails if no context can be captured. Every provider entry point
+only calls `aclrtSetCurrentContext` with that captured context and restores the
+caller's context on exit, so the provider can share a thread with other ACL
+users. `aclInit` may already have been called by the process;
+`ACL_ERROR_REPEAT_INITIALIZE` is treated as success.
 
 ## HBM connection slots
 
@@ -383,7 +390,7 @@ which is the cheaper option when the process has many transports.
 | `INVALID_ARGUMENT` on registration | Host memory was registered instead of device memory. |
 | `UNSUPPORTED` on `Send` | Library does not export `Send`. |
 | `INVALID_ARGUMENT`, `incomplete connection set` | Only part of an IP pair was passed. |
-| `INTERNAL_ERROR`, ACL error | Device/context binding failed; check `device_id` and driver. |
+| `INTERNAL_ERROR`, ACL error | Binding failed at construction; check `device_id` and driver. |
 
 ## Tests
 
@@ -396,7 +403,7 @@ test files below live in `tests/transport/`.
 | --- | --- |
 | `hccp_kv_over_roce_trans_provider_test.cc` | ABI, connections, send, memory, errors. |
 | `hccp_hbm_slot_allocator_test.cc` | Slot state machine, capacity, invalid operations. |
-| `hccp_acl_context_test.cc` | Device resolution, context bind/restore. |
+| `hccp_acl_context_test.cc` | Device resolution, context capture/bind/restore. |
 
 ```bash
 ctest --test-dir build -R "Hccp" --output-on-failure

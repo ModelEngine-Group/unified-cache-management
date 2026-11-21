@@ -38,21 +38,29 @@ namespace kv {
 // between a transport and its provider.
 struct HccpAclBinding {
     std::int32_t deviceId{-1};
+    // Written once by ResolveHccpAclBinding, before the provider is shared with
+    // any other thread, and only read afterwards.
     aclrtContext context{nullptr};
     std::string source;
 };
 
 // Resolves the provider device and captures its ACL context. The calling
-// thread's previous device/context is restored before returning.
+// thread's previous context is restored before returning. Fails when no context
+// can be captured, so a resolved binding always has a non-null context.
 Status ResolveHccpAclBinding(const TransportConfig& config, HccpAclBinding& binding);
 
-// Binds the provider context for one provider entry point and restores the
-// caller's context on exit. A null binding context falls back to
-// aclrtSetDevice and captures the resulting context for later calls.
+// Binds an already resolved provider context for one provider entry point and
+// restores the caller's context on exit. A null binding context is rejected;
+// only Capture() populates it.
 class ScopedHccpAclContext final {
 public:
     ScopedHccpAclContext(const char* stage, HccpAclBinding& binding);
     ~ScopedHccpAclContext();
+
+    // One-time initial bind: switches to binding.deviceId and captures the
+    // resulting context into the binding, failing when none can be captured.
+    // Must run before the binding is shared with other threads.
+    static Status Capture(const char* stage, HccpAclBinding& binding);
 
     ScopedHccpAclContext(const ScopedHccpAclContext&) = delete;
     ScopedHccpAclContext& operator=(const ScopedHccpAclContext&) = delete;
@@ -62,7 +70,10 @@ public:
     const Status& status() const { return status_; }
 
 private:
+    struct InitialBind {};
+    ScopedHccpAclContext(const char* stage, HccpAclBinding& binding, InitialBind);
     Status Bind();
+    Status BindInitial();
 
     const char* stage_{nullptr};
     HccpAclBinding& binding_;

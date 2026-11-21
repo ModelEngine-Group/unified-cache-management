@@ -45,6 +45,11 @@ Status AclError(const char* stage, const std::string& operation, aclError ret)
     return Status::Error(StatusCode::INTERNAL_ERROR, std::move(message));
 }
 
+// ParseConfigUint64 falls back on syntax errors and out-of-range values. This
+// sentinel is far outside every range the provider accepts, so a fallback
+// result unambiguously means "the configured value is not a valid number".
+constexpr std::uint64_t kInvalidConfigValue = std::numeric_limits<std::uint64_t>::max();
+
 std::int32_t ResolveConfiguredDevice(const TransportConfig& config)
 {
     if (config.deviceId >= 0) { return config.deviceId; }
@@ -52,8 +57,13 @@ std::int32_t ResolveConfiguredDevice(const TransportConfig& config)
     const auto configured = GetConfigAttr(config, {"device_id", "deviceId", "logical_device_id"});
     if (configured.empty()) { return -1; }
 
-    const auto parsed = ParseConfigUint32(configured, 0);
-    if (parsed > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+    const auto parsed = ParseConfigUint64(configured, kInvalidConfigValue);
+    if (parsed == kInvalidConfigValue ||
+        parsed > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+        KV_WARN(
+            "HccpKvOverRoceTransProvider: ignoring invalid device_id attribute value=\"{}\" "
+            "(expected an integer in [0, {}]); treating it as unconfigured",
+            configured, static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()));
         return -1;
     }
     return static_cast<std::int32_t>(parsed);
@@ -80,8 +90,8 @@ Status ResolveHccpAclBinding(const TransportConfig& config, HccpAclBinding& bind
         }
     }
 
-    ScopedHccpAclContext scope("ResolveDevice", binding);
-    if (!scope.status().ok()) { return scope.status(); }
+    const auto captureStatus = ScopedHccpAclContext::Capture("ResolveDevice", binding);
+    if (!captureStatus.ok()) { return captureStatus; }
 
     KV_INFO("HccpKvOverRoceTransProvider: ACL binding device_id={} context={} source={}",
             binding.deviceId, static_cast<const void*>(binding.context), binding.source);
@@ -92,6 +102,18 @@ ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& bi
     : stage_(stage), binding_(binding)
 {
     status_ = Bind();
+}
+
+ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& binding, InitialBind)
+    : stage_(stage), binding_(binding)
+{
+    status_ = BindInitial();
+}
+
+Status ScopedHccpAclContext::Capture(const char* stage, HccpAclBinding& binding)
+{
+    ScopedHccpAclContext scope(stage, binding, InitialBind{});
+    return scope.status();
 }
 
 ScopedHccpAclContext::~ScopedHccpAclContext()
@@ -113,23 +135,37 @@ Status ScopedHccpAclContext::Bind()
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "HccpKvOverRoceTransProvider: no ACL device selected");
     }
-
-    const auto getContextRet = aclrtGetCurrentContext(&callerContext_);
-    if (getContextRet != ACL_SUCCESS || callerContext_ == nullptr) { callerContext_ = nullptr; }
-
-    if (binding_.context != nullptr) {
-        if (callerContext_ == binding_.context) { return Status::OK(); }
-
-        const auto ret = aclrtSetCurrentContext(binding_.context);
-        if (ret != ACL_SUCCESS) {
-            return AclError(stage_, "aclrtSetCurrentContext", ret);
-        }
-        contextChanged_ = true;
-        return Status::OK();
+    if (binding_.context == nullptr) {
+        return Status::Error(StatusCode::NOT_INITIALIZED,
+                             "HccpKvOverRoceTransProvider: ACL context is not resolved "
+                             "device_id=" + std::to_string(binding_.deviceId));
     }
 
-    // No context captured yet. Bind the device once and remember the resulting
-    // context so later calls only need aclrtSetCurrentContext.
+    if (aclrtGetCurrentContext(&callerContext_) != ACL_SUCCESS) { callerContext_ = nullptr; }
+    if (aclrtGetDevice(&callerDevice_) != ACL_SUCCESS) { callerDevice_ = -1; }
+
+    if (callerContext_ == binding_.context) { return Status::OK(); }
+
+    const auto ret = aclrtSetCurrentContext(binding_.context);
+    if (ret != ACL_SUCCESS) { return AclError(stage_, "aclrtSetCurrentContext", ret); }
+    contextChanged_ = true;
+    return Status::OK();
+}
+
+Status ScopedHccpAclContext::BindInitial()
+{
+    if (binding_.deviceId < 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "HccpKvOverRoceTransProvider: no ACL device selected");
+    }
+    if (binding_.context != nullptr) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "HccpKvOverRoceTransProvider: ACL context is already resolved");
+    }
+
+    // No context captured yet. Bind the device once and capture the resulting
+    // context; the binding is immutable after this point.
+    if (aclrtGetCurrentContext(&callerContext_) != ACL_SUCCESS) { callerContext_ = nullptr; }
     if (aclrtGetDevice(&callerDevice_) != ACL_SUCCESS) { callerDevice_ = -1; }
     if (callerDevice_ != binding_.deviceId || callerContext_ == nullptr) {
         const auto initRet = aclInit(nullptr);
@@ -146,9 +182,16 @@ Status ScopedHccpAclContext::Bind()
     }
 
     aclrtContext context = nullptr;
-    if (aclrtGetCurrentContext(&context) == ACL_SUCCESS && context != nullptr) {
-        binding_.context = context;
+    const auto getRet = aclrtGetCurrentContext(&context);
+    if (getRet != ACL_SUCCESS) {
+        return AclError(stage_, "aclrtGetCurrentContext", getRet);
     }
+    if (context == nullptr) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "HccpKvOverRoceTransProvider: no ACL context after binding "
+                             "device_id=" + std::to_string(binding_.deviceId));
+    }
+    binding_.context = context;
     return Status::OK();
 }
 

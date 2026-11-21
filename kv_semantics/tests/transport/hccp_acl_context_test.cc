@@ -81,14 +81,17 @@ TEST_F(HccpAclContextTest, ResolveUsesAttributeKeys)
     }
 }
 
-TEST_F(HccpAclContextTest, ResolveInvalidAttributeFallsBackToZero)
+TEST_F(HccpAclContextTest, ResolveInvalidAttributeUsesCurrentDevice)
 {
-    auto config = MakeConfig(-1);
-    config.attrs["device_id"] = "not-a-number";
-    HccpAclBinding binding;
-    ASSERT_TRUE(ResolveHccpAclBinding(config, binding).ok());
-    EXPECT_EQ(binding.deviceId, 0);
-    EXPECT_EQ(binding.source, "config.attr");
+    for (const char* value : {"not-a-number", "-1", "99999999999999999999"}) {
+        auto config = MakeConfig(-1);
+        config.attrs["device_id"] = value;
+        HccpAclBinding binding;
+        ASSERT_TRUE(ResolveHccpAclBinding(config, binding).ok()) << value;
+        EXPECT_EQ(binding.deviceId, device_) << value;
+        EXPECT_EQ(binding.source, "current_acl_device") << value;
+        EXPECT_NE(binding.context, nullptr) << value;
+    }
 }
 
 TEST_F(HccpAclContextTest, ResolveOverflowingAttributeUsesCurrentDevice)
@@ -128,25 +131,16 @@ TEST_F(HccpAclContextTest, ScopedContextKeepsCallerContextWhenAlreadyBound)
     EXPECT_EQ(after, callerContext_);
 }
 
-TEST_F(HccpAclContextTest, ScopedContextBindsWhenContextNull)
+TEST_F(HccpAclContextTest, ScopedContextRejectsUnresolvedBinding)
 {
     HccpAclBinding binding;
     binding.deviceId = device_;
     binding.context = nullptr;
     binding.source = "test";
 
-    {
-        ScopedHccpAclContext scope("test", binding);
-        ASSERT_TRUE(scope.status().ok());
-        EXPECT_NE(binding.context, nullptr);
-        aclrtContext inside = nullptr;
-        ASSERT_EQ(aclrtGetCurrentContext(&inside), ACL_SUCCESS);
-        EXPECT_EQ(inside, binding.context);
-    }
-
-    aclrtContext after = nullptr;
-    ASSERT_EQ(aclrtGetCurrentContext(&after), ACL_SUCCESS);
-    EXPECT_EQ(after, callerContext_);
+    ScopedHccpAclContext scope("test", binding);
+    EXPECT_EQ(scope.status().code, StatusCode::NOT_INITIALIZED);
+    EXPECT_EQ(binding.context, nullptr);
 }
 
 TEST_F(HccpAclContextTest, ScopedContextSwitchesAndRestoresAcrossDevices)

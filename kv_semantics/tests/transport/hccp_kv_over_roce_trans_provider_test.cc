@@ -202,6 +202,20 @@ TEST_F(HccpKvOverRoceTransProviderTest, ConstructorRejectsZeroSlotCapacity)
         std::runtime_error);
 }
 
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorUsesDefaultOnInvalidSlotCapacity)
+{
+    auto config = MakeConfig();
+    config.attrs["hccp_kv_roce_max_connections"] = "3072x";
+
+    // An unparseable capacity is ignored with a warning; the provider still
+    // starts with the default 3072 slots (1.5 MiB of HBM).
+    EXPECT_NO_THROW(
+        {
+            HccpKvOverRoceTransProvider provider(config);
+            (void)provider;
+        });
+}
+
 TEST_F(HccpKvOverRoceTransProviderTest, ConstructorRejectsAbiVersionMismatch)
 {
     fake_.setAbiVersion(HCCP_KV_ROCE_ABI_VERSION + 1);
