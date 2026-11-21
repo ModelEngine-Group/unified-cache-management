@@ -2530,6 +2530,7 @@ def test_layerwise_wait_for_save_records_completion_start():
 def layerwise_connector(request):
     _reset_fakes()
     connector = object.__new__(UCMLayerWiseConnector)
+    connector._is_pp = True
     connector.first_layer_id = request.param
     connector.layer_ids = [request.param, request.param + 1]
     connector.layer_name_to_id = {
@@ -2552,7 +2553,7 @@ def layerwise_connector(request):
         shard_size=64, extract_block_addrs=lambda *args, **kwargs: [[101], [102]]
     )
     connector._rank_consistency = SimpleNamespace(
-        submit_load=Mock(side_effect=lambda *args: object()), wait_load=Mock()
+        submit_load=Mock(side_effect=lambda *args, **kwargs: object()), wait_load=Mock()
     )
     connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
     connector._record_load_error = Mock()
@@ -3014,6 +3015,104 @@ class RecordingEventDevice:
 
     def destroy_event_handle(self, event_handle):
         self.destroyed.append(event_handle)
+
+
+@pytest.mark.parametrize("all_groups", [True, False])
+def test_pd_prefill_done_requires_normal_producer_completion(monkeypatch, all_groups):
+    log = CaptureLogger()
+    monkeypatch.setattr(ucm_connector_module, "logger", log)
+    status = SimpleNamespace(FINISHED_LENGTH_CAPPED="length")
+    monkeypatch.setattr(ucm_connector_module, "RequestStatus", status)
+    outer = object.__new__(UCMConnector)
+    outer.connector = Mock()
+    finish = outer.request_finished_all_groups if all_groups else outer.request_finished
+    for params, reason in [
+        ({}, "length"),
+        ({"do_remote_prefill": True}, "length"),
+        ({"do_remote_prefill": True, "do_remote_decode": True}, "length"),
+        ({"do_remote_decode": True}, "cancelled"),
+        ({"do_remote_decode": True}, "length"),
+    ]:
+        finish(
+            SimpleNamespace(request_id="req", kv_transfer_params=params, status=reason),
+            (),
+        )
+    assert len(log.infos) == 1
+    assert re.fullmatch(r"ucm_pd_prefill_done request_id=req ts_ns=\d+", log.infos[0])
+
+
+def test_only_sync_decode_dispatches_get_rank_timing():
+    outer = object.__new__(UCMConnector)
+    outer.connector = Mock()
+    outer._pd_loads_this_step = set()
+    requests = {}
+    for name, pd, tokens, asynchronous in [
+        ("sync", True, 8, False),
+        ("async", True, 8, True),
+        ("hbm", True, 0, False),
+        ("ordinary", False, 8, False),
+    ]:
+        request = SimpleNamespace(
+            request_id=name, kv_transfer_params={"do_remote_prefill": pd}
+        )
+        outer.update_state_after_alloc(request, None, tokens)
+        requests[name] = RequestDispatchMeta(
+            ([], []), ([], []), load_async=asynchronous
+        )
+    metadata = ucm_connector_module.UCMConnectorMetadata(requests)
+    outer.connector.build_connector_meta.return_value = metadata
+    assert outer.build_connector_meta(None).pd_sync_load_req_ids == {"sync"}
+    outer.connector.build_connector_meta.return_value = (
+        ucm_connector_module.UCMConnectorMetadata(requests)
+    )
+    assert outer.build_connector_meta(None).pd_sync_load_req_ids == set()
+
+
+def test_pd_layerwise_rank_waits_for_last_local_layer(monkeypatch, layerwise_connector):
+    worker = layerwise_connector
+    log = CaptureLogger()
+    monkeypatch.setattr(ucm_connector_module, "logger", log)
+    metadata = ucm_connector_module.UCMConnectorMetadata(
+        {"req": RequestDispatchMeta(([b"k"], [1]), ([], []))},
+        pd_sync_load_req_ids={"req"},
+    )
+    worker.bind_connector_metadata(metadata)
+    worker.start_load_kv(None)
+    first, last = worker.layer_name_to_id
+    worker.wait_for_layer_load(first)
+    assert not log.infos
+    worker.wait_for_layer_load(last)
+    worker.wait_for_layer_load(last)
+    assert len(log.infos) == 1
+    assert "ucm_pd_sync_load_done request_id=req rank=0" in log.infos[0]
+
+
+@pytest.mark.parametrize("failure", [None, "submit_wa", "wait_fa"])
+def test_pd_sync_rank_timing_waits_for_both_fawa_stores(monkeypatch, failure):
+    worker = _async_fawa_worker(load_async=False)
+    log = CaptureLogger()
+    monkeypatch.setattr(ucm_connector_module, "logger", log)
+    worker._connector_metadata.pd_sync_load_req_ids.add("req")
+
+    if failure == "submit_wa":
+        worker.wa_store.load_data.side_effect = RuntimeError("WA submit failed")
+    if failure == "wait_fa":
+        worker.fa_store.wait.side_effect = RuntimeError("FA load failed")
+
+    def wait_wa(task):
+        assert not log.infos
+
+    worker.wa_store.wait.side_effect = wait_wa
+    worker.start_load_kv(None)
+    worker.fa_store.wait.assert_called_once()
+    assert worker.wa_store.wait.call_count == int(failure != "submit_wa")
+    if failure:
+        assert not log.infos
+    else:
+        assert len(log.infos) == 1
+        assert re.fullmatch(
+            r"ucm_pd_sync_load_done request_id=req rank=0 ts_ns=\d+", log.infos[0]
+        )
 
 
 def _async_fawa_worker(has_window=True, load_async=True):
