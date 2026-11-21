@@ -259,6 +259,17 @@ struct HccpKvOverRoceTransProvider::Impl {
 
     using ConnectionMap = std::unordered_map<ConnectionHandle, std::shared_ptr<ConnectionRecord>>;
 
+    // A record whose rollback DeleteConnections failed. The ABI keeps a manager
+    // valid until a delete succeeds, so the provider retains the whole record
+    // (manager and QPC storage) and retries it on later cleanup passes. The HBM
+    // slots of the failed call are released by the rollback itself; the retry
+    // only calls DeleteConnections.
+    struct OrphanedConnection {
+        std::shared_ptr<ConnectionRecord> record;
+        std::string remoteIp;
+        std::uint32_t port{0};
+    };
+
     // Provider-owned MR bookkeeping. The external library only reports the
     // registered memory info; the handle that crosses the TransProvider API is
     // allocated here and never leaves the provider.
@@ -327,6 +338,54 @@ struct HccpKvOverRoceTransProvider::Impl {
 
     mutable std::shared_mutex connectionMu;
     ConnectionMap connections;
+    std::vector<OrphanedConnection> orphanedConnections;
+
+    // Caller must not hold connectionMu.
+    void KeepOrphanedConnection(std::shared_ptr<ConnectionRecord> record,
+                                const std::string& remoteIp, std::uint32_t port)
+    {
+        std::unique_lock<std::shared_mutex> lock(connectionMu);
+        orphanedConnections.push_back(OrphanedConnection{std::move(record), remoteIp, port});
+    }
+
+    // Retries every retained record. A record is dropped only after the library
+    // reports success; failures stay queued for the next cleanup pass. The
+    // caller must hold the provider ACL binding.
+    void RetryOrphanedConnections(const char* stage)
+    {
+        std::vector<OrphanedConnection> pending;
+        {
+            std::unique_lock<std::shared_mutex> lock(connectionMu);
+            pending.swap(orphanedConnections);
+        }
+        if (pending.empty()) { return; }
+
+        std::vector<OrphanedConnection> remaining;
+        remaining.reserve(pending.size());
+        for (auto& orphan : pending) {
+            void* manager = orphan.record->manager;
+            const auto ret = api.deleteConnections(&manager, 1);
+            if (ret == 0) {
+                orphan.record->manager = nullptr;
+                KV_INFO(
+                    "HccpKvOverRoceTransProvider: released retained connection stage={} "
+                    "remote_addr={} remote_port={} qp_num={}",
+                    stage, orphan.remoteIp, orphan.port, orphan.record->qps.size());
+                continue;
+            }
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: retained connection is still busy stage={} "
+                "remote_addr={} remote_port={} qp_num={} code={}; keeping it for the next "
+                "cleanup",
+                stage, orphan.remoteIp, orphan.port, orphan.record->qps.size(), ret);
+            remaining.push_back(std::move(orphan));
+        }
+
+        if (!remaining.empty()) {
+            std::unique_lock<std::shared_mutex> lock(connectionMu);
+            for (auto& orphan : remaining) { orphanedConnections.push_back(std::move(orphan)); }
+        }
+    }
 
     mutable std::shared_mutex memoryMu;
     MemoryMap memories;
@@ -374,6 +433,11 @@ HccpKvOverRoceTransProvider::~HccpKvOverRoceTransProvider()
             }
         }
     }
+
+    // Last chance to release managers retained after a failed rollback. When
+    // live connections were present, DeleteConnections above already attempted
+    // this once.
+    impl_->RetryOrphanedConnections("Destroy");
 
     std::vector<HccpKvRoceMemoryInfo> memoryInfos;
     {
@@ -423,6 +487,10 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
                                  std::to_string(impl_->slotCapacity));
     }
 
+    // Retry managers retained after an earlier failed rollback before opening a
+    // new IP pair; this also frees operator-side resources of the same peer.
+    impl_->RetryOrphanedConnections("CreateConnection");
+
     // One record per IP pair: it keeps the library manager plus every QP created
     // by this call. The QP addresses are stable for the record lifetime and are
     // the handles returned to the transport.
@@ -467,9 +535,15 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         void* manager = record->manager;
         const auto deleteRet = impl_->api.deleteConnections(&manager, 1);
         if (deleteRet != 0) {
+            // The ABI keeps the manager valid after a failed delete, and it is
+            // the only handle that can release the operator-side QPs. Retain the
+            // record and retry it on a later cleanup instead of dropping it.
             KV_WARN(
-                "HccpKvOverRoceTransProvider: {} failed to release operator connections code={}",
-                stage, deleteRet);
+                "HccpKvOverRoceTransProvider: {} failed to release operator connections "
+                "created={} code={}; keeping the manager for a later cleanup",
+                stage, createdNum, deleteRet);
+            impl_->KeepOrphanedConnection(record, remoteIp, port);
+            return;
         }
         record->manager = nullptr;
     };
@@ -564,13 +638,16 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
                                 "HccpKvOverRoceTransProvider is not initialized"));
         return results;
     }
-    if (connectionHandles.empty()) { return results; }
-
     ScopedHccpAclContext aclScope("DeleteConnections", impl_->binding);
     if (!aclScope.status().ok()) {
         std::fill(results.begin(), results.end(), aclScope.status());
         return results;
     }
+
+    // DeleteConnections is a cleanup entry point, so retry managers retained
+    // after a failed rollback even when the caller passes no handles.
+    impl_->RetryOrphanedConnections("DeleteConnections");
+    if (connectionHandles.empty()) { return results; }
 
     // Group the requested QP handles by their IP-pair record. A record may only
     // be deleted when the caller passes every QP of that record, because the

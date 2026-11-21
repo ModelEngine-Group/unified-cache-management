@@ -148,9 +148,12 @@ Only the remote IP is required; `qpNum == 0` is rejected with
 before the library is called.
 
 Creation is all or nothing. A library error, a created count that differs from
-`qpNum`, a null handle, a missing manager, or a failed slot write deletes the
-manager that was already reported (best effort) and releases every slot acquired
-by the call.
+`qpNum`, a null handle, a missing manager, or a failed slot write releases every
+slot acquired by the call and asks the library to delete the manager that was
+already reported. If that delete fails, the ABI keeps the manager valid, so the
+provider retains the record and retries it on the next `CreateConnection`, the
+next `DeleteConnections`, and provider destruction. The record is dropped only
+after the library reports success.
 
 `DeleteConnections` is manager based. The provider groups the requested handles by
 IP pair and calls the library once per call with the manager array:
@@ -161,6 +164,9 @@ IP pair and calls the library once per call with the manager array:
 - a null or unknown handle only fails that entry;
 - if the library rejects the call, the records are put back so the caller can
   retry, and slots are only cleared and recycled after a successful call.
+
+`DeleteConnections` also retries any manager retained after a failed creation
+rollback, even when the handle list is empty.
 
 `GetServerCapabilities` queries the manager of the IP pair that owns the handle
 and copies the ABI structure field by field.

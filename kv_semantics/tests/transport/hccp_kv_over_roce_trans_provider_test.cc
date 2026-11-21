@@ -363,6 +363,67 @@ TEST_F(HccpKvOverRoceTransProviderTest, CreateConnectionRejectsReportedCountMism
     EXPECT_EQ(fake_.deleteCalls(), 2U);
 }
 
+TEST_F(HccpKvOverRoceTransProviderTest, CreateConnectionKeepsManagerWhenRollbackFails)
+{
+    CreateProvider();
+    ASSERT_TRUE(provider_ != nullptr);
+
+    // The operator creates one of two QPs, then refuses the rollback delete.
+    fake_.setCreateReportedCount(1, 0);
+    fake_.setDeleteResult(HCCP_KV_ROCE_INTERNAL_ERROR);
+
+    std::vector<TransProvider::ConnectionHandle> handles;
+    EXPECT_EQ(provider_->CreateConnection("1.1.1.1", "2.2.2.2", 1, 2, 10, handles).code,
+              StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(handles.empty());
+    ASSERT_EQ(fake_.deleteCalls(), 1U);
+    void* retained = fake_.deleteManager(0);
+    ASSERT_NE(retained, nullptr);
+
+    // Every slot of the failed call was released, so the whole capacity is
+    // available. The retry at the start of CreateConnection runs and fails too.
+    fake_.setCreateReportedCount(0, 1);
+    handles = CreateConnections(kTestCapacity);
+    ASSERT_EQ(handles.size(), kTestCapacity);
+    EXPECT_EQ(fake_.deleteCalls(), 2U);
+
+    // A cleanup call retries the retained manager; it is dropped only after the
+    // library reports success.
+    EXPECT_TRUE(provider_->DeleteConnections({}).empty());
+    EXPECT_EQ(fake_.deleteCalls(), 3U);
+    EXPECT_EQ(fake_.deleteManager(0), retained);
+
+    fake_.setDeleteResult(0);
+    EXPECT_TRUE(provider_->DeleteConnections({}).empty());
+    EXPECT_EQ(fake_.deleteCalls(), 4U);
+    EXPECT_EQ(fake_.deleteManager(0), retained);
+
+    EXPECT_TRUE(provider_->DeleteConnections({}).empty());
+    EXPECT_EQ(fake_.deleteCalls(), 4U);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, DestructorRetriesRetainedManager)
+{
+    CreateProvider();
+    ASSERT_TRUE(provider_ != nullptr);
+
+    fake_.setCreateReportedCount(1, 0);
+    fake_.setDeleteResult(HCCP_KV_ROCE_INTERNAL_ERROR);
+
+    std::vector<TransProvider::ConnectionHandle> handles;
+    EXPECT_EQ(provider_->CreateConnection("1.1.1.1", "2.2.2.2", 1, 2, 10, handles).code,
+              StatusCode::INTERNAL_ERROR);
+    ASSERT_EQ(fake_.deleteCalls(), 1U);
+    void* retained = fake_.deleteManager(0);
+    ASSERT_NE(retained, nullptr);
+
+    // With no live connections left, destruction is the last cleanup pass.
+    fake_.setDeleteResult(0);
+    provider_.reset();
+    EXPECT_EQ(fake_.deleteCalls(), 2U);
+    EXPECT_EQ(fake_.deleteManager(0), retained);
+}
+
 TEST_F(HccpKvOverRoceTransProviderTest, CreateConnectionReportsOperatorFailure)
 {
     CreateProvider();

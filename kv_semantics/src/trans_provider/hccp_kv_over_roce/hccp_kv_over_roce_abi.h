@@ -141,7 +141,9 @@ int32_t CreateConnection(const char* localIp, const char* remoteIp, uint32_t por
 
 /* Deletes whole IP-pair connection sets. connectionManagers holds managers
  * returned by CreateConnection; the library releases every QP owned by each
- * manager, so callers must delete a manager as a unit. */
+ * manager, so callers must delete a manager as a unit. On a nonzero return the
+ * managers are not consumed: each one remains valid and may be passed to a
+ * later DeleteConnections call. */
 int32_t DeleteConnections(void* const* connectionManagers, uint32_t managerNum);
 int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uint32_t descNum,
                        HccpKvRoceMemoryInfo* memoryInfos);
