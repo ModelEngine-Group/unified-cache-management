@@ -1,6 +1,9 @@
 ## Purpose
 
-## Modifications 
+Link related requirement or bug Issues using Issue references or full URLs.
+References in the description, conversation, and reviews drive release associations.
+
+## Modifications
 
 ## Test
 

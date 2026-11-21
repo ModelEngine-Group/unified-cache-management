@@ -1,0 +1,72 @@
+name: Release operations
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+  issues:
+    types: [opened, edited, labeled, milestoned, demilestoned, closed, reopened]
+  pull_request_target:
+    types: [opened, edited, reopened, closed, ready_for_review, converted_to_draft]
+  workflow_run:
+    workflows: ['Release review observer']
+    types: [completed]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      reference_batch_size:
+        description: Maximum PR discussion scans in this run
+        type: choice
+        default: '10'
+        options: ['10', '25', '50']
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ucm-release-operations-${{ github.repository }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: >-
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.display_title == 'Release review references')) &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.comment.user.type != 'Bot' &&
+        ((github.event.issue.pull_request != null &&
+          (contains(github.event.comment.body, '#') ||
+           contains(github.event.comment.body, '/issues/') ||
+           contains(github.event.changes.body.from, '#') ||
+           contains(github.event.changes.body.from, '/issues/'))) ||
+         (github.event.action == 'created' &&
+          (startsWith(github.event.comment.body, '/release_init') ||
+           startsWith(github.event.comment.body, '/update') ||
+           startsWith(github.event.comment.body, '/release_check'))))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute version operation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UCM_PROJECT_TOKEN: ${{ secrets.UCM_PROJECT_TOKEN }}
+          UCM_REFERENCE_BATCH_SIZE: ${{ inputs.reference_batch_size || '' }}
+        run: python .github/release-operations/controller.py
+      - name: Finalize operation status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UCM_JOB_STATUS: ${{ job.status }}
+        run: python .github/release-operations/controller.py --finalize

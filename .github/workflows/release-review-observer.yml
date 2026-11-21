@@ -1,0 +1,44 @@
+name: Release review observer
+run-name: >-
+  ${{ github.event.review.user.type != 'Bot' &&
+      github.event.comment.user.type != 'Bot' &&
+      (contains(github.event.review.body, '#') ||
+       contains(github.event.review.body, '/issues/') ||
+       contains(github.event.comment.body, '#') ||
+       contains(github.event.comment.body, '/issues/') ||
+       contains(github.event.changes.body.from, '#') ||
+       contains(github.event.changes.body.from, '/issues/')) &&
+      'Release review references' || 'Release review ignored' }}
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      github.event.review.user.type != 'Bot' &&
+      github.event.comment.user.type != 'Bot' &&
+      (contains(github.event.review.body, '#') ||
+      contains(github.event.review.body, '/issues/') ||
+      contains(github.event.comment.body, '#') ||
+      contains(github.event.comment.body, '/issues/') ||
+      contains(github.event.changes.body.from, '#') ||
+      contains(github.event.changes.body.from, '/issues/'))
+    runs-on: ubuntu-latest
+    steps:
+      # A default-branch workflow_run receiver reads current API metadata.
+      # The numeric target is data only; the receiver never executes PR code.
+      - name: Notify release operations
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: printf '{"number":%s}\n' "$PR_NUMBER" > target.json
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-release-review-target-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: target.json
+          retention-days: 1
