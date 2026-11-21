@@ -118,6 +118,21 @@ Status ScopedHccpAclContext::Capture(const char* stage, HccpAclBinding& binding)
 
 ScopedHccpAclContext::~ScopedHccpAclContext()
 {
+    // BindInitial may have switched the thread's device. Restore it first so the
+    // caller's device/context pair is coherent again; aclrtSetCurrentContext can
+    // then restore a custom caller context. A thread that had no ACL device when
+    // the binding was captured cannot be unbound, because ACL has no such API:
+    // it stays on the provider device.
+    if (deviceChanged_ && callerDevice_ >= 0 && callerDevice_ != binding_.deviceId) {
+        const auto ret = aclrtSetDevice(callerDevice_);
+        if (ret != ACL_SUCCESS) {
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: failed to restore caller ACL device stage={} "
+                "device_id={} ret={}",
+                stage_, callerDevice_, static_cast<int>(ret));
+        }
+    }
+
     if (!contextChanged_ || callerContext_ == nullptr) { return; }
 
     const auto ret = aclrtSetCurrentContext(callerContext_);
@@ -178,6 +193,8 @@ Status ScopedHccpAclContext::BindInitial()
             return AclError(stage_, "aclrtSetDevice device_id=" + std::to_string(binding_.deviceId),
                             setRet);
         }
+        // Remember what the capture changed so the destructor can restore it.
+        deviceChanged_ = callerDevice_ != binding_.deviceId;
         contextChanged_ = true;
     }
 

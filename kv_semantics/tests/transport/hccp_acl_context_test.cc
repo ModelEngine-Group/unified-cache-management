@@ -177,6 +177,50 @@ TEST_F(HccpAclContextTest, ScopedContextSwitchesAndRestoresAcrossDevices)
     EXPECT_EQ(after, callerContext1);
 }
 
+TEST_F(HccpAclContextTest, ResolveRestoresCallerDeviceAndContext)
+{
+    std::uint32_t deviceCount = 0;
+    ASSERT_EQ(aclrtGetDeviceCount(&deviceCount), ACL_SUCCESS);
+    if (deviceCount < 2U) { GTEST_SKIP() << "requires at least two ACL devices"; }
+
+    ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+    if (aclrtSetDevice(1) != ACL_SUCCESS) { GTEST_SKIP() << "device 1 is not usable"; }
+    std::int32_t callerDevice = -1;
+    ASSERT_EQ(aclrtGetDevice(&callerDevice), ACL_SUCCESS);
+    ASSERT_EQ(callerDevice, 1);
+    aclrtContext callerContext = nullptr;
+    ASSERT_EQ(aclrtGetCurrentContext(&callerContext), ACL_SUCCESS);
+    ASSERT_NE(callerContext, nullptr);
+
+    HccpAclBinding binding;
+    ASSERT_TRUE(ResolveHccpAclBinding(MakeConfig(0), binding).ok());
+    EXPECT_EQ(binding.deviceId, 0);
+    ASSERT_NE(binding.context, nullptr);
+
+    // Capture must leave the constructing thread on the device and context it
+    // started from.
+    std::int32_t restoredDevice = -1;
+    ASSERT_EQ(aclrtGetDevice(&restoredDevice), ACL_SUCCESS);
+    EXPECT_EQ(restoredDevice, callerDevice);
+    aclrtContext restoredContext = nullptr;
+    ASSERT_EQ(aclrtGetCurrentContext(&restoredContext), ACL_SUCCESS);
+    EXPECT_EQ(restoredContext, callerContext);
+
+    // The captured context stays usable after the device was restored, and
+    // binding it restores the caller again on scope exit.
+    {
+        ScopedHccpAclContext scope("after-resolve", binding);
+        ASSERT_TRUE(scope.status().ok());
+        aclrtContext inside = nullptr;
+        ASSERT_EQ(aclrtGetCurrentContext(&inside), ACL_SUCCESS);
+        EXPECT_EQ(inside, binding.context);
+    }
+    ASSERT_EQ(aclrtGetDevice(&restoredDevice), ACL_SUCCESS);
+    EXPECT_EQ(restoredDevice, callerDevice);
+    ASSERT_EQ(aclrtGetCurrentContext(&restoredContext), ACL_SUCCESS);
+    EXPECT_EQ(restoredContext, callerContext);
+}
+
 }  // namespace
 }  // namespace kv::test
 

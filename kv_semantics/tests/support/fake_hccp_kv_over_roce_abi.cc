@@ -28,6 +28,8 @@
 //   * HCCP_FAKE_MINIMAL: optional symbols are missing (fallback coverage);
 //   * HCCP_FAKE_MISSING_DELETE: DeleteConnections is missing (load failure).
 #include "fake_hccp_kv_over_roce_abi.h"
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -53,6 +55,7 @@ struct RegisterDesc {
 
 struct FakeState {
     std::mutex mutex;
+    std::condition_variable unregisterCv;
 
     // Programmable behavior.
     std::int32_t createResult{0};
@@ -62,6 +65,9 @@ struct FakeState {
     std::int32_t registerResult{0};
     std::int32_t registerZeroRkeyIndex{-1};
     std::int32_t unregisterResult{0};
+    bool unregisterBlock{false};
+    bool unregisterEntered{false};
+    bool unregisterReleased{false};
     std::int32_t sendResult{0};
     std::int32_t sendBatchErrorIndex{-1};
     std::uint32_t abiVersion{HCCP_KV_ROCE_ABI_VERSION};
@@ -198,13 +204,20 @@ extern "C" int32_t RegisterMemory(const HccpKvRoceRegisterMemoryDesc* descs, uin
 extern "C" int32_t UnregisterMemory(const HccpKvRoceMemoryInfo* memoryInfos, uint32_t infoNum)
 {
     auto& state = *State();
-    std::lock_guard<std::mutex> lock(state.mutex);
+    std::unique_lock<std::mutex> lock(state.mutex);
     ++state.unregisterCalls;
     state.unregisterInfos.clear();
     if (memoryInfos != nullptr) {
         for (std::uint32_t index = 0; index < infoNum; ++index) {
             state.unregisterInfos.push_back(memoryInfos[index]);
         }
+    }
+    if (state.unregisterBlock) {
+        // Test hook: hold the call until the test releases it, so the test can
+        // prove the provider does not hold memoryMu around the library call.
+        state.unregisterEntered = true;
+        state.unregisterCv.notify_all();
+        state.unregisterCv.wait(lock, [&state] { return state.unregisterReleased; });
     }
     return state.unregisterResult;
 }
@@ -317,6 +330,31 @@ extern "C" void HccpFakeSetUnregisterResult(std::int32_t result)
     auto& state = *State();
     std::lock_guard<std::mutex> lock(state.mutex);
     state.unregisterResult = result;
+}
+
+extern "C" void HccpFakeSetUnregisterBlock(std::int32_t block)
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.unregisterBlock = block != 0;
+}
+
+extern "C" std::int32_t HccpFakeWaitForUnregisterEntry(std::uint32_t timeoutMs)
+{
+    auto& state = *State();
+    std::unique_lock<std::mutex> lock(state.mutex);
+    const bool entered =
+        state.unregisterCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                    [&state] { return state.unregisterEntered; });
+    return entered ? 1 : 0;
+}
+
+extern "C" void HccpFakeReleaseUnregister(void)
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.unregisterReleased = true;
+    state.unregisterCv.notify_all();
 }
 
 extern "C" void HccpFakeSetSendResult(std::int32_t result)

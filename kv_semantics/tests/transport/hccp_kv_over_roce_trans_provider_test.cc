@@ -25,13 +25,17 @@
 
 #include "hccp_kv_over_roce/hccp_kv_over_roce_trans_provider.h"
 #include <acl/acl.h>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <dlfcn.h>
 #include <gtest/gtest.h>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 #include "../support/fake_hccp_kv_over_roce_abi.h"
@@ -55,6 +59,9 @@ constexpr std::uint32_t kTestCapacity = 4;
     X(setRegisterResult, HccpFakeSetRegisterResult)               \
     X(setRegisterZeroRkeyIndex, HccpFakeSetRegisterZeroRkeyIndex) \
     X(setUnregisterResult, HccpFakeSetUnregisterResult)           \
+    X(setUnregisterBlock, HccpFakeSetUnregisterBlock)             \
+    X(waitForUnregisterEntry, HccpFakeWaitForUnregisterEntry)     \
+    X(releaseUnregister, HccpFakeReleaseUnregister)               \
     X(setSendResult, HccpFakeSetSendResult)                       \
     X(setSendBatchErrorIndex, HccpFakeSetSendBatchErrorIndex)     \
     X(setAbiVersion, HccpFakeSetAbiVersion)                       \
@@ -891,6 +898,69 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryKeepsRecordOnOperatorFai
     EXPECT_EQ(fake_.unregisterCalls(), 2U);
     EXPECT_EQ(provider_->GetMemTokenId(handles[0], tokenId).code,
               StatusCode::BUFFER_NOT_REGISTERED);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryDoesNotBlockOtherMemoryCalls)
+{
+    CreateProvider();
+    ASSERT_TRUE(provider_ != nullptr);
+
+    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+        {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096},
+        {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096}
+    };
+    std::vector<MRHandle> handles;
+    ASSERT_TRUE(provider_->RegisterMemory(descs, handles).ok());
+    ASSERT_EQ(handles.size(), 2U);
+
+    fake_.setUnregisterBlock(1);
+    std::vector<Status> unregisterResults;
+    std::thread unregisterThread(
+        [&] { unregisterResults = provider_->UnregisterMemory({{handles[0]}}); });
+    if (fake_.waitForUnregisterEntry(5000U) != 1) {
+        fake_.releaseUnregister();
+        unregisterThread.join();
+        FAIL() << "UnregisterMemory did not enter the library";
+    }
+
+    // While the library call is blocked, other memory calls must not wait for
+    // the provider's memory lock.
+    std::mutex completionMutex;
+    std::condition_variable completionCv;
+    bool completed = false;
+    Status tokenStatus;
+    Status registerStatus;
+    std::vector<MRHandle> extraHandles;
+    std::thread lookupThread([&] {
+        std::uint32_t tokenId = 0;
+        tokenStatus = provider_->GetMemTokenId(handles[1], tokenId);
+        const std::vector<TransProvider::RegisterMemoryDesc> extra{
+            {TransProvider::MemType::MEM_DEVICE, 0x3000, 4096}
+        };
+        registerStatus = provider_->RegisterMemory(extra, extraHandles);
+        std::lock_guard<std::mutex> lock(completionMutex);
+        completed = true;
+        completionCv.notify_all();
+    });
+
+    bool finished = false;
+    {
+        std::unique_lock<std::mutex> lock(completionMutex);
+        finished = completionCv.wait_for(lock, std::chrono::seconds(5), [&] { return completed; });
+    }
+
+    // Always release the blocked library call, even when the assertion above
+    // failed, so both threads can be joined.
+    fake_.releaseUnregister();
+    unregisterThread.join();
+    lookupThread.join();
+
+    EXPECT_TRUE(finished);
+    EXPECT_TRUE(tokenStatus.ok());
+    EXPECT_TRUE(registerStatus.ok());
+    ASSERT_EQ(extraHandles.size(), 1U);
+    ASSERT_EQ(unregisterResults.size(), 1U);
+    EXPECT_TRUE(unregisterResults[0].ok());
 }
 
 TEST_F(HccpKvOverRoceTransProviderTest, BindMemoryCreatesLocalRecords)

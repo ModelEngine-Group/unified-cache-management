@@ -44,6 +44,12 @@ void HccpFakeSetDeleteResult(int32_t result);
 void HccpFakeSetRegisterResult(int32_t result);
 void HccpFakeSetRegisterZeroRkeyIndex(int32_t index);
 void HccpFakeSetUnregisterResult(int32_t result);
+/* Blocks UnregisterMemory inside the library until HccpFakeReleaseUnregister is
+ * called. HccpFakeWaitForUnregisterEntry reports whether the call entered the
+ * blocked region within timeoutMs. */
+void HccpFakeSetUnregisterBlock(int32_t block);
+int32_t HccpFakeWaitForUnregisterEntry(uint32_t timeoutMs);
+void HccpFakeReleaseUnregister(void);
 void HccpFakeSetSendResult(int32_t result);
 void HccpFakeSetSendBatchErrorIndex(int32_t index);
 void HccpFakeSetAbiVersion(uint32_t version);

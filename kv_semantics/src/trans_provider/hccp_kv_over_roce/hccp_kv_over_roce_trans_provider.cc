@@ -1088,7 +1088,6 @@ std::vector<Status> HccpKvOverRoceTransProvider::UnregisterMemory(
     std::vector<std::size_t> operatorIndices;
     std::unordered_set<MRHandle> seen;
 
-    std::int32_t ret = 0;
     {
         std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);
         for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
@@ -1113,28 +1112,35 @@ std::vector<Status> HccpKvOverRoceTransProvider::UnregisterMemory(
                 operatorIndices.push_back(index);
             }
         }
+    }
 
-        if (!operatorInfos.empty()) {
-            if (impl_->api.unregisterMemory != nullptr) {
-                ret = impl_->api.unregisterMemory(
-                    operatorInfos.data(), static_cast<std::uint32_t>(operatorInfos.size()));
-            } else {
-                // The external library only exports the three required methods. Drop
-                // the local records so the client can still release its buffers.
-                KV_WARN(
-                    "HccpKvOverRoceTransProvider: external library does not export "
-                    "UnregisterMemory; dropping local records for {} memories",
-                    operatorInfos.size());
-            }
-            if (ret != 0) {
-                // Keep operator-owned records so a later call can retry; bind-only
-                // records are local and stay released.
-                for (const auto index : operatorIndices) {
-                    auto record = std::move(removed[index]);
-                    const auto handle = record->handle;
-                    impl_->memories.emplace(handle, std::move(record));
-                }
-            }
+    // Call the library without memoryMu: the records were detached above, so a
+    // slow UnregisterMemory does not block concurrent RegisterMemory, BindMemory
+    // or GetMemTokenId.
+    std::int32_t ret = 0;
+    if (!operatorInfos.empty()) {
+        if (impl_->api.unregisterMemory != nullptr) {
+            ret = impl_->api.unregisterMemory(operatorInfos.data(),
+                                              static_cast<std::uint32_t>(operatorInfos.size()));
+        } else {
+            // The external library only exports the three required methods. Drop
+            // the local records so the client can still release its buffers.
+            KV_WARN(
+                "HccpKvOverRoceTransProvider: external library does not export "
+                "UnregisterMemory; dropping local records for {} memories",
+                operatorInfos.size());
+        }
+    }
+
+    if (ret != 0) {
+        // Keep operator-owned records so a later call can retry; bind-only
+        // records are local and stay released. Handles are never reused, so the
+        // reinsertion cannot race with a concurrently registered record.
+        std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);
+        for (const auto index : operatorIndices) {
+            auto record = std::move(removed[index]);
+            const auto handle = record->handle;
+            impl_->memories.emplace(handle, std::move(record));
         }
     }
 

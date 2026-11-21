@@ -45,8 +45,9 @@ struct HccpAclBinding {
 };
 
 // Resolves the provider device and captures its ACL context. The calling
-// thread's previous context is restored before returning. Fails when no context
-// can be captured, so a resolved binding always has a non-null context.
+// thread's previous device and context are restored before returning. Fails
+// when no context can be captured, so a resolved binding always has a non-null
+// context.
 Status ResolveHccpAclBinding(const TransportConfig& config, HccpAclBinding& binding);
 
 // Binds an already resolved provider context for one provider entry point and
@@ -57,9 +58,10 @@ public:
     ScopedHccpAclContext(const char* stage, HccpAclBinding& binding);
     ~ScopedHccpAclContext();
 
-    // One-time initial bind: switches to binding.deviceId and captures the
-    // resulting context into the binding, failing when none can be captured.
-    // Must run before the binding is shared with other threads.
+    // One-time initial bind: switches to binding.deviceId, captures the
+    // resulting context into the binding, then restores the constructing
+    // thread's device and context. Fails when none can be captured. Must run
+    // before the binding is shared with other threads.
     static Status Capture(const char* stage, HccpAclBinding& binding);
 
     ScopedHccpAclContext(const ScopedHccpAclContext&) = delete;
@@ -80,6 +82,7 @@ private:
     aclrtContext callerContext_{nullptr};
     std::int32_t callerDevice_{-1};
     bool contextChanged_{false};
+    bool deviceChanged_{false};
     Status status_;
 };
 

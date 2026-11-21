@@ -108,12 +108,14 @@ current ACL device (step 3), or device 0 (step 4) when there is none. This keeps
 a typo from silently binding device 0.
 
 The first binding happens during provider construction: it calls
-`aclInit(nullptr)` and `aclrtSetDevice`, then captures the resulting context.
-Construction fails if no context can be captured. Every provider entry point
-only calls `aclrtSetCurrentContext` with that captured context and restores the
-caller's context on exit, so the provider can share a thread with other ACL
-users. `aclInit` may already have been called by the process;
-`ACL_ERROR_REPEAT_INITIALIZE` is treated as success.
+`aclInit(nullptr)` and `aclrtSetDevice`, captures the resulting context, then
+restores the constructing thread's device and context. Construction fails if no
+context can be captured. A thread that had no ACL device when the binding was
+captured stays on the provider device, because ACL has no API to unbind a
+device. Every provider entry point only calls `aclrtSetCurrentContext` with the
+captured context and restores the caller's context on exit, so the provider can
+share a thread with other ACL users. `aclInit` may already have been called by
+the process; `ACL_ERROR_REPEAT_INITIALIZE` is treated as success.
 
 ## HBM connection slots
 
@@ -207,6 +209,12 @@ drops bind-only records locally. A duplicate handle in one call returns
 `INVALID_ARGUMENT`, an unknown handle `BUFFER_NOT_REGISTERED`, and a library
 failure returns the mapped code (fallback `INTERNAL_ERROR`) with the
 operator-owned records restored.
+
+`UnregisterMemory` detaches the selected records under the memory lock and calls
+the library without holding it, so a slow unregister does not block
+`RegisterMemory`, `BindMemory` or `GetMemTokenId`. A handle that is already
+detached reports `BUFFER_NOT_REGISTERED` to a concurrent lookup until the call
+finishes: it is dropped on success and restored on failure.
 
 When the provider is destroyed, it deletes the connections it still owns and
 unregisters the MRs it registered, both best effort.
