@@ -226,6 +226,20 @@ def test_closure_resets_parent_and_multimodal_cursor_for_each_request():
     assert block_hasher(request) == block_hasher(request)
 
 
+def test_partial_tail_key_includes_record_size_and_preserves_full_keys():
+    hasher = RequestHasher(_META)
+    request = _request(range(64))
+    tail = hasher.make_request_block_hasher(128, include_partial_tail=True)(request)[0]
+    other_tail = hasher.make_request_block_hasher(256, include_partial_tail=True)(
+        request
+    )[0]
+    full = hasher.make_request_block_hasher(64)(request)[0]
+    assert len({full, tail, other_tail}) == 3
+    assert hasher.make_request_block_hasher(64, include_partial_tail=True)(request) == [
+        full
+    ]
+
+
 def test_partial_tail_is_not_hashed_and_new_tuple_breaks_old_keys():
     hasher = RequestHasher("model:2:bfloat16:0:sfa_c8=0:li_c8=0")
     block_hasher = hasher.make_request_block_hasher(4)

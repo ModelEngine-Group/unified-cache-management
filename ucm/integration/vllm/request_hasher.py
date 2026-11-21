@@ -152,13 +152,10 @@ class RequestHasher:
                     end,
                     curr_mm_idx,
                 )
-                parent = self(
-                    (
-                        parent,
-                        tuple(token_ids[start:end]),
-                        extra_keys,
-                    )
-                )
+                hash_input = (parent, tuple(token_ids[start:end]), extra_keys)
+                if end - start < block_size:
+                    hash_input += ("partial_tail", block_size)
+                parent = self(hash_input)
                 block_hashes.append(parent)
 
             return block_hashes
