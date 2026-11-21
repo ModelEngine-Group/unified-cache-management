@@ -132,6 +132,17 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
             return
         if self._tensor_count <= 0:
             raise RuntimeError("prefetch_data requires tensor_size_list")
+        # Prefetch is best-effort: a key can be gone by the time we warm it
+        # (POSIX GC / capacity eviction, or a tail that was never persisted by
+        # the dump). A single missing key aborts the whole async load batch, so
+        # warm only the keys the backend still holds.
+        block_ids = [
+            block_id
+            for block_id, hit in zip(block_ids, self.lookup(block_ids))
+            if hit
+        ]
+        if not block_ids:
+            return
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         # Reuse the regular Load path with an all-null destination pointer
         # matrix. Every copy backend skips null fragments, so the blocks are
