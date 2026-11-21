@@ -26,9 +26,11 @@
  * C ABI exported by the external HCCP KV-over-RoCE library loaded at runtime by
  * HccpKvOverRoceTransProvider.
  *
- * The library must export CreateConnection, DeleteConnections and RegisterMemory.
- * All other symbols are optional: when present the provider forwards the matching
- * TransProvider operation, otherwise the provider keeps the documented fallback.
+ * The library must export Init, CreateConnection, DeleteConnections and
+ * RegisterMemory. All other symbols are optional: when present the provider
+ * forwards the matching TransProvider operation, otherwise the provider keeps
+ * the documented fallback. Init carries the runtime configuration explicitly;
+ * the library does not read config files or environment variables.
  *
  * Memory registration is descriptor based: RegisterMemory only registers the MR
  * itself and reports one HccpKvRoceMemoryInfo per descriptor. The provider owns
@@ -58,6 +60,7 @@ extern "C" {
 #endif
 
 #define HCCP_KV_ROCE_ABI_VERSION 1u
+#define HCCP_KV_OVER_ROCE_INIT_CONFIG_VERSION 1u
 
 typedef enum HccpKvRoceReturnCode {
     HCCP_KV_ROCE_OK = 0,
@@ -74,6 +77,68 @@ typedef enum HccpKvRoceMemoryType {
     HCCP_KV_ROCE_MEM_HOST = 0,
     HCCP_KV_ROCE_MEM_DEVICE = 1,
 } HccpKvRoceMemoryType;
+
+typedef enum HccpKvRoceOobTransport {
+    HCCP_KV_ROCE_OOB_TCP = 0,
+    HCCP_KV_ROCE_OOB_RASOCKET = 1,
+} HccpKvRoceOobTransport;
+
+/* Init: provider supplied runtime configuration. The provider must fill every
+ * field (sero initialize then assign); structSize/version allow future
+ * extension. The library does not read config files or environment variables.
+*/
+typedef struct HccpKvRoceInitConfig {
+    uint32_t structSize;    /* sizeof(HccpKvRoceInitConfig) */
+    uint32_t version;       /* HCCP_KV_OVER_ROCE_INIT_CONFIG_VERSION */
+
+    uint64_t memSize;
+    uint64_t sendMrSize;
+    uint64_t flagMrSize;
+
+    uint32_t oobTransport;  /* HccpKvRoceOobTransport */
+    uint32_t sdkIoqDepth;
+    uint32_t timeoutMs;
+    uint32_t kvnsid;
+    uint32_t serverBatchLimit;
+    uint32_t serverDeleteLimit;
+    uint32_t serverExistLimit;
+    uint32_t maxInflightKvPerIp;
+    uint32_t maxInfilghtKvPerQp;
+    uint32_t sendAivCout;
+    uint32_t waitAivCount;
+    uint32_t cacheCount;
+    uint32_t stripeCount;
+    uint32_t maxFlagsPerStripe;
+    uint32_t npuCachelineSize;
+    uint32_t quietInterval;
+    uint32_t sendCqWait;
+    uint32_t virtualNodes;
+    uint32_t postConnectDelayMs;
+    uint32_t waitPollYieldUs;
+    uint32_t waitTaskTimeoutMs;
+    uint32_t maxAivRetry;
+    uint32_t iterations;
+    uint32_t totalKvCount;
+    uint32_t blockSize;
+    uint32_t opType;
+    uint32_t pipelineNumLayers;
+    uint32_t compDelayUs;
+    uint32_t mtNumThreads;
+    uint32_t mtOpsPerThread;
+    uint32_t debug;
+    
+    uint8_t negMtu;
+    uint8_t negSl;
+    uint8_t negTrafficCalss;
+    uint8_t negRnrTimer;
+    uint8_t negRnrRetryCount;
+    uint8_t negTimeout;
+    uint8_t negRetryCnt;
+    uint8_t negQpRdAtom;
+    uint8_t negStartPsn;
+
+    uint32_t reserved[8];
+} HccpKvRoceInitConfig;
 
 typedef struct HccpKvRoceRegisterMemoryDesc {
     int32_t memoryType;
@@ -125,6 +190,14 @@ typedef struct HccpKvRoceServerCapabilities {
     uint32_t keyLength;
     uint32_t kvCapabilities;
 } HccpKvRoceServerCapabilities;
+
+/*
+ * Required symbols
+ * Init Must be called before the first CreateConnection. The first successful
+ * call installs the process wide config; later calls return OK without changing
+ * it. CreateConnection returns HCCP_KV_ROCE_INVALID_ARGUMENT before init.
+ */
+int32_t Init(const HccpKvRoceInitConfig* config);
 
 /* Required symbols.
  * CreateConnection: connectionHandles is in/out. The caller pre-fills qpNum
