@@ -1,6 +1,26 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
- */
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 
 #include "request/request_manager.h"
 #include <cerrno>
@@ -8,6 +28,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include "kv_types.h"
 #include "log/logger_manager.h"
 #include "utils/file_util.h"
 
@@ -130,10 +151,41 @@ std::uint16_t KeyHigh16(const unsigned __int128 key)
 }
 
 /**
+ * entry 级 kv 协议约束前置校验（对齐协议层 BatchStore/BatchRetrieve 的 INVALID_ARGUMENT
+ * 校验，让非法输入在启动期报错而非运行期以任务失败暴露）：key 低 64 位非全 0（CacheKey
+ * 全 0 协议拒绝）、offset 与 length 512 字节对齐、length 非 0 且不超 24 位上限；
+ * 违规返回 false 并经 reason 带回具体原因
+ */
+bool ValidateEntry(const RequestOrc &entry, std::string &reason)
+{
+    if (entry.keyLow64 == 0) {
+        reason = "key low 64 bits are all zero (protocol rejects all-zero cache key)";
+        return false;
+    }
+    if (entry.offset % kv::kAlignmentBytes != 0) {
+        reason = "offset " + std::to_string(entry.offset) + " not 512B aligned";
+        return false;
+    }
+    if (entry.length == 0) {
+        reason = "length is zero";
+        return false;
+    }
+    if (entry.length % kv::kAlignmentBytes != 0) {
+        reason = "length " + std::to_string(entry.length) + " not 512B aligned";
+        return false;
+    }
+    if (entry.length > 0xFFFFFF) {
+        reason = "length " + std::to_string(entry.length) + " exceeds 24-bit limit 0xFFFFFF";
+        return false;
+    }
+    return true;
+}
+
+/**
  * 解析单 key 行（op 已识别，fields 为 op 之后的全部 token，textAfterOp 为 op 之后的原文）：
  * 先试四整数（nsid key offset length [value...]），再试三整数（key offset length [value...]，
  * nsid 缺省 0）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
- * length 允许为 0（0 长度读写）；失败返回 false
+ * 协议约束（length 非 0、512 对齐等）由 ValidateEntry 统一校验；失败返回 false
  */
 bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
                       RequestOrc &out)
@@ -194,7 +246,7 @@ bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsi
 /**
  * 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]
  * （nsid 与 op 由批头继承）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
- * length 允许为 0（0 长度读写）；失败返回 false
+ * 协议约束（length 非 0、512 对齐等）由 ValidateEntry 统一校验；失败返回 false
  */
 bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
                      RequestOrc &out)
@@ -254,6 +306,13 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
                 err = "input line " + std::to_string(lineNo) + " invalid batch entry: " + line;
                 return false;
             }
+            // 协议约束前置校验（fail-fast）：违规启动即报错，不等到运行期任务失败
+            std::string validateReason;
+            if (!ValidateEntry(entry, validateReason)) {
+                err = "input line " + std::to_string(lineNo) +
+                      " violates kv protocol constraint (" + validateReason + "): " + line;
+                return false;
+            }
             entry.op = batchTask.op;
             entry.nsid = batchTask.nsid;
             batchTask.entries.emplace_back(entry);
@@ -302,6 +361,13 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
         if (!ParseSingleEntry(fields, TextAfterTokens(line, 1), entry)) {
             // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
             err = "input line " + std::to_string(lineNo) + " invalid single entry: " + line;
+            return false;
+        }
+        // 协议约束前置校验（fail-fast）：违规启动即报错，不等到运行期任务失败
+        std::string validateReason;
+        if (!ValidateEntry(entry, validateReason)) {
+            err = "input line " + std::to_string(lineNo) + " violates kv protocol constraint (" +
+                  validateReason + "): " + line;
             return false;
         }
         OrcTask task;

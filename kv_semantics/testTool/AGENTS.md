@@ -28,12 +28,32 @@ cmake --build build -j                        # 增量编译
 
 ## 编码规范
 
-- **版权标记**：`src/` 下所有 C/C++ 源码文件（`.h` / `.cc` / `.cpp`）文件顶部必须包含如下版权声明（其后接头文件守卫或代码正文；CMakeLists.txt、Dockerfile、conf 等非 C/C++ 文件不加）：
+- **版权标记**：`src/` 下所有 C/C++ 源码文件（`.h` / `.cc` / `.cpp`）文件顶部必须包含与仓库统一的完整 MIT License 声明（与 `kv_semantics` 现有源文件如 `src/common/utils/parser_common.cc` 的形态一致；其后接空行再接头文件守卫或代码正文；CMakeLists.txt、Dockerfile、conf 等非 C/C++ 文件不加）：
 
   ```c
-  /*
-   * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-   */
+  /**
+   * MIT License
+   *
+   * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+   *
+   * Permission is hereby granted, free of charge, to any person obtaining a copy
+   * of this software and associated documentation files (the "Software"), to deal
+   * in the Software without restriction, including without limitation the rights
+   * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   * copies of the Software, and to permit persons to whom the Software is
+   * furnished to do so, subject to the following conditions:
+   *
+   * The above copyright notice and this permission notice shall be included in all
+   * copies or substantial portions of the Software.
+   *
+   * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   * SOFTWARE.
+   * */
   ```
 
 - **clang-format 风格（硬性）**：全部 C/C++ 代码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、IndentWidth 4、ColumnLimit 100）保持一致，改动的源文件交付前必须过 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。开发容器内工具与格式文件均未预置，且容器挂载根为 kv_semantics（看不到仓库一级目录）：首次使用先 `apt-get update && apt-get install clang-format`，再 `docker cp <仓库根>/.clang-format testtool-dev:/root/.clang-format` 导入格式文件，执行形如 `clang-format --style=file:/root/.clang-format -i <文件>`。
