@@ -1712,7 +1712,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
         )
-        return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+        store = UcmConnectorFactoryV1.create_connector(name, config, module_path)
+        from os import getenv
+
+        metadata_dir = getenv("UCM_KV_CACHE_METADATA_DIR")
+        if metadata_dir and self._role == KVConnectorRole.WORKER:
+            from ucm.integration.vllm.kv_cache_metadata import write_fawa_metadata
+
+            try:
+                path = write_fawa_metadata(self, label, config, metadata_dir)
+                logger.info("Wrote FAWA %s KV cache metadata to %s", label, path)
+            except Exception as error:
+                logger.warning(
+                    "Failed to export FAWA %s KV cache metadata: %s", label, error
+                )
+        return store
 
     @staticmethod
     def _summarize_store_config(config: dict[str, object]) -> dict[str, object]:
