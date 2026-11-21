@@ -25,6 +25,7 @@
 #define KV_SEMANTICS_TESTS_FAKE_HCCP_KV_OVER_ROCE_ABI_H
 
 #include <stdint.h>
+#include "hccp_kv_over_roce/hccp_kv_over_roce_abi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,7 @@ extern "C" {
 
 void HccpFakeReset(void);
 
+void HccpFakeSetInitResult(int32_t result);
 void HccpFakeSetCreateResult(int32_t result);
 void HccpFakeSetCreateReportedCount(uint32_t count, int32_t useQpNum);
 void HccpFakeSetCreateManagerNull(int32_t managerNull);
@@ -56,6 +58,10 @@ void HccpFakeSetAbiVersion(uint32_t version);
 
 uint32_t HccpFakeCreateCalls(void);
 uint32_t HccpFakeDeleteCalls(void);
+uint32_t HccpFakeInitCalls(void);
+/* Copies the last config passed to Init and the recorded flags. Returns 0 when
+ * Init has not been called yet. */
+int32_t HccpFakeGetInitConfig(HccpKvRoceInitConfig* config);
 uint32_t HccpFakeRegisterCalls(void);
 uint32_t HccpFakeUnregisterCalls(void);
 uint32_t HccpFakeSendCalls(void);

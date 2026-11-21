@@ -150,6 +150,65 @@ kv::TransProviderType ParseTransProviderBackend(std::string backend)
     return kv::TransProviderType::UNSUPPORTED;
 }
 
+// Numeric HccpKvRoceInitConfig overrides. The suffix is the ABI field name in
+// snake_case; the max value is the widest value the field can carry. The
+// provider validates again and falls back to the ABI default on a bad value, but
+// rejecting out-of-range values here catches typos during Store::Setup.
+struct HccpInitKey {
+    const char* suffix;
+    std::int64_t maxValue;
+};
+
+constexpr std::int64_t kHccpInitUint64Max = std::numeric_limits<std::int64_t>::max();
+constexpr std::int64_t kHccpInitUint32Max = std::numeric_limits<std::uint32_t>::max();
+constexpr std::int64_t kHccpInitUint8Max = std::numeric_limits<std::uint8_t>::max();
+
+constexpr HccpInitKey kHccpInitKeys[] = {
+    {"mem_size", kHccpInitUint64Max},
+    {"send_mr_size", kHccpInitUint64Max},
+    {"flag_mr_size", kHccpInitUint64Max},
+    {"oob_transport", 1},
+    {"sdk_ioq_depth", kHccpInitUint32Max},
+    {"timeout_ms", kHccpInitUint32Max},
+    {"kvnsid", kHccpInitUint32Max},
+    {"server_batch_limit", kHccpInitUint32Max},
+    {"server_delete_limit", kHccpInitUint32Max},
+    {"server_exist_limit", kHccpInitUint32Max},
+    {"max_inflight_kv_per_ip", kHccpInitUint32Max},
+    {"max_inflight_kv_per_qp", kHccpInitUint32Max},
+    {"send_aiv_count", kHccpInitUint32Max},
+    {"wait_aiv_count", kHccpInitUint32Max},
+    {"cache_count", kHccpInitUint32Max},
+    {"stripe_count", kHccpInitUint32Max},
+    {"max_flags_per_stripe", kHccpInitUint32Max},
+    {"npu_cacheline_size", kHccpInitUint32Max},
+    {"quiet_interval", kHccpInitUint32Max},
+    {"send_cq_wait", kHccpInitUint32Max},
+    {"virtual_nodes", kHccpInitUint32Max},
+    {"post_connect_delay_ms", kHccpInitUint32Max},
+    {"wait_poll_yield_us", kHccpInitUint32Max},
+    {"wait_task_timeout_ms", kHccpInitUint32Max},
+    {"max_aiv_retry", kHccpInitUint32Max},
+    {"iterations", kHccpInitUint32Max},
+    {"total_kv_count", kHccpInitUint32Max},
+    {"block_size", kHccpInitUint32Max},
+    {"op_type", kHccpInitUint32Max},
+    {"pipeline_num_layers", kHccpInitUint32Max},
+    {"comp_delay_us", kHccpInitUint32Max},
+    {"mt_num_threads", kHccpInitUint32Max},
+    {"mt_ops_per_thread", kHccpInitUint32Max},
+    {"debug", kHccpInitUint32Max},
+    {"neg_mtu", kHccpInitUint8Max},
+    {"neg_sl", kHccpInitUint8Max},
+    {"neg_traffic_class", kHccpInitUint8Max},
+    {"neg_rnr_timer", kHccpInitUint8Max},
+    {"neg_rnr_retry_cnt", kHccpInitUint8Max},
+    {"neg_timeout", kHccpInitUint8Max},
+    {"neg_retry_cnt", kHccpInitUint8Max},
+    {"neg_qp_rd_atom", kHccpInitUint8Max},
+    {"neg_start_psn", kHccpInitUint32Max},
+};
+
 bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
                       std::string& value)
 {
@@ -229,6 +288,9 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
         if (config.hccpKvRoceMaxConnections.has_value()) {
             transportConfig.attrs["hccp_kv_roce_max_connections"] =
                 std::to_string(*config.hccpKvRoceMaxConnections);
+        }
+        for (const auto& entry : config.hccpKvRoceInit) {
+            transportConfig.attrs["hccp_kv_roce_" + entry.first] = std::to_string(entry.second);
         }
     }
 
@@ -626,11 +688,21 @@ private:
             config.configPath.empty()) {
             // TODO: add short aliases (e.g. asu_hccp_lib_path) if operators ask for
             // them; asu_hccp_kv_roce_* stays the canonical spelling.
+            // TODO: keep the snake_case key spelling even though
+            // HccpKvRoceInitConfig uses camelCase field names; rename these keys
+            // only together with a migration note.
             inConfig.Get("asu_hccp_kv_roce_lib_path", config.hccpKvRoceLibPath);
             if (inConfig.Contains("asu_hccp_kv_roce_max_connections")) {
                 std::uint64_t maxConnections = 0;
                 inConfig.GetNumber("asu_hccp_kv_roce_max_connections", maxConnections);
                 config.hccpKvRoceMaxConnections = maxConnections;
+            }
+            for (const auto& key : kHccpInitKeys) {
+                const std::string yamlKey = "asu_hccp_kv_roce_" + std::string(key.suffix);
+                if (!inConfig.Contains(yamlKey)) { continue; }
+                ssize_t value = 0;
+                inConfig.GetNumber(yamlKey, value);
+                config.hccpKvRoceInit[key.suffix] = value;
             }
         }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
@@ -785,6 +857,14 @@ private:
                  *config.hccpKvRoceMaxConnections > std::numeric_limits<std::uint32_t>::max())) {
                 return Status::InvalidParam(
                     "asu_hccp_kv_roce_max_connections must be in [1, UINT32_MAX]");
+            }
+            for (const auto& key : kHccpInitKeys) {
+                const auto iter = config.hccpKvRoceInit.find(key.suffix);
+                if (iter == config.hccpKvRoceInit.end()) { continue; }
+                if (iter->second < 0 || iter->second > key.maxValue) {
+                    return Status::InvalidParam("asu_hccp_kv_roce_{} must be in [0, {}]",
+                                                key.suffix, key.maxValue);
+                }
             }
         }
         if (config.transProviderType == kv::TransProviderType::FAKE && !config.configPath.empty()) {

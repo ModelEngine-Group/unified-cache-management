@@ -23,10 +23,11 @@
  * */
 // Fake implementation of the HCCP KV-over-RoCE C ABI used by the provider unit
 // tests. The provider dlopens this library, so the test drives behavior through
-// the HccpFake* control exports below. Three variants are built from this file:
+// the HccpFake* control exports below. Four variants are built from this file:
 //   * default: every required and optional symbol is exported;
 //   * HCCP_FAKE_MINIMAL: optional symbols are missing (fallback coverage);
-//   * HCCP_FAKE_MISSING_DELETE: DeleteConnections is missing (load failure).
+//   * HCCP_FAKE_MISSING_DELETE: DeleteConnections is missing (load failure);
+//   * HCCP_FAKE_MISSING_INIT: Init is missing (load failure).
 #include "fake_hccp_kv_over_roce_abi.h"
 #include <chrono>
 #include <condition_variable>
@@ -58,6 +59,7 @@ struct FakeState {
     std::condition_variable unregisterCv;
 
     // Programmable behavior.
+    std::int32_t initResult{0};
     std::int32_t createResult{0};
     std::uint32_t createReportedCount{kUseQpNum};
     bool createManagerNull{false};
@@ -73,6 +75,7 @@ struct FakeState {
     std::uint32_t abiVersion{HCCP_KV_ROCE_ABI_VERSION};
 
     // Recorded calls and arguments.
+    std::uint32_t initCalls{0};
     std::uint32_t createCalls{0};
     std::uint32_t deleteCalls{0};
     std::uint32_t registerCalls{0};
@@ -80,6 +83,8 @@ struct FakeState {
     std::uint32_t sendCalls{0};
     std::uint32_t capabilitiesCalls{0};
     bool handlesPrefilled{false};
+    bool initialized{false};
+    HccpKvRoceInitConfig initConfig{};
     std::vector<std::uint8_t> qpcFillBytes;
     std::vector<void*> sendSlotAddresses;
     std::vector<void*> deleteManagers;
@@ -109,6 +114,24 @@ std::vector<std::uint8_t> MakeQpcFill(std::uint32_t qpNum)
 
 // ─── Required ABI ───
 
+#ifndef HCCP_FAKE_MISSING_INIT
+extern "C" int32_t Init(const HccpKvRoceInitConfig* config)
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    ++state.initCalls;
+    if (config == nullptr) { return HCCP_KV_ROCE_INVALID_ARGUMENT; }
+    if (state.initResult != 0) { return state.initResult; }
+    // Mirror the ABI: the first successful call installs the process-wide
+    // configuration; later calls return OK without changing it.
+    if (!state.initialized) {
+        state.initConfig = *config;
+        state.initialized = true;
+    }
+    return HCCP_KV_ROCE_OK;
+}
+#endif  // HCCP_FAKE_MISSING_INIT
+
 extern "C" int32_t CreateConnection(const char* localIp, const char* remoteIp, uint32_t port,
                                     uint32_t qpNum, uint32_t timeout, void** connectionHandles,
                                     uint32_t* connectionHandleNum, void** connectionManager)
@@ -120,6 +143,7 @@ extern "C" int32_t CreateConnection(const char* localIp, const char* remoteIp, u
     auto& state = *State();
     std::lock_guard<std::mutex> lock(state.mutex);
     ++state.createCalls;
+    if (!state.initialized) { return HCCP_KV_ROCE_INVALID_ARGUMENT; }
 
     if (connectionHandles == nullptr || connectionHandleNum == nullptr ||
         connectionManager == nullptr) {
@@ -283,6 +307,13 @@ extern "C" uint32_t GetAbiVersion(void)
 
 extern "C" void HccpFakeReset() { State() = std::make_unique<FakeState>(); }
 
+extern "C" void HccpFakeSetInitResult(std::int32_t result)
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    state.initResult = result;
+}
+
 extern "C" void HccpFakeSetCreateResult(std::int32_t result)
 {
     auto& state = *State();
@@ -383,6 +414,22 @@ extern "C" std::uint32_t HccpFakeCreateCalls()
     auto& state = *State();
     std::lock_guard<std::mutex> lock(state.mutex);
     return state.createCalls;
+}
+
+extern "C" std::uint32_t HccpFakeInitCalls()
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    return state.initCalls;
+}
+
+extern "C" std::int32_t HccpFakeGetInitConfig(HccpKvRoceInitConfig* config)
+{
+    auto& state = *State();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!state.initialized || config == nullptr) { return 0; }
+    *config = state.initConfig;
+    return 1;
 }
 
 extern "C" std::uint32_t HccpFakeDeleteCalls()

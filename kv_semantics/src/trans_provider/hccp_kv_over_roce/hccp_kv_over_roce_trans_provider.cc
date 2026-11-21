@@ -28,6 +28,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -52,6 +53,176 @@ namespace {
 constexpr const char* kProviderSignature = "UCM_ASU_HCCP_KV_OVER_ROCE_PROVIDER_ABI_V1";
 constexpr const char* kDefaultLibraryPath = "libhccp_kv_over_roce.so";
 constexpr const char* kLibraryPathEnv = "UCM_HCCP_KV_ROCE_LIB_PATH";
+constexpr const char* kInitAttrPrefix = "hccp_kv_roce_";
+
+using InitFn = decltype(&::Init);
+
+// InitConfig defaults mirror the comments next to each field in
+// hccp_kv_over_roce_abi.h. Every field listed here is always assigned, so the
+// header comments and these tables must stay in sync.
+struct InitUint64Field {
+    const char* name;
+    std::uint64_t HccpKvRoceInitConfig::*member;
+    std::uint64_t defaultValue;
+};
+
+constexpr InitUint64Field kInitUint64Fields[] = {
+    {"mem_size", &HccpKvRoceInitConfig::memSize, 671088640ULL},
+    {"send_mr_size", &HccpKvRoceInitConfig::sendMrSize, 0ULL},
+    {"flag_mr_size", &HccpKvRoceInitConfig::flagMrSize, 0ULL},
+};
+
+struct InitUint32Field {
+    const char* name;
+    std::uint32_t HccpKvRoceInitConfig::*member;
+    std::uint32_t defaultValue;
+};
+
+constexpr InitUint32Field kInitUint32Fields[] = {
+    {"sdk_ioq_depth", &HccpKvRoceInitConfig::sdkIoqDepth, 128},
+    {"timeout_ms", &HccpKvRoceInitConfig::timeoutMs, 60000},
+    {"kvnsid", &HccpKvRoceInitConfig::kvnsid, 0},
+    {"server_batch_limit", &HccpKvRoceInitConfig::serverBatchLimit, 32},
+    {"server_delete_limit", &HccpKvRoceInitConfig::serverDeleteLimit, 254},
+    {"server_exist_limit", &HccpKvRoceInitConfig::serverExistLimit, 256},
+    {"max_inflight_kv_per_ip", &HccpKvRoceInitConfig::maxInflightKvPerIp, 2048},
+    {"max_inflight_kv_per_qp", &HccpKvRoceInitConfig::maxInflightKvPerQp, 256},
+    {"send_aiv_count", &HccpKvRoceInitConfig::sendAivCount, 1},
+    {"wait_aiv_count", &HccpKvRoceInitConfig::waitAivCount, 1},
+    {"cache_count", &HccpKvRoceInitConfig::cacheCount, 4},
+    {"stripe_count", &HccpKvRoceInitConfig::stripeCount, 64},
+    {"max_flags_per_stripe", &HccpKvRoceInitConfig::maxFlagsPerStripe, 20480},
+    {"npu_cacheline_size", &HccpKvRoceInitConfig::npuCachelineSize, 256},
+    {"quiet_interval", &HccpKvRoceInitConfig::quietInterval, 8},
+    {"send_cq_wait", &HccpKvRoceInitConfig::sendCqWait, 1},
+    {"virtual_nodes", &HccpKvRoceInitConfig::virtualNodes, 5},
+    {"post_connect_delay_ms", &HccpKvRoceInitConfig::postConnectDelayMs, 0},
+    {"wait_poll_yield_us", &HccpKvRoceInitConfig::waitPollYieldUs, 0},
+    {"wait_task_timeout_ms", &HccpKvRoceInitConfig::waitTaskTimeoutMs, 2000},
+    {"max_aiv_retry", &HccpKvRoceInitConfig::maxAivRetry, 3},
+    {"iterations", &HccpKvRoceInitConfig::iterations, 1},
+    {"total_kv_count", &HccpKvRoceInitConfig::totalKvCount, 4096},
+    {"block_size", &HccpKvRoceInitConfig::blockSize, 131072},
+    {"op_type", &HccpKvRoceInitConfig::opType, 0},
+    {"pipeline_num_layers", &HccpKvRoceInitConfig::pipelineNumLayers, 64},
+    {"comp_delay_us", &HccpKvRoceInitConfig::compDelayUs, 400000},
+    {"mt_num_threads", &HccpKvRoceInitConfig::mtNumThreads, 4},
+    {"mt_ops_per_thread", &HccpKvRoceInitConfig::mtOpsPerThread, 10},
+    {"debug", &HccpKvRoceInitConfig::debug, 0},
+    {"neg_start_psn", &HccpKvRoceInitConfig::negStartPsn, 0},
+};
+
+struct InitUint8Field {
+    const char* name;
+    std::uint8_t HccpKvRoceInitConfig::*member;
+    std::uint8_t defaultValue;
+};
+
+constexpr InitUint8Field kInitUint8Fields[] = {
+    {"neg_mtu", &HccpKvRoceInitConfig::negMtu, 5},
+    {"neg_sl", &HccpKvRoceInitConfig::negSl, 0},
+    {"neg_traffic_class", &HccpKvRoceInitConfig::negTrafficClass, 3},
+    {"neg_rnr_timer", &HccpKvRoceInitConfig::negRnrTimer, 12},
+    {"neg_rnr_retry_cnt", &HccpKvRoceInitConfig::negRnrRetryCnt, 7},
+    {"neg_timeout", &HccpKvRoceInitConfig::negTimeout, 14},
+    {"neg_retry_cnt", &HccpKvRoceInitConfig::negRetryCnt, 7},
+    {"neg_qp_rd_atom", &HccpKvRoceInitConfig::negQpRdAtom, 16},
+};
+
+std::string InitAttrName(const char* field)
+{
+    return std::string(kInitAttrPrefix) + field;
+}
+
+bool LookupAttrValue(const TransportConfig& config, const std::string& key, std::string& value)
+{
+    const auto iter = config.attrs.find(key);
+    if (iter == config.attrs.end()) { return false; }
+    value = iter->second;
+    return true;
+}
+
+std::string ToLowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+void WarnInvalidInitValue(const std::string& attr, const std::string& value,
+                          const std::string& expected)
+{
+    KV_WARN("HccpKvOverRoceTransProvider: ignoring invalid {} value=\"{}\"; using the default {}",
+            attr, value, expected);
+}
+
+HccpKvRoceInitConfig ResolveInitConfig(const TransportConfig& config,
+                                       std::uint32_t& overrideCount)
+{
+    HccpKvRoceInitConfig initConfig{};
+    initConfig.structSize = static_cast<std::uint32_t>(sizeof(initConfig));
+    initConfig.version = HCCP_KV_ROCE_INIT_CONFIG_VERSION;
+    constexpr auto kInvalidValue = std::numeric_limits<std::uint64_t>::max();
+
+    for (const auto& field : kInitUint64Fields) {
+        initConfig.*(field.member) = field.defaultValue;
+        const auto attr = InitAttrName(field.name);
+        std::string value;
+        if (!LookupAttrValue(config, attr, value)) { continue; }
+        const auto parsed = ParseConfigUint64(value, kInvalidValue);
+        if (parsed == kInvalidValue) {
+            WarnInvalidInitValue(attr, value, std::to_string(field.defaultValue));
+            continue;
+        }
+        initConfig.*(field.member) = parsed;
+        ++overrideCount;
+    }
+
+    for (const auto& field : kInitUint32Fields) {
+        initConfig.*(field.member) = field.defaultValue;
+        const auto attr = InitAttrName(field.name);
+        std::string value;
+        if (!LookupAttrValue(config, attr, value)) { continue; }
+        const auto parsed = ParseConfigUint64(value, kInvalidValue);
+        if (parsed == kInvalidValue || parsed > std::numeric_limits<std::uint32_t>::max()) {
+            WarnInvalidInitValue(attr, value, std::to_string(field.defaultValue));
+            continue;
+        }
+        initConfig.*(field.member) = static_cast<std::uint32_t>(parsed);
+        ++overrideCount;
+    }
+
+    for (const auto& field : kInitUint8Fields) {
+        initConfig.*(field.member) = field.defaultValue;
+        const auto attr = InitAttrName(field.name);
+        std::string value;
+        if (!LookupAttrValue(config, attr, value)) { continue; }
+        const auto parsed = ParseConfigUint64(value, kInvalidValue);
+        if (parsed == kInvalidValue || parsed > std::numeric_limits<std::uint8_t>::max()) {
+            WarnInvalidInitValue(attr, value, std::to_string(field.defaultValue));
+            continue;
+        }
+        initConfig.*(field.member) = static_cast<std::uint8_t>(parsed);
+        ++overrideCount;
+    }
+
+    const std::string oobAttr = InitAttrName("oob_transport");
+    initConfig.oobTransport = HCCP_KV_ROCE_OOB_TCP;
+    std::string oobValue;
+    if (LookupAttrValue(config, oobAttr, oobValue)) {
+        const auto lowered = ToLowerAscii(oobValue);
+        if (lowered == "tcp" || lowered == "0") {
+            initConfig.oobTransport = HCCP_KV_ROCE_OOB_TCP;
+            ++overrideCount;
+        } else if (lowered == "rasocket" || lowered == "1") {
+            initConfig.oobTransport = HCCP_KV_ROCE_OOB_RASOCKET;
+            ++overrideCount;
+        } else {
+            WarnInvalidInitValue(oobAttr, oobValue, "TCP (0)");
+        }
+    }
+    return initConfig;
+}
 
 // Every connection owns one HBM slot. The slot receives the operator QPC and is
 // later handed to the operator IO path through Send.
@@ -100,6 +271,19 @@ Status AbiError(const char* operation, std::int32_t code, StatusCode fallback)
     return Status::Error(mapped, std::move(message));
 }
 
+// Init installs a process-wide configuration on its first successful call.
+// Later calls return OK without changing it, so the provider calls Init on
+// every construction and serializes concurrent constructions to keep the first
+// call deterministic.
+Status InstallInitConfig(InitFn init, const HccpKvRoceInitConfig& config)
+{
+    static std::mutex initMutex;
+    std::lock_guard<std::mutex> lock(initMutex);
+    const auto ret = init(&config);
+    if (ret != HCCP_KV_ROCE_OK) { return AbiError("Init", ret, StatusCode::INTERNAL_ERROR); }
+    return Status::OK();
+}
+
 std::string ResolveLibraryPath(const TransportConfig& config)
 {
     auto configured = GetConfigAttr(config, {"hccp_kv_roce_lib_path", "hccp_lib_path"});
@@ -146,6 +330,7 @@ struct AbiApi {
     UnregisterMemoryFn unregisterMemory{nullptr};
     SendFn send{nullptr};
     GetServerCapabilitiesFn getServerCapabilities{nullptr};
+    InitFn init{nullptr};
 
     AbiApi() = default;
     AbiApi(const AbiApi&) = delete;
@@ -183,12 +368,16 @@ struct AbiApi {
         deleteConnections =
             reinterpret_cast<DeleteConnectionsFn>(resolve("DeleteConnections"));
         registerMemory = reinterpret_cast<RegisterMemoryFn>(resolve("RegisterMemory"));
-        if (createConnection == nullptr || deleteConnections == nullptr ||
+        init = reinterpret_cast<InitFn>(resolve("Init"));
+        if (init == nullptr || createConnection == nullptr || deleteConnections == nullptr ||
             registerMemory == nullptr) {
-            const char* missing = createConnection == nullptr
-                                      ? "CreateConnection"
-                                      : (deleteConnections == nullptr ? "DeleteConnections"
-                                                                      : "RegisterMemory");
+            const char* missing =
+                init == nullptr
+                    ? "Init"
+                    : (createConnection == nullptr
+                           ? "CreateConnection"
+                           : (deleteConnections == nullptr ? "DeleteConnections"
+                                                           : "RegisterMemory"));
             (void)dlclose(library);
             return Status::Error(StatusCode::NOT_FOUND,
                                  "HccpKvOverRoceTransProvider: " + libraryPath +
@@ -303,6 +492,11 @@ struct HccpKvOverRoceTransProvider::Impl {
         ScopedHccpAclContext aclScope("Init", binding);
         if (!aclScope.status().ok()) { throw std::runtime_error(aclScope.status().message); }
 
+        std::uint32_t initOverrides = 0;
+        const auto initConfig = ResolveInitConfig(config, initOverrides);
+        const auto abiInitStatus = InstallInitConfig(api.init, initConfig);
+        if (!abiInitStatus.ok()) { throw std::runtime_error(abiInitStatus.message); }
+
         allocator = std::make_unique<HbmSlotAllocator>(
             binding.deviceId, kHccpKvRoceConnSlotBytes, slotCapacity);
         const auto initStatus = allocator->Init();
@@ -310,10 +504,12 @@ struct HccpKvOverRoceTransProvider::Impl {
 
         KV_INFO(
             "HCCP_KV_ROCE_TRANSPORT_PROVIDER_SIGNATURE={} pid={} node_id={} device_id={} "
-            "device_source={} provider_context={} library={} slot_bytes={} slot_capacity={}",
+            "device_source={} provider_context={} library={} slot_bytes={} slot_capacity={} "
+            "mem_size={} oob_transport={} timeout_ms={} sdk_ioq_depth={} init_overrides={}",
             kProviderSignature, static_cast<long>(::getpid()), config.nodeId, binding.deviceId,
             binding.source, static_cast<const void*>(binding.context), libraryPath,
-            allocator->slotBytes(), allocator->capacity());
+            allocator->slotBytes(), allocator->capacity(), initConfig.memSize,
+            initConfig.oobTransport, initConfig.timeoutMs, initConfig.sdkIoqDepth, initOverrides);
     }
 
     ~Impl()

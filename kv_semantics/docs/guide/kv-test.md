@@ -510,7 +510,9 @@ asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001
 
 `hccp_lib_path` and `hccp_max_connections` are accepted as legacy aliases for
 the two HCCP keys, and `UCM_HCCP_KV_ROCE_LIB_PATH` overrides the default library
-name.
+name. `transport.hccp_kv_roce_<field>` overrides the matching
+`HccpKvRoceInitConfig` field; omitted fields keep the ABI defaults listed in the
+provider guide.
 
 ## Command behavior
 

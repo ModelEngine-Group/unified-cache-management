@@ -956,6 +956,9 @@ TEST(UCAsuStoreTest, ParsesHccpBackendAndPropagatesOptions)
     config.Set("asu_trans_provider_backend", std::string{"hccp_kv_over_roce"});
     config.Set("asu_hccp_kv_roce_lib_path", std::string{"/opt/hccp/libhccp_kv_over_roce.so"});
     config.SetNumber("asu_hccp_kv_roce_max_connections", std::uint64_t{3072});
+    config.SetNumber("asu_hccp_kv_roce_mem_size", std::uint64_t{1024});
+    config.SetNumber("asu_hccp_kv_roce_oob_transport", std::uint64_t{1});
+    config.SetNumber("asu_hccp_kv_roce_neg_mtu", std::uint64_t{9});
 
     ASSERT_TRUE(store.Setup(config).Success());
     const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
@@ -965,6 +968,9 @@ TEST(UCAsuStoreTest, ParsesHccpBackendAndPropagatesOptions)
         EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_lib_path"),
                   "/opt/hccp/libhccp_kv_over_roce.so");
         EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_max_connections"), "3072");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_mem_size"), "1024");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_oob_transport"), "1");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_neg_mtu"), "9");
     }
 }
 
@@ -982,6 +988,33 @@ TEST(UCAsuStoreTest, AcceptsHccpBackendAliasWithoutOptions)
     EXPECT_EQ(transportConfig.providerType, kv::TransProviderType::HCCP_KV_OVER_ROCE);
     EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_lib_path"), std::size_t{0});
     EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_max_connections"), std::size_t{0});
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_mem_size"), std::size_t{0});
+}
+
+TEST(UCAsuStoreTest, RejectsHccpInitValueOutOfRange)
+{
+    struct Case {
+        const char* key;
+        std::int64_t value;
+    };
+    const std::vector<Case> cases{
+        {"asu_hccp_kv_roce_neg_mtu", 256},
+        {"asu_hccp_kv_roce_sdk_ioq_depth",
+         static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) + 1},
+        {"asu_hccp_kv_roce_oob_transport", 2},
+        {"asu_hccp_kv_roce_mem_size", -1},
+    };
+    for (const auto& entry : cases) {
+        UC::AsuStore::AsuStore store;
+        UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+        config.Set("asu_trans_provider_backend", std::string{"hccp"});
+        config.SetNumber(entry.key, entry.value);
+
+        EXPECT_TRUE(store.Setup(config).Failure()) << entry.key;
+    }
 }
 
 TEST(UCAsuStoreTest, RejectsHccpMaxConnectionsOutOfRange)

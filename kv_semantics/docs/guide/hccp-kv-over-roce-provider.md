@@ -73,6 +73,7 @@ rejected by the provider.
 | `asu_ports` | One port per IP, in `[1, 65535]`. |
 | `asu_hccp_kv_roce_lib_path` | Optional; maps to `hccp_kv_roce_lib_path`. |
 | `asu_hccp_kv_roce_max_connections` | Optional, in `[1, UINT32_MAX]`. |
+| `asu_hccp_kv_roce_<field>` | Optional InitConfig override; see below. |
 | `asu_shared_provider` | `0` (default): one provider per transport. `1`: one shared provider. |
 
 ```yaml
@@ -92,6 +93,87 @@ When `asu_config_path` is set, the client loads the whole configuration from tha
 file and ignores the `asu_hccp_kv_roce_*` keys; use the `transport.*` keys shown
 above inside the file instead. `AsuStore::Setup` rejects an HCCP configuration
 without `asu_ips`, and a capacity outside `[1, UINT32_MAX]`.
+
+### InitConfig overrides
+
+The provider fills every `HccpKvRoceInitConfig` field and applies overrides from
+the same attr family as the other HCCP keys. In `kv-test` and standalone configs
+use `transport.hccp_kv_roce_<field>`; in ucm use `asu_hccp_kv_roce_<field>`.
+`<field>` is the ABI member name in snake_case. Values are decimal integers;
+`oob_transport` also accepts `tcp` and `rasocket` in attr form.
+
+| Field | Default |
+| --- | --- |
+| `mem_size` | `671088640` |
+| `send_mr_size` | `0` |
+| `flag_mr_size` | `0` |
+| `oob_transport` | `0` (TCP) |
+| `sdk_ioq_depth` | `128` |
+| `timeout_ms` | `60000` |
+| `kvnsid` | `0` |
+| `server_batch_limit` | `32` |
+| `server_delete_limit` | `254` |
+| `server_exist_limit` | `256` |
+| `max_inflight_kv_per_ip` | `2048` |
+| `max_inflight_kv_per_qp` | `256` |
+| `send_aiv_count` | `1` |
+| `wait_aiv_count` | `1` |
+| `cache_count` | `4` |
+| `stripe_count` | `64` |
+| `max_flags_per_stripe` | `20480` |
+| `npu_cacheline_size` | `256` |
+| `quiet_interval` | `8` |
+| `send_cq_wait` | `1` |
+| `virtual_nodes` | `5` |
+| `post_connect_delay_ms` | `0` |
+| `wait_poll_yield_us` | `0` |
+| `wait_task_timeout_ms` | `2000` |
+| `max_aiv_retry` | `3` |
+| `iterations` | `1` |
+| `total_kv_count` | `4096` |
+| `block_size` | `131072` |
+| `op_type` | `0` (read) |
+| `pipeline_num_layers` | `64` |
+| `comp_delay_us` | `400000` |
+| `mt_num_threads` | `4` |
+| `mt_ops_per_thread` | `10` |
+| `debug` | `0` |
+| `neg_mtu` | `5` |
+| `neg_sl` | `0` |
+| `neg_traffic_class` | `3` |
+| `neg_rnr_timer` | `12` |
+| `neg_rnr_retry_cnt` | `7` |
+| `neg_timeout` | `14` |
+| `neg_retry_cnt` | `7` |
+| `neg_qp_rd_atom` | `16` |
+| `neg_start_psn` | `0` |
+
+The defaults mirror the comments next to each field in
+`hccp_kv_over_roce_abi.h`. The provider applies a value only when it parses as a
+non-negative integer that fits the field; an invalid value is ignored with a
+warning and the ABI default stays in place. ucm rejects the same out-of-range
+values during `AsuStore::Setup`.
+
+## Init lifecycle
+
+`Init` is a required symbol, resolved together with `CreateConnection`,
+`DeleteConnections` and `RegisterMemory`. A library that does not export it fails
+provider construction with `NOT_FOUND`.
+
+The provider calls `Init` during construction, after the ACL context is captured
+and before the HBM slots are allocated, so a failing `Init` fails construction
+without leaving allocated slots behind. Concurrent constructions are serialized.
+
+The ABI installs the configuration process-wide on the first successful call and
+returns `OK` for later calls without changing it. Every provider passes its own
+configuration, but the first provider created in the process wins. The provider
+never re-reads configuration files or environment variables after this point;
+only the transport attrs listed above are used.
+
+`mem_size` is the operator-owned memory budget allocated by `Init`; it is
+separate from the provider HBM slot region described below. The 640 MiB default
+is intentional, so override it only when the operator is built for a smaller
+budget.
 
 ## Device and context binding
 
@@ -232,6 +314,7 @@ The header is
 
 | Symbol | Required | Behavior when missing |
 | --- | --- | --- |
+| `Init` | yes | Provider construction fails with `NOT_FOUND`. |
 | `CreateConnection` | yes | Provider construction fails with `NOT_FOUND`. |
 | `DeleteConnections` | yes | Provider construction fails with `NOT_FOUND`. |
 | `RegisterMemory` | yes | Provider construction fails with `NOT_FOUND`. |
@@ -280,13 +363,32 @@ failure modes the provider cannot detect at runtime.
 
 - [ ] Export the C ABI with `extern "C"` and the exact signatures from the
       header; never let a C++ exception cross the boundary.
-- [ ] Export `CreateConnection`, `DeleteConnections` and `RegisterMemory`. A
-      missing required symbol makes provider construction fail.
+- [ ] Export `Init`, `CreateConnection`, `DeleteConnections` and
+      `RegisterMemory`. A missing required symbol makes provider construction
+      fail.
 - [ ] If `GetAbiVersion` is exported, return `HCCP_KV_ROCE_ABI_VERSION`. Bump it
       only with an incompatible change, and build against the same header the
       provider uses.
 - [ ] Return only `HccpKvRoceReturnCode` values; any other value becomes
       `INTERNAL_ERROR` or the operation fallback at the provider.
+
+### Init
+
+- [ ] Accept `HccpKvRoceInitConfig`, validate `structSize` and `version`, and
+      reject unknown versions with `HCCP_KV_ROCE_INVALID_ARGUMENT` instead of
+      reading past the struct.
+- [ ] Install the configuration on the first successful call, then return
+      `HCCP_KV_ROCE_OK` for every later call without changing it. The provider
+      calls `Init` on every construction.
+- [ ] Reject `CreateConnection` with `HCCP_KV_ROCE_INVALID_ARGUMENT` until
+      `Init` has succeeded.
+- [ ] Do not read configuration files or environment variables: every runtime
+      setting must come from the struct.
+- [ ] Treat `memSize` as the memory budget to allocate during `Init`; the
+      provider default is 640 MiB. Return a nonzero code on allocation failure
+      so provider construction fails instead of running without memory.
+- [ ] Copy the struct before returning; the provider owns it only for the
+      duration of the call.
 
 ### CreateConnection
 
@@ -397,6 +499,7 @@ which is the cheaper option when the process has many transports.
 | `INTERNAL_ERROR`, `dlopen ... failed` | Wrong library path, or a missing dependency. |
 | `INTERNAL_ERROR`, `did not export required symbol` | Library implements an older ABI. |
 | `INTERNAL_ERROR`, `ABI version ... does not match` | Library and header versions differ. |
+| `INTERNAL_ERROR`, `Init failed` | InitConfig rejected or `mem_size` allocation failed. |
 | `INTERNAL_ERROR`, `must be greater than zero` | Capacity configured as `0`. |
 | `INTERNAL_ERROR`, `aclrtMalloc ... failed` | Not enough device memory for the slot region. |
 | `RESOURCE_BUSY` on connect | Capacity below the requested QP count, or slots not released. |
@@ -409,9 +512,9 @@ which is the cheaper option when the process has many transports.
 ## Tests
 
 The unit tests use a fake ABI library built from
-`tests/support/fake_hccp_kv_over_roce_abi.cc`, with three variants: all symbols,
-minimal (optional symbols missing), and missing `DeleteConnections`. All three
-test files below live in `tests/transport/`.
+`tests/support/fake_hccp_kv_over_roce_abi.cc`, with four variants: all symbols,
+minimal (optional symbols missing), missing `DeleteConnections`, and missing
+`Init`. All three test files below live in `tests/transport/`.
 
 | File | Coverage |
 | --- | --- |

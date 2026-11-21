@@ -91,51 +91,51 @@ typedef struct HccpKvRoceInitConfig {
     uint32_t structSize;    /* sizeof(HccpKvRoceInitConfig) */
     uint32_t version;       /* HCCP_KV_ROCE_INIT_CONFIG_VERSION */
 
-    uint64_t memSize;
-    uint64_t sendMrSize;
-    uint64_t flagMrSize;
+    uint64_t memSize;       /* 671088640 */
+    uint64_t sendMrSize;    /* 0 */
+    uint64_t flagMrSize;    /* 0 */
 
     uint32_t oobTransport;  /* HccpKvRoceOobTransport */
-    uint32_t sdkIoqDepth;
-    uint32_t timeoutMs;
-    uint32_t kvnsid;
-    uint32_t serverBatchLimit;
-    uint32_t serverDeleteLimit;
-    uint32_t serverExistLimit;
-    uint32_t maxInflightKvPerIp;
-    uint32_t maxInflightKvPerQp;
-    uint32_t sendAivCount;
-    uint32_t waitAivCount;
-    uint32_t cacheCount;
-    uint32_t stripeCount;
-    uint32_t maxFlagsPerStripe;
-    uint32_t npuCachelineSize;
-    uint32_t quietInterval;
-    uint32_t sendCqWait;
-    uint32_t virtualNodes;
-    uint32_t postConnectDelayMs;
-    uint32_t waitPollYieldUs;
-    uint32_t waitTaskTimeoutMs;
-    uint32_t maxAivRetry;
-    uint32_t iterations;
-    uint32_t totalKvCount;
-    uint32_t blockSize;
-    uint32_t opType;
-    uint32_t pipelineNumLayers;
-    uint32_t compDelayUs;
-    uint32_t mtNumThreads;
-    uint32_t mtOpsPerThread;
-    uint32_t debug;
+    uint32_t sdkIoqDepth;   /* 128 */
+    uint32_t timeoutMs;     /* 60000 */
+    uint32_t kvnsid;        /* 0 */
+    uint32_t serverBatchLimit;  /* 32 */
+    uint32_t serverDeleteLimit; /* 254 */
+    uint32_t serverExistLimit;  /* 256 */
+    uint32_t maxInflightKvPerIp;    /* 2048 */
+    uint32_t maxInflightKvPerQp;    /* 256 */
+    uint32_t sendAivCount;      /* 1 */
+    uint32_t waitAivCount;      /* 1 */
+    uint32_t cacheCount;        /* 4 */
+    uint32_t stripeCount;       /* 64 */
+    uint32_t maxFlagsPerStripe; /* 20480 */
+    uint32_t npuCachelineSize;  /* 256 */
+    uint32_t quietInterval;     /* 8 */
+    uint32_t sendCqWait;        /* 1 */
+    uint32_t virtualNodes;      /* 5 */
+    uint32_t postConnectDelayMs;    /* 0 */
+    uint32_t waitPollYieldUs;       /* 0 */
+    uint32_t waitTaskTimeoutMs;     /* 2000 */
+    uint32_t maxAivRetry;           /* 3 */
+    uint32_t iterations;            /* 1 */
+    uint32_t totalKvCount;          /* 4096 */
+    uint32_t blockSize;             /* 131072 */
+    uint32_t opType;                /* read */
+    uint32_t pipelineNumLayers;     /* 64 */
+    uint32_t compDelayUs;           /* 400000 */
+    uint32_t mtNumThreads;          /* 4 */
+    uint32_t mtOpsPerThread;        /* 10 */
+    uint32_t debug;                 /* 0 */
     
-    uint8_t negMtu;
-    uint8_t negSl;
-    uint8_t negTrafficClass;
-    uint8_t negRnrTimer;
-    uint8_t negRnrRetryCnt;
-    uint8_t negTimeout;
-    uint8_t negRetryCnt;
-    uint8_t negQpRdAtom;
-    uint32_t negStartPsn;
+    uint8_t negMtu;                 /* 5 */
+    uint8_t negSl;                  /* 0 */
+    uint8_t negTrafficClass;        /* 3 */
+    uint8_t negRnrTimer;            /* 12 */
+    uint8_t negRnrRetryCnt;         /* 7 */
+    uint8_t negTimeout;             /* 14 */
+    uint8_t negRetryCnt;            /* 7 */
+    uint8_t negQpRdAtom;            /* 16 */
+    uint32_t negStartPsn;           /* 0 */
 
     uint32_t reserved[8];
 } HccpKvRoceInitConfig;

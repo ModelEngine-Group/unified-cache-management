@@ -52,6 +52,7 @@ constexpr std::uint32_t kTestCapacity = 4;
 // the test always talks to the exact library instance the provider loaded.
 #define KV_FAKE_CONTROL_FUNCTIONS(X)                              \
     X(reset, HccpFakeReset)                                       \
+    X(setInitResult, HccpFakeSetInitResult)                       \
     X(setCreateResult, HccpFakeSetCreateResult)                   \
     X(setCreateReportedCount, HccpFakeSetCreateReportedCount)     \
     X(setCreateManagerNull, HccpFakeSetCreateManagerNull)         \
@@ -65,6 +66,8 @@ constexpr std::uint32_t kTestCapacity = 4;
     X(setSendResult, HccpFakeSetSendResult)                       \
     X(setSendBatchErrorIndex, HccpFakeSetSendBatchErrorIndex)     \
     X(setAbiVersion, HccpFakeSetAbiVersion)                       \
+    X(initCalls, HccpFakeInitCalls)                               \
+    X(getInitConfig, HccpFakeGetInitConfig)                       \
     X(createCalls, HccpFakeCreateCalls)                           \
     X(deleteCalls, HccpFakeDeleteCalls)                           \
     X(registerCalls, HccpFakeRegisterCalls)                       \
@@ -244,6 +247,139 @@ TEST_F(HccpKvOverRoceTransProviderTest, ConstructorRejectsMissingRequiredSymbol)
             (void)provider;
         },
         std::runtime_error);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorRejectsMissingInitSymbol)
+{
+    ASSERT_TRUE(UseLibrary(UCM_HCCP_FAKE_ABI_MISSING_INIT_PATH));
+    EXPECT_THROW(
+        {
+            HccpKvOverRoceTransProvider provider(
+                MakeConfig(kTestCapacity, UCM_HCCP_FAKE_ABI_MISSING_INIT_PATH));
+            (void)provider;
+        },
+        std::runtime_error);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorCallsInitWithAbiDefaults)
+{
+    CreateProvider();
+    ASSERT_EQ(fake_.initCalls(), 1U);
+
+    HccpKvRoceInitConfig config{};
+    ASSERT_EQ(fake_.getInitConfig(&config), 1);
+    EXPECT_EQ(config.structSize, sizeof(HccpKvRoceInitConfig));
+    EXPECT_EQ(config.version, HCCP_KV_ROCE_INIT_CONFIG_VERSION);
+
+    // Guard against the tables drifting from the defaults documented in
+    // hccp_kv_over_roce_abi.h.
+    EXPECT_EQ(config.memSize, 671088640ULL);
+    EXPECT_EQ(config.sendMrSize, 0ULL);
+    EXPECT_EQ(config.flagMrSize, 0ULL);
+    EXPECT_EQ(config.oobTransport, HCCP_KV_ROCE_OOB_TCP);
+    EXPECT_EQ(config.sdkIoqDepth, 128U);
+    EXPECT_EQ(config.timeoutMs, 60000U);
+    EXPECT_EQ(config.kvnsid, 0U);
+    EXPECT_EQ(config.serverBatchLimit, 32U);
+    EXPECT_EQ(config.serverDeleteLimit, 254U);
+    EXPECT_EQ(config.serverExistLimit, 256U);
+    EXPECT_EQ(config.maxInflightKvPerIp, 2048U);
+    EXPECT_EQ(config.maxInflightKvPerQp, 256U);
+    EXPECT_EQ(config.sendAivCount, 1U);
+    EXPECT_EQ(config.waitAivCount, 1U);
+    EXPECT_EQ(config.cacheCount, 4U);
+    EXPECT_EQ(config.stripeCount, 64U);
+    EXPECT_EQ(config.maxFlagsPerStripe, 20480U);
+    EXPECT_EQ(config.npuCachelineSize, 256U);
+    EXPECT_EQ(config.quietInterval, 8U);
+    EXPECT_EQ(config.sendCqWait, 1U);
+    EXPECT_EQ(config.virtualNodes, 5U);
+    EXPECT_EQ(config.postConnectDelayMs, 0U);
+    EXPECT_EQ(config.waitPollYieldUs, 0U);
+    EXPECT_EQ(config.waitTaskTimeoutMs, 2000U);
+    EXPECT_EQ(config.maxAivRetry, 3U);
+    EXPECT_EQ(config.iterations, 1U);
+    EXPECT_EQ(config.totalKvCount, 4096U);
+    EXPECT_EQ(config.blockSize, 131072U);
+    EXPECT_EQ(config.opType, 0U);
+    EXPECT_EQ(config.pipelineNumLayers, 64U);
+    EXPECT_EQ(config.compDelayUs, 400000U);
+    EXPECT_EQ(config.mtNumThreads, 4U);
+    EXPECT_EQ(config.mtOpsPerThread, 10U);
+    EXPECT_EQ(config.debug, 0U);
+    EXPECT_EQ(config.negMtu, 5U);
+    EXPECT_EQ(config.negSl, 0U);
+    EXPECT_EQ(config.negTrafficClass, 3U);
+    EXPECT_EQ(config.negRnrTimer, 12U);
+    EXPECT_EQ(config.negRnrRetryCnt, 7U);
+    EXPECT_EQ(config.negTimeout, 14U);
+    EXPECT_EQ(config.negRetryCnt, 7U);
+    EXPECT_EQ(config.negQpRdAtom, 16U);
+    EXPECT_EQ(config.negStartPsn, 0U);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorAppliesInitOverrides)
+{
+    auto config = MakeConfig();
+    config.attrs["hccp_kv_roce_mem_size"] = "1024";
+    config.attrs["hccp_kv_roce_send_mr_size"] = "2048";
+    config.attrs["hccp_kv_roce_oob_transport"] = "rasocket";
+    config.attrs["hccp_kv_roce_sdk_ioq_depth"] = "64";
+    config.attrs["hccp_kv_roce_timeout_ms"] = "1500";
+    config.attrs["hccp_kv_roce_neg_mtu"] = "9";
+    config.attrs["hccp_kv_roce_neg_timeout"] = "20";
+
+    HccpKvOverRoceTransProvider provider(config);
+    HccpKvRoceInitConfig initConfig{};
+    ASSERT_EQ(fake_.getInitConfig(&initConfig), 1);
+    EXPECT_EQ(initConfig.memSize, 1024ULL);
+    EXPECT_EQ(initConfig.sendMrSize, 2048ULL);
+    EXPECT_EQ(initConfig.oobTransport, HCCP_KV_ROCE_OOB_RASOCKET);
+    EXPECT_EQ(initConfig.sdkIoqDepth, 64U);
+    EXPECT_EQ(initConfig.timeoutMs, 1500U);
+    EXPECT_EQ(initConfig.negMtu, 9U);
+    EXPECT_EQ(initConfig.negTimeout, 20U);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorFallsBackToDefaultsOnInvalidInitValues)
+{
+    auto config = MakeConfig();
+    config.attrs["hccp_kv_roce_mem_size"] = "12x";
+    config.attrs["hccp_kv_roce_sdk_ioq_depth"] = "4294967296";
+    config.attrs["hccp_kv_roce_neg_mtu"] = "256";
+    config.attrs["hccp_kv_roce_oob_transport"] = "udp";
+
+    HccpKvOverRoceTransProvider provider(config);
+    HccpKvRoceInitConfig initConfig{};
+    ASSERT_EQ(fake_.getInitConfig(&initConfig), 1);
+    EXPECT_EQ(initConfig.memSize, 671088640ULL);
+    EXPECT_EQ(initConfig.sdkIoqDepth, 128U);
+    EXPECT_EQ(initConfig.negMtu, 5U);
+    EXPECT_EQ(initConfig.oobTransport, HCCP_KV_ROCE_OOB_TCP);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, ConstructorFailsWhenInitFails)
+{
+    fake_.setInitResult(HCCP_KV_ROCE_INTERNAL_ERROR);
+    EXPECT_THROW(
+        {
+            HccpKvOverRoceTransProvider provider(MakeConfig());
+            (void)provider;
+        },
+        std::runtime_error);
+    EXPECT_EQ(fake_.initCalls(), 1U);
+    EXPECT_EQ(fake_.createCalls(), 0U);
+}
+
+TEST_F(HccpKvOverRoceTransProviderTest, InitPrecedesCreateConnection)
+{
+    CreateProvider();
+    EXPECT_EQ(fake_.initCalls(), 1U);
+    EXPECT_EQ(fake_.createCalls(), 0U);
+
+    EXPECT_EQ(CreateConnections(1).size(), 1U);
+    EXPECT_EQ(fake_.initCalls(), 1U);
+    EXPECT_EQ(fake_.createCalls(), 1U);
 }
 
 TEST_F(HccpKvOverRoceTransProviderTest, FactoryCreatesProvider)
