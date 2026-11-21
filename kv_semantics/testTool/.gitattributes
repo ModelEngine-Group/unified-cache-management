@@ -1,0 +1,11 @@
+# Windows 侧 git core.autocrlf=true 会把文本文件 checkout 落盘为 CRLF，引发两类问题：
+#   1) .sh 脚本行尾带 \r，bash 无法解析执行
+#   2) 自研解析器（kv client 配置、input 流量文件）按行读取，\r 会混进字段值
+# 在本目录（testTool 子树）声明以下类型一律以 LF 落盘，保证跨平台行为一致
+*.sh text eol=lf
+*.conf text eol=lf
+*.txt text eol=lf
+# Dockerfile 的 RUN 续行符与 yum repo 配置对行尾敏感（\r 会破坏 docker build 续行、
+# 混入 repo 变量值），一并强制 LF 落盘
+Dockerfile* text eol=lf
+*.repo text eol=lf
