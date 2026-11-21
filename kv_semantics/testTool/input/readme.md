@@ -23,7 +23,7 @@ optype: get put exist delete
 
 其他规则：
 单key格式中，如果只有3个整数，那么是nsid缺省，默认为0
-length允许为0（0长度读写）
+字段须满足 kv 协议约束（协议层 BatchStore/BatchRetrieve 的校验规则）：key 低 64 位不能为全 0（key=0 非法）、offset 与 length 均须 512 字节对齐、length 不能为 0、length 上限 0xFFFFFF（24 位）。违反任一约束在程序启动时报错退出（fail-fast），不会等到运行期以任务失败暴露
 对文件逐行读取，去掉尾部\n，如果最后一个字符是\r去掉，行首尾trim，trim字符集是空格和\t
 trim后为空，跳过该行。trim后以sleep开头，按sleep处理
 提取行首操作符，提取失败则启动报错退出

@@ -1,6 +1,26 @@
-/*
- * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
- */
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 
 #include "worker/executor.h"
 #include <algorithm>
@@ -478,15 +498,23 @@ bool Executor::IsNotFound(const kv::Status &status)
 
 std::size_t Executor::CountFailed(const kv::TaskResult &result, std::size_t entryCount)
 {
+    // entry 级分类优先（任务级 PARTIAL_FAILED 时 entryStatus 仍带逐项详情，整批计失败
+    // 会虚增 error rate——与 Load/Delete 的统计口径一致）；entryStatus 为空（任务未到
+    // entry 层）时按任务级状态整体归类
+    if (!result.entryStatus.empty()) {
+        std::size_t failed = 0;
+        const std::size_t count = std::min(result.entryStatus.size(), entryCount);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!result.entryStatus[i].ok()) { ++failed; }
+        }
+        // entryStatus 数量不足的异常场景，缺失部分按失败计
+        if (result.entryStatus.size() < entryCount) {
+            failed += entryCount - result.entryStatus.size();
+        }
+        return std::min(failed, entryCount);
+    }
     if (!result.status.ok()) { return entryCount; }
-    std::size_t failed = 0;
-    for (const auto &status : result.entryStatus) {
-        if (!status.ok()) { ++failed; }
-    }
-    if (result.entryStatus.size() < entryCount) {
-        failed += entryCount - result.entryStatus.size();
-    }
-    return std::min(failed, entryCount);
+    return 0;
 }
 
 std::uint64_t Executor::SumBytes(const std::vector<kv::KVBuffer> &entries)

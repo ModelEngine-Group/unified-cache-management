@@ -68,7 +68,8 @@ cmake --build kv_semantics/testTool/build -j
 
 ```bash
 cd <仓库根>/kv_semantics
-docker build -t testtool-dev testTool/Dockerfile
+# 位置参数是构建上下文目录，Dockerfile 路径经 -f 指定（Dockerfile 内无 COPY，上下文内容不敏感）
+docker build -t testtool-dev -f testTool/Dockerfile .
 docker run -d --name testtool-dev -v <仓库根>/kv_semantics:/workspace testtool-dev
 docker exec -it testtool-dev bash
 # 容器内落地即 /workspace/testTool，按第 2、3 节步骤构建（路径用 /workspace/...）
