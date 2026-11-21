@@ -60,7 +60,7 @@ extern "C" {
 #endif
 
 #define HCCP_KV_ROCE_ABI_VERSION 1u
-#define HCCP_KV_OVER_ROCE_INIT_CONFIG_VERSION 1u
+#define HCCP_KV_ROCE_INIT_CONFIG_VERSION 1u
 
 typedef enum HccpKvRoceReturnCode {
     HCCP_KV_ROCE_OK = 0,
@@ -83,13 +83,13 @@ typedef enum HccpKvRoceOobTransport {
     HCCP_KV_ROCE_OOB_RASOCKET = 1,
 } HccpKvRoceOobTransport;
 
-/* Init: provider supplied runtime configuration. The provider must fill every
- * field (sero initialize then assign); structSize/version allow future
+/* Init: provider-supplied runtime configuration. The provider must fill every
+ * field (zero-initialize then assign); structSize/version allow future
  * extension. The library does not read config files or environment variables.
 */
 typedef struct HccpKvRoceInitConfig {
     uint32_t structSize;    /* sizeof(HccpKvRoceInitConfig) */
-    uint32_t version;       /* HCCP_KV_OVER_ROCE_INIT_CONFIG_VERSION */
+    uint32_t version;       /* HCCP_KV_ROCE_INIT_CONFIG_VERSION */
 
     uint64_t memSize;
     uint64_t sendMrSize;
@@ -103,8 +103,8 @@ typedef struct HccpKvRoceInitConfig {
     uint32_t serverDeleteLimit;
     uint32_t serverExistLimit;
     uint32_t maxInflightKvPerIp;
-    uint32_t maxInfilghtKvPerQp;
-    uint32_t sendAivCout;
+    uint32_t maxInflightKvPerQp;
+    uint32_t sendAivCount;
     uint32_t waitAivCount;
     uint32_t cacheCount;
     uint32_t stripeCount;
@@ -129,13 +129,13 @@ typedef struct HccpKvRoceInitConfig {
     
     uint8_t negMtu;
     uint8_t negSl;
-    uint8_t negTrafficCalss;
+    uint8_t negTrafficClass;
     uint8_t negRnrTimer;
-    uint8_t negRnrRetryCount;
+    uint8_t negRnrRetryCnt;
     uint8_t negTimeout;
     uint8_t negRetryCnt;
     uint8_t negQpRdAtom;
-    uint8_t negStartPsn;
+    uint32_t negStartPsn;
 
     uint32_t reserved[8];
 } HccpKvRoceInitConfig;
