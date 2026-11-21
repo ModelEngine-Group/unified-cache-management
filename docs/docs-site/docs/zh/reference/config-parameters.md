@@ -29,6 +29,7 @@ enable_metrics: true
 | `wa_dump_block_wise` | 选填 | bool | `true` | 仅在 FAWA connector 中使用。`true`: 每个 block 的 WA cache 都会被 dump（高频 dump）；`false`: 只 dump 每个 chunk prefill 最后 block 的 WA cache（低频 dump）。 |
 | `load_tokens_threshold` | 选填 | int | `0` | 设置触发 KV cache 加载的最小 token 阈值，仅在 DeepSeek V4 系列模型生效。当外部命中 tokens 数 > `load_tokens_threshold` 时触发 KV Cache 加载。 |
 | `enable_record_traces` | 选填 | bool | `false` | 用来记录请求信息（时间戳，输入长度，输出长度等信息）。 |
+| `enable_prefetch` | 选填 | bool | `false` | 在响应的 `kv_transfer_params.hash_keys` 中返回请求的 UCM block hash，供外部 prefetch 服务预热 DDR。仅在实际部署了该服务时开启；关闭时响应不会暴露内部缓存键。支持 MLA、GQA（含 TP > 1 的各 rank）与 FAWA 布局；FAWA 会用全部 key 预热 FA store，并用最终匹配边界预热 WA store，与 load 路径一致。 |
 | `enable_metrics` | 选填 | bool | 默认 `true` | 是否开启 metrics 收集。 |
 | `use_lite` | 选填 | bool | `false` | 是否启用 UCM Lite 功能。不对 KV Cache 数据进行保存和加载，仅对元数据进行保存和查询。仅可用于评估 KV Cache 命中率情况，无加速效果。 |
 | `metrics_config_path` | 选填 | string | 自行配置 | 指定监控指标配置文件路径，启用后可通过 toolkit 进行 UCM 在线监控。参考配置文件：`examples/metrics/metrics_configs.yaml`。 |

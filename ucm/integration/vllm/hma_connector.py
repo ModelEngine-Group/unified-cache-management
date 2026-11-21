@@ -31,6 +31,7 @@ from ucm.integration.vllm.ucm_connector import (
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    build_kv_block_info,
     build_kv_hash_meta,
 )
 from ucm.logger import init_logger
@@ -2917,13 +2918,31 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self._load_wait_executor.shutdown(wait=True)
             self._load_wait_executor = None
 
+    def prefetch_data(self, block_ids: list[bytes]) -> None:
+        """Warm FA and WA stores with the same keys as the load path.
+
+        FA groups load every matched block, while WA groups only load the
+        final matched boundary (``load_keys[-1:]``). Warming only the FA store
+        would leave the WA tail on the slow backend.
+        """
+        if not block_ids:
+            return
+        if self.fa_store is not None:
+            self.fa_store.prefetch_data(block_ids)
+        if self.window_group_ids and self.wa_store is not None:
+            self.wa_store.prefetch_data(block_ids[-1:])
+
     def request_finished_all_groups(
         self,
         request: "Request",
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
-        # Scheduler side method
-        return True, None
+        # Scheduler side method.
+        # Return this request's block hashes (prefetch handle) with the response
+        # so the upper layer can prefetch on demand. Short requests that were not
+        # dumped have no requests_meta entry and yield None.
+        req_meta = self.requests_meta.get(request.request_id)
+        return True, build_kv_block_info(req_meta, enabled=self.enable_prefetch)
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):

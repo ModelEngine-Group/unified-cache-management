@@ -165,6 +165,14 @@ private:
             waiter->Done();
             return;
         }
+        if (task->desc.empty()) {
+            // Empty task must complete immediately, otherwise Wait would block
+            // forever.
+            UC_WARN("Cache task({}) dispatched with 0 shards, completing immediately.",
+                    task->id);
+            waiter->Done();
+            return;
+        }
         DispatchShards(task, waiter);
     }
     void DispatchShards(const TaskPtr& task, const WaiterPtr& waiter)

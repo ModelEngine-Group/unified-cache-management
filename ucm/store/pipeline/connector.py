@@ -26,6 +26,7 @@ import array
 import copy
 import ctypes
 import importlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,8 @@ import numpy as np
 import torch
 
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
+
+logger = logging.getLogger(__name__)
 
 _preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
 
@@ -97,6 +100,8 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
         self.store_ = ucmpipelinestore.PipelineStore()
+        self._pending_prefetch_tasks: List[int] = []
+        self._tensor_count = len(config.get("tensor_size_list") or [])
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
@@ -121,6 +126,64 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         self.store_.Prefetch(flat)
+
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        if not block_ids:
+            return
+        if self._tensor_count <= 0:
+            raise RuntimeError("prefetch_data requires tensor_size_list")
+        # Prefetch is best-effort: a key can be gone by the time we warm it
+        # (POSIX GC / capacity eviction, or a tail that was never persisted by
+        # the dump). A single missing key aborts the whole async load batch, so
+        # warm only the keys the backend still holds.
+        block_ids = [
+            block_id
+            for block_id, hit in zip(block_ids, self.lookup(block_ids))
+            if hit
+        ]
+        if not block_ids:
+            return
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        # Reuse the regular Load path with an all-null destination pointer
+        # matrix. Every copy backend skips null fragments, so the blocks are
+        # read from the slow backend into the DDR cache buffer without H2D.
+        rows = len(block_ids)
+        indexes = array.array("Q", [0] * rows)
+        addrs = np.zeros((rows, self._tensor_count), dtype=np.uint64)
+        # The task is asynchronous, like load/dump. No one waits on it here, so
+        # reap finished handles lazily on later calls to keep
+        # TransManager::tasks_ bounded.
+        self._reap_prefetch_tasks()
+        self._pending_prefetch_tasks.append(self.store_.Load(flat, indexes, addrs))
+
+    def _reap_prefetch_tasks(self) -> None:
+        if not self._pending_prefetch_tasks:
+            return
+        pending = []
+        for task_id in self._pending_prefetch_tasks:
+            if self.store_.Check(task_id):
+                self.store_.Wait(task_id)
+            else:
+                pending.append(task_id)
+        self._pending_prefetch_tasks = pending
+
+    def close(self) -> None:
+        """Drain pending prefetch tasks so no handle outlives the store."""
+        pending = self._pending_prefetch_tasks
+        self._pending_prefetch_tasks = []
+        for task_id in pending:
+            try:
+                self.store_.Wait(task_id)
+            except Exception as exc:  # best-effort: never block teardown
+                logger.warning("Failed to wait for prefetch task %s: %s", task_id, exc)
+
+    def __del__(self) -> None:
+        # Prefetch is fire-and-forget; reap the last batch on destruction so
+        # TransManager::tasks_ does not keep completed tasks alive.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _tensor_normalize(self, tensors: List[List[torch.Tensor]]) -> np.ndarray:
         n_rows = len(tensors)

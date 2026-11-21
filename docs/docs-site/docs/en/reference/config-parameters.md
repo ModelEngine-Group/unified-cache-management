@@ -29,6 +29,7 @@ On CUDA, models with indexer caches automatically use whole-block load/save (`us
 | `wa_dump_block_wise` | Optional | bool | `true` | Only used in FAWA connector. `true`: every block's WA cache is dumped (high frequency); `false`: only dump last block's WA cache of each chunk prefill (low frequency). |
 | `load_tokens_threshold` | Optional | int | `0` | Minimum token threshold for triggering KV cache loading. Only effective for DeepSeek V4 series. When external hit tokens > `load_tokens_threshold`, triggers KV Cache loading. |
 | `enable_record_traces` | Optional | bool | `false` | Record request information (timestamps, input length, output length, etc.). |
+| `enable_prefetch` | Optional | bool | `false` | Return each request's UCM block hashes as `kv_transfer_params.hash_keys` for the external prefetch service. Enable only when that service is deployed; otherwise responses omit internal cache keys. Supported by MLA, GQA (all TP ranks) and FAWA layouts; FAWA warms the FA store with all keys and the WA store with the final matched boundary, matching the load path. |
 | `enable_metrics` | Optional | bool | Default: `true` | Whether to enable metrics collection. |
 | `use_lite` | Optional | bool | `false` | Enable UCM Lite. Does not save/load KV Cache data, only saves and queries metadata. Used to evaluate KV Cache hit rate — no acceleration effect. |
 | `metrics_config_path` | Optional | string | User-configured | Custom metrics config file path. Enables UCM online monitoring via toolkit. Reference config: `examples/metrics/metrics_configs.yaml`. |

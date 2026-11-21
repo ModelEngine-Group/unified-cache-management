@@ -387,6 +387,19 @@ TEST_F(UCCache2LoadQueueTest, SetupPassesStreamParams)
     EXPECT_EQ(FakeStream::lastStreamNumber.load(), 2);
 }
 
+TEST_F(UCCache2LoadQueueTest, EmptyDescLoadCompletesImmediately)
+{
+    EXPECT_CALL(backend_, Load).Times(0);
+    auto task = std::make_shared<Task>(Task::Type::LOAD, UC::Detail::TaskDesc{});
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ_.Submit(task, waiter);
+    // An empty task must complete immediately instead of blocking Wait
+    // forever.
+    ASSERT_TRUE(waiter->WaitForDuration(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_TRUE(buffer_.GetCalls().empty());
+}
+
 TEST_F(UCCache2LoadQueueTest, PrerequisiteWaitPrecedesAllH2dShards)
 {
     UC::Detail::TaskDesc desc;

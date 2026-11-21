@@ -435,6 +435,20 @@ class RequestMeta:
     token_processed: int = 0
 
 
+def build_kv_block_info(
+    req_meta: "RequestMeta | None", *, enabled: bool
+) -> dict[str, Any] | None:
+    """Build the prefetch handle returned with the response.
+
+    The handle is only consumed by deployments that run the prefetch service.
+    Emitting it for every request would add tens of KB to kv_transfer_params
+    for long contexts and expose internal cache keys, so it is opt-in.
+    """
+    if not enabled or req_meta is None or not req_meta.ucm_block_ids:
+        return None
+    return {"hash_keys": [b.hex() for b in req_meta.ucm_block_ids]}
+
+
 @dataclass
 class RequestDispatchMeta:
     load_block_ids: tuple[
@@ -1648,6 +1662,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
     cross-rank consistency metadata.
     """
 
+    enable_prefetch = False
+
     @classmethod
     def _supports_request_async_load(cls) -> bool:
         return cls is UCMDirectConnector
@@ -1716,6 +1732,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             kv_cache_config,
             vllm_config.parallel_config.pipeline_parallel_size,
         )
+        # Only expose block hashes (prefetch handle) when a prefetch service
+        # consumes them; otherwise keep kv_transfer_params small.
+        self.enable_prefetch = bool(self.launch_config.get("enable_prefetch", False))
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         self.unique_id = self.engine_id
@@ -2055,6 +2074,18 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _prefetch_store(self, block_ids: list[bytes]) -> None:
         for store in getattr(self, "_pp_stores", [self.store]):
             store.prefetch(block_ids)
+
+    def prefetch_data(self, block_ids: list[bytes]) -> None:
+        """Warm the DDR cache with the same key mapping as the load path."""
+        if not block_ids:
+            return
+        store_block_ids = block_ids
+        if self.tp_rank != 0 and not self.is_mla:
+            store_block_ids = [
+                self.request_hasher(block_id) for block_id in block_ids
+            ]
+        for store in getattr(self, "_pp_stores", [self.store]):
+            store.prefetch_data(store_block_ids)
 
     def _lookup_all_stages(self, block_ids: list[bytes]) -> int:
         """Query the single store; the layer-wise connector intersects stages."""
@@ -2799,10 +2830,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
+        req_meta = self.requests_meta.get(request.request_id)
+        kv_transfer_params = build_kv_block_info(
+            req_meta, enabled=self.enable_prefetch
+        )
         if request.request_id in self._async_dump_req_ids:
             self._async_dump_req_ids.discard(request.request_id)
-            return True, None
-        return False, None
+            return True, kv_transfer_params
+        return False, kv_transfer_params
 
     def request_finished_all_groups(
         self,
@@ -3768,6 +3803,8 @@ class UCMMockConnector(UCMDirectConnector):
 
 
 class UCMLiteConnector(KVConnectorBase_V1):
+    enable_prefetch = False
+
     def __init__(
         self,
         vllm_config,
@@ -3779,6 +3816,9 @@ class UCMLiteConnector(KVConnectorBase_V1):
         self.trace_hash_block_size = max(512, self.hash_block_size)
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
+        ucm_config = Config(vllm_config.kv_transfer_config)
+        self.launch_config = ucm_config.get_config()
+        self.enable_prefetch = bool(self.launch_config.get("enable_prefetch", False))
 
         self.request_hasher = RequestHasher(build_kv_hash_meta(vllm_config, 0))
         self._seed = self.request_hasher.seed
@@ -3894,8 +3934,8 @@ class UCMLiteConnector(KVConnectorBase_V1):
         request: "Request",
         block_ids: list[int],
     ) -> tuple[bool, dict[str, Any] | None]:
-        self.requests_meta.pop(request.request_id, None)
-        return False, None
+        req_meta = self.requests_meta.pop(request.request_id, None)
+        return False, build_kv_block_info(req_meta, enabled=self.enable_prefetch)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
         pass
@@ -4136,6 +4176,22 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     @_record_connector_interface_duration
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
+
+    def prefetch_data(self, block_ids: List[bytes]) -> None:
+        """Prefetch blocks into the host DDR buffer (Backend2Cache), no H2D.
+
+        Forwards to the inner connector so prefetch reuses the same key and
+        store mapping as the load path. Connectors that cannot support it
+        reject the call explicitly.
+        """
+        inner = getattr(self, "connector", None)
+        prefetch = getattr(inner, "prefetch_data", None)
+        if prefetch is not None:
+            prefetch(block_ids)
+            return
+        store = getattr(inner, "store", None)
+        if store is not None:
+            store.prefetch_data(block_ids)
 
     def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         self._vllm_metrics_enabled = False
