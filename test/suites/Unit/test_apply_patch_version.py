@@ -150,6 +150,10 @@ def test_mamba_split_patch_is_scoped_to_0300(
         "ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch"
     )
     assert (target in imported) is expected
+    handshake_target = (
+        "ucm.integration.vllm.patch.v0300.vllm_ascend.multi_connector_pp_handshake_patch"
+    )
+    assert (handshake_target in imported) is expected
     assert "0.30.0" in module.get_supported_versions()
 
 
