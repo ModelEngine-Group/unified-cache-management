@@ -125,6 +125,7 @@ class RequestHasher:
         self,
         block_size: int,
         initial_hash: bytes | None = None,
+        include_partial_tail: bool = False,
     ) -> Callable[["Request"], list[bytes]]:
         """Bind a reusable request hasher to one block size and chain root."""
         if block_size <= 0:
@@ -141,8 +142,9 @@ class RequestHasher:
 
             for start in range(0, len(token_ids), block_size):
                 end = start + block_size
-                if end > len(token_ids):
+                if end > len(token_ids) and not include_partial_tail:
                     break
+                end = min(end, len(token_ids))
 
                 extra_keys, curr_mm_idx = _generate_extra_keys(
                     request,
@@ -150,13 +152,10 @@ class RequestHasher:
                     end,
                     curr_mm_idx,
                 )
-                parent = self(
-                    (
-                        parent,
-                        tuple(token_ids[start:end]),
-                        extra_keys,
-                    )
-                )
+                hash_input = (parent, tuple(token_ids[start:end]), extra_keys)
+                if end - start < block_size:
+                    hash_input += ("partial_tail", block_size)
+                parent = self(hash_input)
                 block_hashes.append(parent)
 
             return block_hashes
