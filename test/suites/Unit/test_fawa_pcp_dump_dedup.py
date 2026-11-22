@@ -10,7 +10,9 @@ import ast
 import itertools
 import sys
 import types
+from concurrent.futures import Future
 from types import SimpleNamespace as NS
+from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
@@ -25,7 +27,8 @@ def _load_class_method(path, class_name, method_name):
     cls = next(n for n in tree.body if getattr(n, "name", None) == class_name)
     node = next(n for n in cls.body if getattr(n, "name", None) == method_name)
     namespace = {}
-    module = ast.Module(body=[node], type_ignores=[])
+    module = ast.parse("from __future__ import annotations")
+    module.body.append(node)
     exec(compile(module, str(path), "exec"), namespace)
     return namespace[method_name]
 
@@ -288,18 +291,22 @@ def _run_wait_for_save(owner_rank, owner_size, *, wa_block_wise):
         dump_owner_rank=owner_rank,
         dump_owner_size=owner_size,
         tp_dump_tasks={},
+        _async_dump_req_ids=set(),
         file_size={"FA": 1, "WA": 1},
         _get_connector_metadata=lambda: metadata,
         _poll_completed_dump_tasks=lambda: None,
         _extract_fa_ptr=extract_fa,
         _extract_wa_ptr=extract_wa,
-        _get_dump_event_handle=lambda: 1,
+        _get_event_handle=lambda: 1,
         _submit_dump_task=submit,
     )
     connector._get_mla_dump_slice = types.MethodType(
         methods["_get_mla_dump_slice"], connector
     )
     methods["wait_for_save"](connector)
+    assert connector._async_dump_req_ids == {
+        request_id for request_id, _, count in REQUESTS if count
+    }
     return submitted, fa_rows, wa_rows
 
 
@@ -349,3 +356,95 @@ def test_single_owner_dumps_everything():
     submitted, _, _ = _run_wait_for_save(0, 1, wa_block_wise=True)
     assert sorted(submitted["FA"][0]) == ALL_KEYS
     assert sorted(submitted["WA"][0]) == ALL_KEYS
+
+
+@pytest.mark.parametrize("cancel_before_load_completes", [False, True])
+def test_preempted_fawa_dump_cannot_send_after_receive(cancel_before_load_completes):
+    method_names = {
+        "build_connector_meta",
+        "handle_preemptions",
+        "_drain_best_effort_dump_tasks",
+        "_poll_pending_fawa_loads",
+        "get_finished",
+        "get_transfer_results",
+    }
+    methods = _load_hma_methods(method_names)
+    methods["UCMFAWAConnectorMetadata"] = lambda plans, preempted: NS(
+        request_meta=plans, preempted_req_ids=preempted
+    )
+    methods["KVConnectorTransferResults"] = NS
+    old_dump_ids = {"resumed", "other"}
+    scheduler = NS(
+        requests_meta={},
+        _pending_async_load_dispatches={"resumed": NS(dump_keys=[], load_async=True)},
+        _async_load_req_ids={"resumed"},
+        _async_dump_req_ids=set(old_dump_ids),
+    )
+    for name in ("request_finished", "request_finished_all_groups"):
+        method = _load_class_method(UCM_PATH, "UCMDirectConnector", name)
+        setattr(scheduler, name, types.MethodType(method, scheduler))
+    metadata = methods["build_connector_meta"](
+        scheduler,
+        NS(
+            scheduled_new_reqs=[],
+            scheduled_cached_reqs=NS(req_ids=[]),
+            finished_req_ids=set(),
+            preempted_req_ids={"resumed"},
+        ),
+    )
+
+    store_wait = Future()
+    worker = NS(
+        tp_dump_tasks={
+            ("resumed",): [NS(task="old dump", event_handle=1)],
+            ("other",): [NS(task="other dump", event_handle=2)],
+        },
+        _pending_fawa_loads={
+            "resumed": NS(
+                tasks=[NS(task="resumed load", label="FA", wait_future=store_wait)],
+                event_handle=3,
+                failed=False,
+            )
+        },
+        _finished_async_load_req_ids=set(),
+        _failed_fawa_loads=set(),
+        _async_dump_req_ids=set(old_dump_ids),
+        _rank_consistency=Mock(),
+        _record_fawa_load_error=Mock(),
+        _connector_worker_meta=Mock(),
+        device=Mock(),
+    )
+    worker._rank_consistency.wait_load.side_effect = lambda task, wait: wait()
+    methods["logger"] = Mock()
+    for name in method_names - {"build_connector_meta"}:
+        setattr(worker, name, types.MethodType(methods[name], worker))
+
+    worker.handle_preemptions(metadata)
+    assert worker._rank_consistency.mock_calls == [
+        call.wait_dump("old dump"),
+        call.wait_dump("other dump"),
+        call.finish_dump({"resumed"}),
+    ]
+    assert not worker.tp_dump_tasks
+    assert scheduler.request_finished_all_groups(NS(request_id="resumed"), ([],)) == (
+        False,
+        None,
+    )
+    if cancel_before_load_completes:
+        cancelled = worker.get_transfer_results({"resumed"})
+        assert not cancelled.finished_sending
+        assert not cancelled.finished_recving
+
+    store_wait.set_exception(OSError("resumed load failed"))
+    failed = worker.get_transfer_results(set())
+    assert failed.finished_recving == failed.failed_recving == {"resumed"}
+    assert not failed.finished_sending
+
+    assert scheduler.request_finished_all_groups(NS(request_id="other"), ([],)) == (
+        True,
+        None,
+    )
+    later = worker.get_transfer_results({"resumed", "other"})
+    assert later.finished_sending == {"other"}
+    assert not later.finished_recving
+    assert not worker.get_transfer_results({"other"}).finished_sending

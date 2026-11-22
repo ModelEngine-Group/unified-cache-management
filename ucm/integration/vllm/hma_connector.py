@@ -2189,6 +2189,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> UCMFAWAConnectorMetadata:
+        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        # Workers drain the old dumps before this step starts. Register this
+        # step's new dump plans only after retiring the preempted ones.
+        self._async_dump_req_ids.difference_update(preempted_req_ids)
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
@@ -2250,7 +2254,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}
 
-        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        self._async_dump_req_ids.update(
+            request_id
+            for request_id, dispatch in requests_dispatch_meta.items()
+            if dispatch.dump_keys
+        )
         return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
 
     def _submit_load_task(
@@ -2635,11 +2643,19 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         self._poll_completed_dump_tasks()
 
+        dump_plans = {
+            request_id: request
+            for request_id, request in metadata.request_meta.items()
+            if request.dump_keys
+        }
+        # Completion is aggregated across workers, including ranks that own
+        # no keys for a given request.
+        self._async_dump_req_ids.update(dump_plans)
+        dump_request_ids = tuple(dump_plans)
         fa_dump_keys: list[bytes] = []
         wa_dump_keys: list[bytes] = []
         fa_ptr_rows: list[np.ndarray] = []
         wa_ptr_rows: list[np.ndarray] = []
-        dump_request_ids: tuple[str] = ()
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
@@ -2648,10 +2664,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # owner key slice (TP*PCP dedup domain); chunk-wise WA assigns one final
             # boundary per request.
             wa_dump_ring_idx = 0
-            for request_id, request in metadata.request_meta.items():
-                if not request.dump_keys:
-                    continue
-                dump_request_ids += (request_id,)
+            for request_id, request in dump_plans.items():
                 key_slice = self._get_mla_dump_slice(request.dump_hash_start)
                 tp_dump_keys = request.dump_keys[key_slice]
                 if tp_dump_keys:
@@ -2718,10 +2731,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
                 wa_dump_ring_idx += 1
         else:
-            for request_id, request in metadata.request_meta.items():
-                if not request.dump_keys:
-                    continue
-                dump_request_ids += (request_id,)
+            for request_id, request in dump_plans.items():
                 fa_dump_blocks_by_request[request_id] = set(request.dump_keys)
                 fa_dump_keys.extend(request.dump_keys)
                 fa_ptr_rows.append(
@@ -2864,13 +2874,23 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_ids in finished_chunk_req_ids:
             self.tp_dump_tasks.pop(request_ids, None)
 
-    def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
+    def handle_preemptions(
+        self, kv_connector_metadata: UCMFAWAConnectorMetadata | set[str]
+    ) -> None:
         # Worker side method
         # This hook runs before the next load/forward can overwrite cache data.
         # Drain all previous-step dumps, not only explicitly preempted requests:
         # a running request's sliding-window blocks may also be recycled by the
         # next allocate_slots() call.
         self._drain_best_effort_dump_tasks()
+        preempted_req_ids = (
+            kv_connector_metadata
+            if isinstance(kv_connector_metadata, set)
+            else kv_connector_metadata.preempted_req_ids
+        )
+        if preempted_req_ids:
+            self._rank_consistency.finish_dump(preempted_req_ids)
+            self._async_dump_req_ids.difference_update(preempted_req_ids)
 
     def get_finished(
         self,
@@ -2893,11 +2913,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 "version lacks KVConnectorTransferResults.failed_recving: "
                 f"{sorted(self._failed_fawa_loads)}"
             )
-        self._drain_best_effort_dump_tasks(finished_req_ids)
-        self._rank_consistency.finish_dump(finished_req_ids)
-        finished_sending = set(finished_req_ids)
-        finished_sending.difference_update(pending_async_loads)
-        finished_sending.difference_update(finished_recving)
+        finished_dumps = finished_req_ids & self._async_dump_req_ids
+        self._drain_best_effort_dump_tasks(finished_dumps)
+        self._rank_consistency.finish_dump(finished_dumps)
+        self._async_dump_req_ids.difference_update(finished_dumps)
+        finished_sending = finished_dumps - pending_async_loads - finished_recving
         return finished_sending or None, finished_recving or None
 
     def get_transfer_results(self, finished_req_ids: set[str]):
@@ -2916,14 +2936,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # timeout/cancel/drain path to run before HBM can be reclaimed.
             self._load_wait_executor.shutdown(wait=True)
             self._load_wait_executor = None
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, object] | None]:
-        # Scheduler side method
-        return True, None
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):
