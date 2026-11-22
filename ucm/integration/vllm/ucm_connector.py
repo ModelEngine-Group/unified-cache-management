@@ -1764,7 +1764,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.use_request_async_load = (
             request_async_configured and self._supports_request_async_load()
         )
-        if request_async_configured and not self.use_request_async_load:
+        if self.use_request_async_load:
+            logger.info(
+                "Request-async loading enabled for %s.",
+                type(self).__name__,
+            )
+        elif request_async_configured:
             logger.warning(
                 "Request-async loading is not supported by %s; disabling it.",
                 type(self).__name__,
