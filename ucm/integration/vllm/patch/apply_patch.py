@@ -449,6 +449,11 @@ def apply_all_patches() -> None:
         # when the GDN modules exist).
         import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch
 
+        # Fix: the UCMConnectorV1 adapter drops the engines' failed_recving
+        # channel (no get_transfer_results override). Guards are inside the
+        # patch; see its docstring.
+        import ucm.integration.vllm.patch.v0300.vllm_ascend.ucm_connector_transfer_results_patch
+
         logger.info("UCM patch initialization completed!")
 
     except Exception as e:
