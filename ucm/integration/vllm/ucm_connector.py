@@ -424,13 +424,19 @@ class RequestMeta:
     token_processed: int = 0
 
 
-def _log_pd_sync_load_done(request_id: str) -> None:
-    """Record when this rank has made all required KV usable for the request."""
+def _log_pd_sync_load_result(
+    metadata, request_id: str, *, skipped: bool = False
+) -> None:
+    """Report a local KV-ready time, or acknowledge that this worker had no KV to load."""
+    if request_id not in getattr(metadata, "pd_sync_load_req_ids", ()):
+        return
     logger.info(
-        "ucm_pd_sync_load_done request_id=%s rank=%d ts_ns=%d",
+        "ucm_pd_sync_load_%s request_id=%s rank=%d ts_ns=%d workers=%d",
+        "skipped" if skipped else "done",
         request_id,
         get_world_group().rank,
         time.time_ns(),
+        metadata.pd_sync_load_workers,
     )
 
 
@@ -1600,6 +1606,7 @@ class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
     pd_sync_load_req_ids: set[str] = field(default_factory=set, kw_only=True)
+    pd_sync_load_workers: int = field(default=0, kw_only=True)
 
 
 @dataclass
@@ -2485,6 +2492,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_to_load_blocks: dict[str, int] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
             sync_load = not request.load_async
             if sync_load:
@@ -2500,6 +2508,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     if sync_load:
+                        _log_pd_sync_load_result(metadata, request_id, skipped=True)
                         num_loaded_block -= len(request.load_block_ids[0])
                     if request.load_async:
                         self._finished_async_load_req_ids.add(request_id)
@@ -2571,8 +2580,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
             else:
-                if request_id in metadata.pd_sync_load_req_ids:
-                    _log_pd_sync_load_done(request_id)
+                _log_pd_sync_load_result(metadata, request_id)
 
         load_bytes = num_loaded_block * self.block_data_size
         if is_load:
@@ -3224,6 +3232,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
 
             self.need_load = True
@@ -3284,7 +3293,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     and current_layer_id == self.layer_ids[-1]
                     and request_id not in self._failure_req_ids
                 ):
-                    _log_pd_sync_load_done(request_id)
+                    _log_pd_sync_load_result(metadata, request_id)
                 self._layerwise_load_bytes += (
                     len(metadata.request_meta[request_id].load_block_ids[0])
                     * self.kv_cache_layout.shard_size
@@ -4136,6 +4145,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 dispatch = metadata.request_meta.get(request_id)
                 if dispatch is not None and not dispatch.load_async:
                     metadata.pd_sync_load_req_ids.add(request_id)
+            if metadata.pd_sync_load_req_ids:
+                # Only workers of the replica serving this request report. DCP reuses TP ranks.
+                parallel = self._vllm_config.parallel_config
+                metadata.pd_sync_load_workers = (
+                    parallel.tensor_parallel_size
+                    * parallel.pipeline_parallel_size
+                    * getattr(parallel, "prefill_context_parallel_size", 1)
+                )
         self._pd_loads_this_step.clear()
         return metadata
 

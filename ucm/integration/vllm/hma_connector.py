@@ -29,7 +29,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _get_store_gc_block_size,
-    _log_pd_sync_load_done,
+    _log_pd_sync_load_result,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
     build_kv_hash_meta,
@@ -771,6 +771,7 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
     pd_sync_load_req_ids: set[str] = field(default_factory=set, kw_only=True)
+    pd_sync_load_workers: int = field(default=0, kw_only=True)
 
 
 @dataclass
@@ -2457,6 +2458,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         sync_loads: list[FAWAPendingLoad] = []
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
             if request.load_async and request_id in self._pending_fawa_loads:
                 logger.warning(
@@ -2561,12 +2563,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         for load in sync_loads:
             succeeded = self._wait_all_load_task(load.tasks)
-            if (
-                succeeded
-                and not load.failed
-                and load.request_id in metadata.pd_sync_load_req_ids
-            ):
-                _log_pd_sync_load_done(load.request_id)
+            if succeeded and not load.failed:
+                _log_pd_sync_load_result(metadata, load.request_id)
 
         if load_event_handle:
             self.device.destroy_event_handle(load_event_handle)

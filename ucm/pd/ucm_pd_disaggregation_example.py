@@ -159,7 +159,8 @@ UCM_PREFILL = re.compile(
     r"ucm_pd_prefill_done request_id=(?P<rid>\S+) ts_ns=(?P<ns>\d+)"
 )
 UCM_RANK = re.compile(
-    r"ucm_pd_sync_load_done request_id=(?P<rid>\S+) rank=(?P<rank>\d+) ts_ns=(?P<ns>\d+)"
+    r"ucm_pd_sync_load_(?P<result>done|skipped) request_id=(?P<rid>\S+) "
+    r"rank=(?P<rank>\d+) ts_ns=(?P<ns>\d+)(?: workers=(?P<workers>\d+))?"
 )
 EPOCH = re.compile(r"(?<![\w.])\d{10}\.\d{3,9}(?!\d)")
 FAILED_LOAD = re.compile(
@@ -176,6 +177,8 @@ class HandoffEvent:
         int | None
     )  # A failed or aborted load invalidates any completion for this sample.
     rank: int | None
+    workers: int | None = None
+    skipped: bool = False
 
 
 def parse_handoff_event(line, pattern, exact_ids=False):
@@ -194,7 +197,8 @@ def parse_handoff_event(line, pattern, exact_ids=False):
             return None
         asctime = record.get("asctime")
     match = pattern.search(line)
-    rank = None
+    rank = workers = None
+    skipped = False
     if match:
         fields = match.groupdict()
         rid = fields["rid"]
@@ -214,13 +218,15 @@ def parse_handoff_event(line, pattern, exact_ids=False):
             ns = int(Decimal(stamp.group()) * 1_000_000_000)
         if "rank" in fields:
             rank = int(fields["rank"])
+            workers = int(fields["workers"]) if fields["workers"] else None
+            skipped = fields["result"] == "skipped"
     elif pattern in (SCHEDULER_RECV, UCM_RANK) and (failed := FAILED_LOAD.search(line)):
         rid = failed.group(1) or failed.group(2)
         ns = None
     else:
         return None
     key = rid if exact_ids else re.sub(r"-[0-9a-f]{8}$", "", rid)
-    return key, HandoffEvent(rid, ns, rank)
+    return key, HandoffEvent(rid, ns, rank, workers, skipped)
 
 
 def read_handoff_events(paths, pattern, exact_ids):
@@ -247,8 +253,19 @@ def handoff_duration(starts, ends, ranks=None):
         return None, "missing_prefill" if not starts else "missing_decode"
     if len({e.rank for e in ends}) != len(ends):
         return None, "repeated_completion"
-    if ranks is not None and {e.rank for e in ends} != ranks:
-        return None, "rank_set_mismatch"
+    if ends[0].rank is not None:
+        counts = {e.workers for e in ends}
+        if counts == {None}:
+            if ranks is None:
+                return None, "missing_worker_count"
+        elif counts != {len(ends)}:
+            return None, "rank_set_mismatch"
+        # Every worker reports, but a worker without local KV cannot set the end time.
+        ends = [e for e in ends if not e.skipped]
+        if not ends:
+            return None, "no_external_load"
+        if ranks is not None and {e.rank for e in ends} != ranks:
+            return None, "rank_set_mismatch"
     elapsed = max(e.ns for e in ends) - starts[0].ns
     return (elapsed / 1_000_000, "observed") if elapsed >= 0 else (None, "clock_order")
 
@@ -258,11 +275,20 @@ def compare_handoff(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog=f"{Path(sys.argv[0]).name} compare-handoff",
         description=compare_handoff.__doc__,
-        epilog="Supply each log once. For synchronous UCM loads, list all expected ranks with --ucm-sync-ranks.",
+        epilog="Supply each log once. Add --ucm-sync for synchronous UCM logs.",
     )
     for option in ("mooncake-p", "mooncake-d", "ucm-p", "ucm-d"):
         parser.add_argument(f"--{option}", nargs="+", required=True, type=Path)
-    parser.add_argument("--ucm-sync-ranks", type=int, nargs="+", metavar="RANK")
+    parser.add_argument(
+        "--ucm-sync", action="store_true", help="Compare synchronous UCM loads."
+    )
+    parser.add_argument(
+        "--ucm-sync-ranks",
+        type=int,
+        nargs="+",
+        metavar="RANK",
+        help="Expected loading ranks for legacy synchronous logs.",
+    )
     parser.add_argument(
         "--exact-ids",
         action="store_true",
@@ -270,12 +296,13 @@ def compare_handoff(argv: list[str]) -> None:
     )
     args = parser.parse_args(argv)
     ranks = set(args.ucm_sync_ranks) if args.ucm_sync_ranks else None
+    sync = args.ucm_sync or ranks is not None
     try:
         mp = read_handoff_events(args.mooncake_p, MOONCAKE_PREFILL, args.exact_ids)
         md = read_handoff_events(args.mooncake_d, SCHEDULER_RECV, args.exact_ids)
         up = read_handoff_events(args.ucm_p, UCM_PREFILL, args.exact_ids)
         ud = read_handoff_events(
-            args.ucm_d, UCM_RANK if ranks else SCHEDULER_RECV, args.exact_ids
+            args.ucm_d, UCM_RANK if sync else SCHEDULER_RECV, args.exact_ids
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
@@ -284,7 +311,7 @@ def compare_handoff(argv: list[str]) -> None:
     if not ids:
         parser.error("no handoff events found in the supplied logs")
     writer = csv.writer(sys.stdout)
-    ucm_column = "ucm_sync_rank_ms" if ranks else "ucm_scheduler_ms"
+    ucm_column = "ucm_sync_rank_ms" if sync else "ucm_scheduler_ms"
     writer.writerow(
         [
             "request_id",
@@ -320,6 +347,28 @@ if __name__ == "__main__" and sys.argv[1:2] == ["compare-handoff"]:
 MAX_PENDING_HANDOFFS = 65536
 
 
+def ucm_timing_backend(config_path: str) -> str:
+    """Select timing from the Decode engine's UCM YAML."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise argparse.ArgumentTypeError("install PyYAML to read UCM configs") from exc
+
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise argparse.ArgumentTypeError(f"cannot read {config_path}: {exc}") from exc
+    if not isinstance(config, dict):
+        raise argparse.ArgumentTypeError(f"{config_path}: expected a YAML mapping")
+    async_load = config.get("use_request_async_load", False)
+    if not isinstance(async_load, bool):
+        raise argparse.ArgumentTypeError(
+            f"{config_path}: use_request_async_load must be a YAML boolean"
+        )
+    return "ucm-async" if async_load else "ucm-sync"
+
+
 def parse_pd_options(parser: argparse.ArgumentParser) -> argparse.Namespace:
     parser.description = (
         "Serve P/D requests using Mooncake or UCM shared-store handoff."
@@ -338,14 +387,40 @@ def parse_pd_options(parser: argparse.ArgumentParser) -> argparse.Namespace:
         metavar="PATH",
         help="Also write proxy logs to a file that reopens after rotation.",
     )
-    group.add_argument(
+    timing = group.add_mutually_exclusive_group()
+    timing.add_argument(
         "--timing-backend",
         choices=["mooncake", "ucm-async", "ucm-sync"],
-        help="Enable per-request summaries from shared engine logs.",
+        help="Select timing explicitly. Shared engine logs default to Mooncake timing.",
     )
-    group.add_argument("--timing-p-logs", nargs="+", metavar="GLOB")
-    group.add_argument("--timing-d-logs", nargs="+", metavar="GLOB")
-    group.add_argument("--timing-sync-ranks", nargs="+", type=int, metavar="RANK")
+    timing.add_argument(
+        "--ucm-config",
+        type=ucm_timing_backend,
+        dest="ucm_config_backend",
+        metavar="PATH",
+        help="Use UCM handoff and select timing from the Decode engine's UCM YAML.",
+    )
+    group.add_argument(
+        "--prefiller-logs",
+        "--timing-p-logs",
+        nargs="+",
+        metavar="GLOB",
+        help="Read timing events from these prefiller log files or glob patterns.",
+    )
+    group.add_argument(
+        "--decoder-logs",
+        "--timing-d-logs",
+        nargs="+",
+        metavar="GLOB",
+        help="Read timing events from these decoder log files or glob patterns.",
+    )
+    group.add_argument(
+        "--timing-sync-ranks",
+        nargs="+",
+        type=int,
+        metavar="RANK",
+        help="Expected loading ranks for legacy synchronous UCM logs.",
+    )
     group.add_argument(
         "--timing-exact-ids",
         action="store_true",
@@ -359,22 +434,28 @@ def parse_pd_options(parser: argparse.ArgumentParser) -> argparse.Namespace:
         help="Maximum wait for late engine logs after a request finishes.",
     )
     args = parser.parse_args()
-    if not args.timing_backend:
-        if (
-            args.timing_p_logs
-            or args.timing_d_logs
-            or args.timing_sync_ranks
-            or args.timing_exact_ids
-        ):
-            parser.error("select --timing-backend to enable shared-log timing")
+    if args.ucm_config_backend:
+        args.ucm_pd = True
+        args.timing_backend = args.ucm_config_backend
+    if not (
+        args.timing_backend
+        or args.prefiller_logs
+        or args.decoder_logs
+        or args.timing_sync_ranks
+        or args.timing_exact_ids
+    ):
         return args
+    if not args.prefiller_logs or not args.decoder_logs:
+        parser.error("shared-log timing needs --prefiller-logs and --decoder-logs")
+    if args.timing_backend is None:
+        args.timing_backend = "mooncake"
     if args.ucm_pd and args.timing_backend == "mooncake":
-        parser.error("--ucm-pd requires ucm-async or ucm-sync when collecting timings")
+        parser.error(
+            "for UCM timing, supply --ucm-config or select --timing-backend ucm-async or ucm-sync"
+        )
     if not args.ucm_pd and args.timing_backend != "mooncake":
         parser.error("add --ucm-pd to use UCM handoff with UCM timings")
-    if not args.timing_p_logs or not args.timing_d_logs:
-        parser.error("--timing-backend needs --timing-p-logs and --timing-d-logs")
-    if (args.timing_backend == "ucm-sync") != bool(args.timing_sync_ranks):
+    if args.timing_sync_ranks and args.timing_backend != "ucm-sync":
         parser.error("supply --timing-sync-ranks for ucm-sync only")
     if not math.isfinite(args.timing_log_wait) or args.timing_log_wait <= 0:
         parser.error("--timing-log-wait must be positive and finite")
@@ -589,14 +670,14 @@ class HandoffCollector:
         self.exact_ids = args.timing_exact_ids
         self.sources = [
             (
-                args.timing_p_logs,
+                args.prefiller_logs,
                 True,
                 MOONCAKE_PREFILL if self.backend == "mooncake" else UCM_PREFILL,
             ),
             (
-                args.timing_d_logs,
+                args.decoder_logs,
                 False,
-                UCM_RANK if self.ranks else SCHEDULER_RECV,
+                UCM_RANK if self.backend == "ucm-sync" else SCHEDULER_RECV,
             ),
         ]
         self.inbox = Queue(maxsize=MAX_PENDING_HANDOFFS * 2)
