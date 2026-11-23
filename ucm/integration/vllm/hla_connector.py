@@ -3,6 +3,7 @@ import math
 import os
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional
 
@@ -93,6 +94,10 @@ class HLAPendingLoad:
     # Submitted block count (MLA + state tasks), captured before draining
     # so completed stats are independent of per-task failures.
     num_blocks: int = 0
+    # Background store.wait futures keyed by id(task): each wait runs with
+    # the Store timeout from submission, so a stalled load fails on time
+    # instead of polling Check() past its deadline.
+    wait_futures: dict[int, Future] = field(default_factory=dict)
 
 
 def layer_name_to_kv_cache_spec(
@@ -1740,6 +1745,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self._save_bytes_total = 0
         self._pending_hla_loads: dict[str, HLAPendingLoad] = {}
         self._failed_hla_loads: set[str] = set()
+        # Lazy ThreadPoolExecutor for background store.wait calls (one per
+        # in-flight load task; at most 2 per request x max_num_seqs).
+        self._load_wait_executor: Optional[ThreadPoolExecutor] = None
+        self._load_wait_workers = 2 * vllm_config.scheduler_config.max_num_seqs
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -1978,7 +1987,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         if req_meta.total_hit_block_num > accepted_blocks:
             req_meta.total_hit_block_num = accepted_blocks
-            req_meta.token_processed = accepted_blocks * self.group_manager.lcm_block_size
+            req_meta.token_processed = (
+                accepted_blocks * self.group_manager.lcm_block_size
+            )
         if not self.use_request_async_load or num_external_tokens <= 0:
             return
 
@@ -2934,6 +2945,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 pending.num_blocks = sum(
                     len(task.vllm_block_ids) for task in pending.tasks
                 )
+                if self._load_wait_executor is None:
+                    self._load_wait_executor = ThreadPoolExecutor(
+                        max_workers=self._load_wait_workers,
+                        thread_name_prefix="ucm-hla-load",
+                    )
+                for load_task in pending.tasks:
+                    pending.wait_futures[id(load_task.task)] = (
+                        self._load_wait_executor.submit(self.store.wait, load_task.task)
+                    )
                 self._pending_hla_loads[request_id] = pending
             else:
                 self._finished_async_load_req_ids.add(request_id)
@@ -2947,11 +2967,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for request_id, pending in list(self._pending_hla_loads.items()):
             remaining = []
             for load_task in pending.tasks:
+                future = pending.wait_futures.get(id(load_task.task))
                 try:
-                    if not self._rank_consistency.check_load(load_task.task):
+                    if future is None or not future.done():
                         remaining.append(load_task)
                         continue
-                    self._rank_consistency.wait_load(load_task.task)
+                    self._rank_consistency.wait_load(load_task.task, wait=future.result)
                 except Exception as e:
                     pending.failed = True
                     _record_counter("connector_load_wait_errors_total")
@@ -2959,6 +2980,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         f"request {request_id} wait direct load task error. "
                         f"{type(e).__name__}: {e}"
                     )
+                pending.wait_futures.pop(id(load_task.task), None)
             pending.tasks = remaining
             if remaining:
                 continue
@@ -2981,13 +3003,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def get_finished(
         self, finished_req_ids: set[str]
     ) -> tuple[set[str] | None, set[str] | None]:
+        # A cancelled request's load may still be in flight; its blocks stay
+        # held by the scheduler's delay_free until the background wait hits
+        # its terminal state (completion or Store timeout) and the poll
+        # reports the finished_recving that releases them.
         finished_recving = self._poll_pending_hla_loads()
         if KVConnectorTransferResults is None and self._failed_hla_loads:
             # Legacy engines lack failed_recving and cannot identify failed
             # multi-group requests; fail closed after draining.
             raise RuntimeError(f"Async load failed: {sorted(self._failed_hla_loads)}")
-        # No delay_free: blocks are freed at request_finished and cancelled
-        # requests are held by the scheduler until finished_recving arrives.
         return None, finished_recving or None
 
     def get_transfer_results(self, finished_req_ids: set[str]):
@@ -3094,6 +3118,13 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         return False, None
+
+    def shutdown(self) -> None:
+        if self._load_wait_executor is not None:
+            # Do not cancel queued waits: each submitted Store task needs its
+            # timeout/drain path to run before HBM can be reclaimed.
+            self._load_wait_executor.shutdown(wait=True)
+            self._load_wait_executor = None
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
