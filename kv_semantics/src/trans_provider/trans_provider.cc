@@ -75,10 +75,9 @@ Status CreateTransProvider(const TransportConfig& config,
                     "failed to create HCCP KV-over-RoCE provider: " + std::string(error.what()));
             }
 #else
-            return Status::Error(
-                StatusCode::UNSUPPORTED,
-                "HCCP KV-over-RoCE trans provider is not built; enable "
-                "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE");
+            return Status::Error(StatusCode::UNSUPPORTED,
+                                 "HCCP KV-over-RoCE trans provider is not built; enable "
+                                 "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE");
 #endif
         case TransProviderType::UNSUPPORTED:
             return Status::Error(StatusCode::UNSUPPORTED,

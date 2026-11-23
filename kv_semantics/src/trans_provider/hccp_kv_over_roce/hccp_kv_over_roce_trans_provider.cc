@@ -25,18 +25,18 @@
 
 #ifdef UCM_ASU_ENABLE_HCCP_KV_OVER_ROCE_PROVIDER
 
-#include <dlfcn.h>
-#include <unistd.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -62,77 +62,74 @@ using InitFn = decltype(&::Init);
 // header comments and these tables must stay in sync.
 struct InitUint64Field {
     const char* name;
-    std::uint64_t HccpKvRoceInitConfig::*member;
+    std::uint64_t HccpKvRoceInitConfig::* member;
     std::uint64_t defaultValue;
 };
 
 constexpr InitUint64Field kInitUint64Fields[] = {
-    {"mem_size", &HccpKvRoceInitConfig::memSize, 671088640ULL},
-    {"send_mr_size", &HccpKvRoceInitConfig::sendMrSize, 0ULL},
-    {"flag_mr_size", &HccpKvRoceInitConfig::flagMrSize, 0ULL},
+    {"mem_size",     &HccpKvRoceInitConfig::memSize,    671088640ULL},
+    {"send_mr_size", &HccpKvRoceInitConfig::sendMrSize, 0ULL        },
+    {"flag_mr_size", &HccpKvRoceInitConfig::flagMrSize, 0ULL        },
 };
 
 struct InitUint32Field {
     const char* name;
-    std::uint32_t HccpKvRoceInitConfig::*member;
+    std::uint32_t HccpKvRoceInitConfig::* member;
     std::uint32_t defaultValue;
 };
 
 constexpr InitUint32Field kInitUint32Fields[] = {
-    {"sdk_ioq_depth", &HccpKvRoceInitConfig::sdkIoqDepth, 128},
-    {"timeout_ms", &HccpKvRoceInitConfig::timeoutMs, 60000},
-    {"kvnsid", &HccpKvRoceInitConfig::kvnsid, 0},
-    {"server_batch_limit", &HccpKvRoceInitConfig::serverBatchLimit, 32},
-    {"server_delete_limit", &HccpKvRoceInitConfig::serverDeleteLimit, 254},
-    {"server_exist_limit", &HccpKvRoceInitConfig::serverExistLimit, 256},
-    {"max_inflight_kv_per_ip", &HccpKvRoceInitConfig::maxInflightKvPerIp, 2048},
-    {"max_inflight_kv_per_qp", &HccpKvRoceInitConfig::maxInflightKvPerQp, 256},
-    {"send_aiv_count", &HccpKvRoceInitConfig::sendAivCount, 1},
-    {"wait_aiv_count", &HccpKvRoceInitConfig::waitAivCount, 1},
-    {"cache_count", &HccpKvRoceInitConfig::cacheCount, 4},
-    {"stripe_count", &HccpKvRoceInitConfig::stripeCount, 64},
-    {"max_flags_per_stripe", &HccpKvRoceInitConfig::maxFlagsPerStripe, 20480},
-    {"npu_cacheline_size", &HccpKvRoceInitConfig::npuCachelineSize, 256},
-    {"quiet_interval", &HccpKvRoceInitConfig::quietInterval, 8},
-    {"send_cq_wait", &HccpKvRoceInitConfig::sendCqWait, 1},
-    {"virtual_nodes", &HccpKvRoceInitConfig::virtualNodes, 5},
-    {"post_connect_delay_ms", &HccpKvRoceInitConfig::postConnectDelayMs, 0},
-    {"wait_poll_yield_us", &HccpKvRoceInitConfig::waitPollYieldUs, 0},
-    {"wait_task_timeout_ms", &HccpKvRoceInitConfig::waitTaskTimeoutMs, 2000},
-    {"max_aiv_retry", &HccpKvRoceInitConfig::maxAivRetry, 3},
-    {"iterations", &HccpKvRoceInitConfig::iterations, 1},
-    {"total_kv_count", &HccpKvRoceInitConfig::totalKvCount, 4096},
-    {"block_size", &HccpKvRoceInitConfig::blockSize, 131072},
-    {"op_type", &HccpKvRoceInitConfig::opType, 0},
-    {"pipeline_num_layers", &HccpKvRoceInitConfig::pipelineNumLayers, 64},
-    {"comp_delay_us", &HccpKvRoceInitConfig::compDelayUs, 400000},
-    {"mt_num_threads", &HccpKvRoceInitConfig::mtNumThreads, 4},
-    {"mt_ops_per_thread", &HccpKvRoceInitConfig::mtOpsPerThread, 10},
-    {"debug", &HccpKvRoceInitConfig::debug, 0},
-    {"neg_start_psn", &HccpKvRoceInitConfig::negStartPsn, 0},
+    {"sdk_ioq_depth",          &HccpKvRoceInitConfig::sdkIoqDepth,        128   },
+    {"timeout_ms",             &HccpKvRoceInitConfig::timeoutMs,          60000 },
+    {"kvnsid",                 &HccpKvRoceInitConfig::kvnsid,             0     },
+    {"server_batch_limit",     &HccpKvRoceInitConfig::serverBatchLimit,   32    },
+    {"server_delete_limit",    &HccpKvRoceInitConfig::serverDeleteLimit,  254   },
+    {"server_exist_limit",     &HccpKvRoceInitConfig::serverExistLimit,   256   },
+    {"max_inflight_kv_per_ip", &HccpKvRoceInitConfig::maxInflightKvPerIp, 2048  },
+    {"max_inflight_kv_per_qp", &HccpKvRoceInitConfig::maxInflightKvPerQp, 256   },
+    {"send_aiv_count",         &HccpKvRoceInitConfig::sendAivCount,       1     },
+    {"wait_aiv_count",         &HccpKvRoceInitConfig::waitAivCount,       1     },
+    {"cache_count",            &HccpKvRoceInitConfig::cacheCount,         4     },
+    {"stripe_count",           &HccpKvRoceInitConfig::stripeCount,        64    },
+    {"max_flags_per_stripe",   &HccpKvRoceInitConfig::maxFlagsPerStripe,  20480 },
+    {"npu_cacheline_size",     &HccpKvRoceInitConfig::npuCachelineSize,   256   },
+    {"quiet_interval",         &HccpKvRoceInitConfig::quietInterval,      8     },
+    {"send_cq_wait",           &HccpKvRoceInitConfig::sendCqWait,         1     },
+    {"virtual_nodes",          &HccpKvRoceInitConfig::virtualNodes,       5     },
+    {"post_connect_delay_ms",  &HccpKvRoceInitConfig::postConnectDelayMs, 0     },
+    {"wait_poll_yield_us",     &HccpKvRoceInitConfig::waitPollYieldUs,    0     },
+    {"wait_task_timeout_ms",   &HccpKvRoceInitConfig::waitTaskTimeoutMs,  2000  },
+    {"max_aiv_retry",          &HccpKvRoceInitConfig::maxAivRetry,        3     },
+    {"iterations",             &HccpKvRoceInitConfig::iterations,         1     },
+    {"total_kv_count",         &HccpKvRoceInitConfig::totalKvCount,       4096  },
+    {"block_size",             &HccpKvRoceInitConfig::blockSize,          131072},
+    {"op_type",                &HccpKvRoceInitConfig::opType,             0     },
+    {"pipeline_num_layers",    &HccpKvRoceInitConfig::pipelineNumLayers,  64    },
+    {"comp_delay_us",          &HccpKvRoceInitConfig::compDelayUs,        400000},
+    {"mt_num_threads",         &HccpKvRoceInitConfig::mtNumThreads,       4     },
+    {"mt_ops_per_thread",      &HccpKvRoceInitConfig::mtOpsPerThread,     10    },
+    {"debug",                  &HccpKvRoceInitConfig::debug,              0     },
+    {"neg_start_psn",          &HccpKvRoceInitConfig::negStartPsn,        0     },
 };
 
 struct InitUint8Field {
     const char* name;
-    std::uint8_t HccpKvRoceInitConfig::*member;
+    std::uint8_t HccpKvRoceInitConfig::* member;
     std::uint8_t defaultValue;
 };
 
 constexpr InitUint8Field kInitUint8Fields[] = {
-    {"neg_mtu", &HccpKvRoceInitConfig::negMtu, 5},
-    {"neg_sl", &HccpKvRoceInitConfig::negSl, 0},
-    {"neg_traffic_class", &HccpKvRoceInitConfig::negTrafficClass, 3},
-    {"neg_rnr_timer", &HccpKvRoceInitConfig::negRnrTimer, 12},
-    {"neg_rnr_retry_cnt", &HccpKvRoceInitConfig::negRnrRetryCnt, 7},
-    {"neg_timeout", &HccpKvRoceInitConfig::negTimeout, 14},
-    {"neg_retry_cnt", &HccpKvRoceInitConfig::negRetryCnt, 7},
-    {"neg_qp_rd_atom", &HccpKvRoceInitConfig::negQpRdAtom, 16},
+    {"neg_mtu",           &HccpKvRoceInitConfig::negMtu,          5 },
+    {"neg_sl",            &HccpKvRoceInitConfig::negSl,           0 },
+    {"neg_traffic_class", &HccpKvRoceInitConfig::negTrafficClass, 3 },
+    {"neg_rnr_timer",     &HccpKvRoceInitConfig::negRnrTimer,     12},
+    {"neg_rnr_retry_cnt", &HccpKvRoceInitConfig::negRnrRetryCnt,  7 },
+    {"neg_timeout",       &HccpKvRoceInitConfig::negTimeout,      14},
+    {"neg_retry_cnt",     &HccpKvRoceInitConfig::negRetryCnt,     7 },
+    {"neg_qp_rd_atom",    &HccpKvRoceInitConfig::negQpRdAtom,     16},
 };
 
-std::string InitAttrName(const char* field)
-{
-    return std::string(kInitAttrPrefix) + field;
-}
+std::string InitAttrName(const char* field) { return std::string(kInitAttrPrefix) + field; }
 
 bool LookupAttrValue(const TransportConfig& config, const std::string& key, std::string& value)
 {
@@ -156,8 +153,7 @@ void WarnInvalidInitValue(const std::string& attr, const std::string& value,
             attr, value, expected);
 }
 
-HccpKvRoceInitConfig ResolveInitConfig(const TransportConfig& config,
-                                       std::uint32_t& overrideCount)
+HccpKvRoceInitConfig ResolveInitConfig(const TransportConfig& config, std::uint32_t& overrideCount)
 {
     HccpKvRoceInitConfig initConfig{};
     initConfig.structSize = static_cast<std::uint32_t>(sizeof(initConfig));
@@ -240,24 +236,15 @@ using GetServerCapabilitiesFn = decltype(&::GetServerCapabilities);
 StatusCode MapAbiStatusCode(std::int32_t code)
 {
     switch (code) {
-        case HCCP_KV_ROCE_OK:
-            return StatusCode::OK;
-        case HCCP_KV_ROCE_INVALID_ARGUMENT:
-            return StatusCode::INVALID_ARGUMENT;
-        case HCCP_KV_ROCE_UNSUPPORTED:
-            return StatusCode::UNSUPPORTED;
-        case HCCP_KV_ROCE_RESOURCE_BUSY:
-            return StatusCode::RESOURCE_BUSY;
-        case HCCP_KV_ROCE_CONNECTION_ERROR:
-            return StatusCode::CONNECTION_ERROR;
-        case HCCP_KV_ROCE_IO_ERROR:
-            return StatusCode::IO_ERROR;
-        case HCCP_KV_ROCE_BUFFER_NOT_REGISTERED:
-            return StatusCode::BUFFER_NOT_REGISTERED;
-        case HCCP_KV_ROCE_INTERNAL_ERROR:
-            return StatusCode::INTERNAL_ERROR;
-        default:
-            return StatusCode::INTERNAL_ERROR;
+        case HCCP_KV_ROCE_OK: return StatusCode::OK;
+        case HCCP_KV_ROCE_INVALID_ARGUMENT: return StatusCode::INVALID_ARGUMENT;
+        case HCCP_KV_ROCE_UNSUPPORTED: return StatusCode::UNSUPPORTED;
+        case HCCP_KV_ROCE_RESOURCE_BUSY: return StatusCode::RESOURCE_BUSY;
+        case HCCP_KV_ROCE_CONNECTION_ERROR: return StatusCode::CONNECTION_ERROR;
+        case HCCP_KV_ROCE_IO_ERROR: return StatusCode::IO_ERROR;
+        case HCCP_KV_ROCE_BUFFER_NOT_REGISTERED: return StatusCode::BUFFER_NOT_REGISTERED;
+        case HCCP_KV_ROCE_INTERNAL_ERROR: return StatusCode::INTERNAL_ERROR;
+        default: return StatusCode::INTERNAL_ERROR;
     }
 }
 
@@ -363,21 +350,18 @@ struct AbiApi {
             return dlsym(library, symbol);
         };
 
-        createConnection =
-            reinterpret_cast<CreateConnectionFn>(resolve("CreateConnection"));
-        deleteConnections =
-            reinterpret_cast<DeleteConnectionsFn>(resolve("DeleteConnections"));
+        createConnection = reinterpret_cast<CreateConnectionFn>(resolve("CreateConnection"));
+        deleteConnections = reinterpret_cast<DeleteConnectionsFn>(resolve("DeleteConnections"));
         registerMemory = reinterpret_cast<RegisterMemoryFn>(resolve("RegisterMemory"));
         init = reinterpret_cast<InitFn>(resolve("Init"));
         if (init == nullptr || createConnection == nullptr || deleteConnections == nullptr ||
             registerMemory == nullptr) {
-            const char* missing =
-                init == nullptr
-                    ? "Init"
-                    : (createConnection == nullptr
-                           ? "CreateConnection"
-                           : (deleteConnections == nullptr ? "DeleteConnections"
-                                                           : "RegisterMemory"));
+            const char* missing = init == nullptr
+                                      ? "Init"
+                                      : (createConnection == nullptr
+                                             ? "CreateConnection"
+                                             : (deleteConnections == nullptr ? "DeleteConnections"
+                                                                             : "RegisterMemory"));
             (void)dlclose(library);
             return Status::Error(StatusCode::NOT_FOUND,
                                  "HccpKvOverRoceTransProvider: " + libraryPath +
@@ -395,11 +379,11 @@ struct AbiApi {
             const auto version = getAbiVersion();
             if (version != HCCP_KV_ROCE_ABI_VERSION) {
                 (void)dlclose(library);
-                return Status::Error(
-                    StatusCode::INTERNAL_ERROR,
-                    "HccpKvOverRoceTransProvider: " + libraryPath + " ABI version " +
-                        std::to_string(version) + " does not match expected version " +
-                        std::to_string(HCCP_KV_ROCE_ABI_VERSION));
+                return Status::Error(StatusCode::INTERNAL_ERROR,
+                                     "HccpKvOverRoceTransProvider: " + libraryPath +
+                                         " ABI version " + std::to_string(version) +
+                                         " does not match expected version " +
+                                         std::to_string(HCCP_KV_ROCE_ABI_VERSION));
             }
         }
 
@@ -497,8 +481,8 @@ struct HccpKvOverRoceTransProvider::Impl {
         const auto abiInitStatus = InstallInitConfig(api.init, initConfig);
         if (!abiInitStatus.ok()) { throw std::runtime_error(abiInitStatus.message); }
 
-        allocator = std::make_unique<HbmSlotAllocator>(
-            binding.deviceId, kHccpKvRoceConnSlotBytes, slotCapacity);
+        allocator = std::make_unique<HbmSlotAllocator>(binding.deviceId, kHccpKvRoceConnSlotBytes,
+                                                       slotCapacity);
         const auto initStatus = allocator->Init();
         if (!initStatus.ok()) { throw std::runtime_error(initStatus.message); }
 
@@ -519,9 +503,8 @@ struct HccpKvOverRoceTransProvider::Impl {
         // Free the HBM region on the provider's own device/context.
         ScopedHccpAclContext aclScope("Cleanup", binding);
         if (!aclScope.status().ok()) {
-            KV_WARN(
-                "HccpKvOverRoceTransProvider: freeing HBM without device binding: {}",
-                aclScope.status().message);
+            KV_WARN("HccpKvOverRoceTransProvider: freeing HBM without device binding: {}",
+                    aclScope.status().message);
         }
         allocator.reset();
     }
@@ -657,8 +640,7 @@ HccpKvOverRoceTransProvider::~HccpKvOverRoceTransProvider()
 
 Status HccpKvOverRoceTransProvider::CreateConnection(
     const std::string& localIp, const std::string& remoteIp, std::uint32_t port,
-    std::uint32_t qpNum, std::uint32_t timeout,
-    std::vector<ConnectionHandle>& connectionHandles)
+    std::uint32_t qpNum, std::uint32_t timeout, std::vector<ConnectionHandle>& connectionHandles)
 {
     connectionHandles.clear();
     if (!impl_) {
@@ -749,9 +731,9 @@ Status HccpKvOverRoceTransProvider::CreateConnection(
         "remote_port={} qp_num={} timeout_ms={}",
         localIp, remoteIp, port, qpNum, timeout);
 
-    const auto ret = impl_->api.createConnection(localIp.c_str(), remoteIp.c_str(), port, qpNum,
-                                                 timeout, abiHandles.data(), &createdNum,
-                                                 &record->manager);
+    const auto ret =
+        impl_->api.createConnection(localIp.c_str(), remoteIp.c_str(), port, qpNum, timeout,
+                                    abiHandles.data(), &createdNum, &record->manager);
     if (ret != 0) {
         deleteCreatedManager("CreateConnection");
         ReleaseSlots(*impl_->allocator, slots);
@@ -880,9 +862,7 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
 
             auto& request = requests[iter->second.get()];
             request.record = iter->second;
-            if (request.seen.empty()) {
-                request.seen.assign(iter->second->qps.size(), false);
-            }
+            if (request.seen.empty()) { request.seen.assign(iter->second->qps.size(), false); }
             if (!seenHandles.insert(qp).second) {
                 request.invalid = true;
                 results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
@@ -897,9 +877,8 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
         for (auto& item : requests) {
             auto& request = item.second;
             request.complete =
-                !request.invalid &&
-                std::all_of(request.seen.begin(), request.seen.end(),
-                            [](bool value) { return value; });
+                !request.invalid && std::all_of(request.seen.begin(), request.seen.end(),
+                                                [](bool value) { return value; });
             if (!request.complete) {
                 const auto error = Status::Error(
                     StatusCode::INVALID_ARGUMENT,
@@ -909,22 +888,19 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
                 continue;
             }
 
-            for (const auto& qp : request.record->qps) {
-                impl_->connections.erase(qp.get());
-            }
+            for (const auto& qp : request.record->qps) { impl_->connections.erase(qp.get()); }
             managers.push_back(request.record->manager);
         }
     }
 
     if (managers.empty()) {
-        KV_INFO(
-            "HccpKvOverRoceTransProvider: DeleteConnections complete requested={} deleted=0",
-            connectionHandles.size());
+        KV_INFO("HccpKvOverRoceTransProvider: DeleteConnections complete requested={} deleted=0",
+                connectionHandles.size());
         return results;
     }
 
-    const auto ret = impl_->api.deleteConnections(
-        managers.data(), static_cast<std::uint32_t>(managers.size()));
+    const auto ret =
+        impl_->api.deleteConnections(managers.data(), static_cast<std::uint32_t>(managers.size()));
     if (ret != 0) {
         const auto error = AbiError("DeleteConnections", ret, StatusCode::CONNECTION_ERROR);
         std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
@@ -949,27 +925,24 @@ std::vector<Status> HccpKvOverRoceTransProvider::DeleteConnections(
         for (const auto& qp : request.record->qps) {
             const auto clearStatus = impl_->allocator->Clear(qp->slotId);
             if (!clearStatus.ok()) {
-                KV_WARN(
-                    "HccpKvOverRoceTransProvider: failed to clear HBM slot_id={} message={}",
-                    qp->slotId, clearStatus.message);
+                KV_WARN("HccpKvOverRoceTransProvider: failed to clear HBM slot_id={} message={}",
+                        qp->slotId, clearStatus.message);
             }
             const auto releaseStatus = impl_->allocator->Release(qp->slotId);
             if (!releaseStatus.ok()) {
-                KV_WARN(
-                    "HccpKvOverRoceTransProvider: failed to release HBM slot_id={} message={}",
-                    qp->slotId, releaseStatus.message);
+                KV_WARN("HccpKvOverRoceTransProvider: failed to release HBM slot_id={} message={}",
+                        qp->slotId, releaseStatus.message);
             }
         }
     }
 
-    KV_INFO(
-        "HccpKvOverRoceTransProvider: DeleteConnections complete requested={} ip_pairs={}",
-        connectionHandles.size(), managers.size());
+    KV_INFO("HccpKvOverRoceTransProvider: DeleteConnections complete requested={} ip_pairs={}",
+            connectionHandles.size(), managers.size());
     return results;
 }
 
-Status HccpKvOverRoceTransProvider::GetServerCapabilities(
-    ConnectionHandle connectionHandle, ServerKvCapabilities& capabilities)
+Status HccpKvOverRoceTransProvider::GetServerCapabilities(ConnectionHandle connectionHandle,
+                                                          ServerKvCapabilities& capabilities)
 {
     capabilities = {};
     if (!impl_) {
@@ -1019,8 +992,9 @@ Status HccpKvOverRoceTransProvider::GetServerCapabilities(
     return Status::OK();
 }
 
-std::vector<Status> HccpKvOverRoceTransProvider::Send(
-    const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount, std::uint32_t quietCount)
+std::vector<Status> HccpKvOverRoceTransProvider::Send(const std::vector<SendIoBatch>& ioBatches,
+                                                      std::uint32_t kernelCount,
+                                                      std::uint32_t quietCount)
 {
     std::vector<Status> results(ioBatches.size(), Status::OK());
     if (!impl_) {
@@ -1203,8 +1177,8 @@ Status HccpKvOverRoceTransProvider::RegisterMemory(
     return Status::OK();
 }
 
-Status HccpKvOverRoceTransProvider::BindMemory(
-    const std::vector<BindMemoryDesc>& memoryDescs, std::vector<MRHandle>& mrHandles)
+Status HccpKvOverRoceTransProvider::BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                                               std::vector<MRHandle>& mrHandles)
 {
     mrHandles.clear();
     if (!impl_) {

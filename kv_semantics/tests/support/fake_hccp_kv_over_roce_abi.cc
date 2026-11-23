@@ -374,9 +374,8 @@ extern "C" std::int32_t HccpFakeWaitForUnregisterEntry(std::uint32_t timeoutMs)
 {
     auto& state = *State();
     std::unique_lock<std::mutex> lock(state.mutex);
-    const bool entered =
-        state.unregisterCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                                    [&state] { return state.unregisterEntered; });
+    const bool entered = state.unregisterCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                                     [&state] { return state.unregisterEntered; });
     return entered ? 1 : 0;
 }
 

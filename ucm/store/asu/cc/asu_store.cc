@@ -82,9 +82,7 @@ TensorLayout ParseTensorLayout(const std::string& layout)
 }
 
 std::size_t AlignUp(std::size_t value, std::size_t alignment)
-{
-    return ((value + alignment - 1) / alignment) * alignment;
-}
+{ return ((value + alignment - 1) / alignment) * alignment; }
 
 std::uint64_t HashAsuKey(const Detail::BlockId& block)
 {
@@ -167,49 +165,49 @@ constexpr std::int64_t kHccpInitUint32Max = std::numeric_limits<std::uint32_t>::
 constexpr std::int64_t kHccpInitUint8Max = std::numeric_limits<std::uint8_t>::max();
 
 constexpr HccpInitKey kHccpInitKeys[] = {
-    {"mem_size", kHccpInitUint64Max},
-    {"send_mr_size", kHccpInitUint64Max},
-    {"flag_mr_size", kHccpInitUint64Max},
-    {"oob_transport", 1},
-    {"sdk_ioq_depth", kHccpInitUint32Max},
-    {"timeout_ms", kHccpInitUint32Max},
-    {"kvnsid", kHccpInitUint32Max},
-    {"server_batch_limit", kHccpInitUint32Max},
-    {"server_delete_limit", kHccpInitUint32Max},
-    {"server_exist_limit", kHccpInitUint32Max},
+    {"mem_size",               kHccpInitUint64Max},
+    {"send_mr_size",           kHccpInitUint64Max},
+    {"flag_mr_size",           kHccpInitUint64Max},
+    {"oob_transport",          1                 },
+    {"sdk_ioq_depth",          kHccpInitUint32Max},
+    {"timeout_ms",             kHccpInitUint32Max},
+    {"kvnsid",                 kHccpInitUint32Max},
+    {"server_batch_limit",     kHccpInitUint32Max},
+    {"server_delete_limit",    kHccpInitUint32Max},
+    {"server_exist_limit",     kHccpInitUint32Max},
     {"max_inflight_kv_per_ip", kHccpInitUint32Max},
     {"max_inflight_kv_per_qp", kHccpInitUint32Max},
-    {"send_aiv_count", kHccpInitUint32Max},
-    {"wait_aiv_count", kHccpInitUint32Max},
-    {"cache_count", kHccpInitUint32Max},
-    {"stripe_count", kHccpInitUint32Max},
-    {"max_flags_per_stripe", kHccpInitUint32Max},
-    {"npu_cacheline_size", kHccpInitUint32Max},
-    {"quiet_interval", kHccpInitUint32Max},
-    {"send_cq_wait", kHccpInitUint32Max},
-    {"virtual_nodes", kHccpInitUint32Max},
-    {"post_connect_delay_ms", kHccpInitUint32Max},
-    {"wait_poll_yield_us", kHccpInitUint32Max},
-    {"wait_task_timeout_ms", kHccpInitUint32Max},
-    {"max_aiv_retry", kHccpInitUint32Max},
-    {"iterations", kHccpInitUint32Max},
-    {"total_kv_count", kHccpInitUint32Max},
-    {"block_size", kHccpInitUint32Max},
-    {"op_type", kHccpInitUint32Max},
-    {"pipeline_num_layers", kHccpInitUint32Max},
-    {"comp_delay_us", kHccpInitUint32Max},
-    {"mt_num_threads", kHccpInitUint32Max},
-    {"mt_ops_per_thread", kHccpInitUint32Max},
-    {"debug", kHccpInitUint32Max},
-    {"neg_mtu", kHccpInitUint8Max},
-    {"neg_sl", kHccpInitUint8Max},
-    {"neg_traffic_class", kHccpInitUint8Max},
-    {"neg_rnr_timer", kHccpInitUint8Max},
-    {"neg_rnr_retry_cnt", kHccpInitUint8Max},
-    {"neg_timeout", kHccpInitUint8Max},
-    {"neg_retry_cnt", kHccpInitUint8Max},
-    {"neg_qp_rd_atom", kHccpInitUint8Max},
-    {"neg_start_psn", kHccpInitUint32Max},
+    {"send_aiv_count",         kHccpInitUint32Max},
+    {"wait_aiv_count",         kHccpInitUint32Max},
+    {"cache_count",            kHccpInitUint32Max},
+    {"stripe_count",           kHccpInitUint32Max},
+    {"max_flags_per_stripe",   kHccpInitUint32Max},
+    {"npu_cacheline_size",     kHccpInitUint32Max},
+    {"quiet_interval",         kHccpInitUint32Max},
+    {"send_cq_wait",           kHccpInitUint32Max},
+    {"virtual_nodes",          kHccpInitUint32Max},
+    {"post_connect_delay_ms",  kHccpInitUint32Max},
+    {"wait_poll_yield_us",     kHccpInitUint32Max},
+    {"wait_task_timeout_ms",   kHccpInitUint32Max},
+    {"max_aiv_retry",          kHccpInitUint32Max},
+    {"iterations",             kHccpInitUint32Max},
+    {"total_kv_count",         kHccpInitUint32Max},
+    {"block_size",             kHccpInitUint32Max},
+    {"op_type",                kHccpInitUint32Max},
+    {"pipeline_num_layers",    kHccpInitUint32Max},
+    {"comp_delay_us",          kHccpInitUint32Max},
+    {"mt_num_threads",         kHccpInitUint32Max},
+    {"mt_ops_per_thread",      kHccpInitUint32Max},
+    {"debug",                  kHccpInitUint32Max},
+    {"neg_mtu",                kHccpInitUint8Max },
+    {"neg_sl",                 kHccpInitUint8Max },
+    {"neg_traffic_class",      kHccpInitUint8Max },
+    {"neg_rnr_timer",          kHccpInitUint8Max },
+    {"neg_rnr_retry_cnt",      kHccpInitUint8Max },
+    {"neg_timeout",            kHccpInitUint8Max },
+    {"neg_retry_cnt",          kHccpInitUint8Max },
+    {"neg_qp_rd_atom",         kHccpInitUint8Max },
+    {"neg_start_psn",          kHccpInitUint32Max},
 };
 
 bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
@@ -604,9 +602,7 @@ public:
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
-    {
-        return client_->Check(static_cast<kv::TaskId>(taskId));
-    }
+    { return client_->Check(static_cast<kv::TaskId>(taskId)); }
 
     Status Wait(Detail::TaskHandle taskId) override
     {

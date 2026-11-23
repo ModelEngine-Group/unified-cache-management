@@ -37,8 +37,7 @@ namespace kv {
 // in one slot; the HBM region is carved into slots of this size. A slot holds
 // exactly the QPC payload, with no padding, so the slot size is the QPC size
 // declared by the ABI header.
-constexpr std::size_t kHccpKvRoceConnSlotBytes =
-    static_cast<std::size_t>(HCCP_KV_ROCE_QPC_BYTES);
+constexpr std::size_t kHccpKvRoceConnSlotBytes = static_cast<std::size_t>(HCCP_KV_ROCE_QPC_BYTES);
 // Default slot capacity: 384 x 8, the connection budget of one non-shared
 // provider.
 constexpr std::uint32_t kHccpKvRoceDefaultSlotCapacity = 384 * 8;

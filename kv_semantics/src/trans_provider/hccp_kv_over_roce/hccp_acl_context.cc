@@ -100,15 +100,11 @@ Status ResolveHccpAclBinding(const TransportConfig& config, HccpAclBinding& bind
 
 ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& binding)
     : stage_(stage), binding_(binding)
-{
-    status_ = Bind();
-}
+{ status_ = Bind(); }
 
 ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& binding, InitialBind)
     : stage_(stage), binding_(binding)
-{
-    status_ = BindInitial();
-}
+{ status_ = BindInitial(); }
 
 Status ScopedHccpAclContext::Capture(const char* stage, HccpAclBinding& binding)
 {
@@ -153,7 +149,8 @@ Status ScopedHccpAclContext::Bind()
     if (binding_.context == nullptr) {
         return Status::Error(StatusCode::NOT_INITIALIZED,
                              "HccpKvOverRoceTransProvider: ACL context is not resolved "
-                             "device_id=" + std::to_string(binding_.deviceId));
+                             "device_id=" +
+                                 std::to_string(binding_.deviceId));
     }
 
     if (aclrtGetCurrentContext(&callerContext_) != ACL_SUCCESS) { callerContext_ = nullptr; }
@@ -200,13 +197,12 @@ Status ScopedHccpAclContext::BindInitial()
 
     aclrtContext context = nullptr;
     const auto getRet = aclrtGetCurrentContext(&context);
-    if (getRet != ACL_SUCCESS) {
-        return AclError(stage_, "aclrtGetCurrentContext", getRet);
-    }
+    if (getRet != ACL_SUCCESS) { return AclError(stage_, "aclrtGetCurrentContext", getRet); }
     if (context == nullptr) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "HccpKvOverRoceTransProvider: no ACL context after binding "
-                             "device_id=" + std::to_string(binding_.deviceId));
+                             "device_id=" +
+                                 std::to_string(binding_.deviceId));
     }
     binding_.context = context;
     return Status::OK();

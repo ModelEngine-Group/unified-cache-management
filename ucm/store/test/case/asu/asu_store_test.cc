@@ -52,9 +52,7 @@ struct CacheKeyHasher {
 };
 
 kv::MRHandle MakeTestMrHandle(std::uintptr_t value)
-{
-    return reinterpret_cast<kv::MRHandle>(value);
-}
+{ return reinterpret_cast<kv::MRHandle>(value); }
 
 struct FakeKvClientState {
     std::vector<UC::AsuStore::Config> initConfigs;
@@ -193,9 +191,7 @@ public:
 
 private:
     kv::Status Submit(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId)
-    {
-        return Submit(entries.size(), taskId);
-    }
+    { return Submit(entries.size(), taskId); }
 
     kv::Status Submit(std::size_t entryCount, kv::TaskId& taskId)
     {
@@ -1018,11 +1014,11 @@ TEST(UCAsuStoreTest, RejectsHccpInitValueOutOfRange)
         std::int64_t value;
     };
     const std::vector<Case> cases{
-        {"asu_hccp_kv_roce_neg_mtu", 256},
+        {"asu_hccp_kv_roce_neg_mtu",       256                                   },
         {"asu_hccp_kv_roce_sdk_ioq_depth",
          static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) + 1},
-        {"asu_hccp_kv_roce_oob_transport", 2},
-        {"asu_hccp_kv_roce_mem_size", -1},
+        {"asu_hccp_kv_roce_oob_transport", 2                                     },
+        {"asu_hccp_kv_roce_mem_size",      -1                                    },
     };
     for (const auto& entry : cases) {
         UC::AsuStore::AsuStore store;
