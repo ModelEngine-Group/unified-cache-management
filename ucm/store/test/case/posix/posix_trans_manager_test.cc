@@ -33,6 +33,7 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
 {
     using namespace UC::PosixStore;
     Config config;
+    config.ioDirect = false;
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
@@ -72,6 +73,7 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     using namespace UC::PosixStore;
     constexpr size_t nShards = 8;
     Config config;
+    config.ioDirect = false;
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize * nShards;
@@ -117,6 +119,7 @@ TEST_F(UCPosixTransManagerTest, PsyncLoadSubmitAfterCloseFailsCleanly)
 {
     using namespace UC::PosixStore;
     Config config;
+    config.ioDirect = false;
     config.tensorSize = 32768;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
