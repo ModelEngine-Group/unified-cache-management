@@ -4088,7 +4088,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             remaining_tokens = request.num_prompt_tokens - matched_tokens
 
             if remaining_tokens >= self.get_block_size():
-                logger.info("********** Need Waiting ***********")
                 return None, False
 
         self._record_prefix_cache_token_metrics(
