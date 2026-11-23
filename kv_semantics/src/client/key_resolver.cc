@@ -26,14 +26,20 @@
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
-#define HASH_SEED_VALUE (5381)
+// Seed for hashing string-key identity into key bytes. Protocol-bound with the ASU
+// server (see StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding). Independent of
+// kKvNsIdHashSeed, which derives namespace IDs from pool names.
+constexpr std::uint64_t kIdentityXxh64Seed = 5381;
 
 namespace kv {
 namespace {
 
 std::uint32_t HashNamespace(std::string_view kvns)
 {
-    return XXH32(kvns.data(), kvns.size(), HASH_SEED_VALUE);
+    // Must stay in sync with the M800 view layer, which derives KvNsId from the same
+    // pool-name strings with kKvNsIdHashSeed (see m800_view_common.cc); the pynds_kv C
+    // adapter keeps the matching 5381 seed on its side (agent_adapter.h).
+    return XXH32(kvns.data(), kvns.size(), kKvNsIdHashSeed);
 }
 
 Status ParseRank(std::string_view value, std::uint32_t& rank)
@@ -160,7 +166,7 @@ Status KeyResolver::Resolve(const CacheKey& input, std::string_view baseKvns,
         std::string kvns(baseKvns);
         if (parsed.component) { kvns += "_" + *parsed.component; }
         if (parsed.ppRank) { kvns += "_pp" + std::to_string(*parsed.ppRank); }
-        auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), HASH_SEED_VALUE);
+        auto hash = XXH64(parsed.identity.data(), parsed.identity.size(), kIdentityXxh64Seed);
         for (auto& byte : resolvedKey.keyBytes) {
             byte = static_cast<std::byte>(hash & 0xff);
             hash >>= 8;
