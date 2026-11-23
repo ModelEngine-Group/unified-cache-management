@@ -40,6 +40,8 @@ def _log_duration(name, threshold_ms=20):
     def decorate(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
+            if not args[0]._log_performance:
+                return func(*args, **kwargs)
             start = perf_counter()
             try:
                 return func(*args, **kwargs)
@@ -58,7 +60,15 @@ def _log_duration(name, threshold_ms=20):
 
 
 class _MeasuredLayerWiseLoadCounter(LayerWiseLoadCounter):
+    def __init__(self, num_layers, *, log_performance=True):
+        super().__init__(num_layers)
+        self._log_performance = log_performance
+        self._measured_layers = num_layers
+        self._wait_totals = {}
+
     def wait_until(self, threshold):
+        if not self._log_performance:
+            return super().wait_until(threshold)
         # The model/KV pool calls the counter directly, outside linker methods.
         index = self.consumer_index
         start = perf_counter()
@@ -66,13 +76,38 @@ class _MeasuredLayerWiseLoadCounter(LayerWiseLoadCounter):
             return super().wait_until(threshold)
         finally:
             duration_ms = (perf_counter() - start) * 1e3
-            if duration_ms >= 20:
+            total, peak, calls = self._wait_totals.get(index, (0.0, 0.0, 0))
+            self._wait_totals[index] = (
+                total + duration_ms,
+                max(peak, duration_ms),
+                calls + 1,
+            )
+            if threshold == self._measured_layers - 1:
+                self._log_wait_total(index)
+
+    def _log_wait_total(self, index):
+        values = self._wait_totals.pop(index, None)
+        if values is not None:
+            total, peak, calls = values
+            if total >= 20:
                 logger.info(
-                    "SGLang UCM V2 load wait: batch=%s layer=%s wait_ms=%.3f",
+                    "SGLang UCM V2 load waits: batch=%s calls=%d "
+                    "total_ms=%.3f max_ms=%.3f",
                     index,
-                    threshold,
-                    duration_ms,
+                    calls,
+                    total,
+                    peak,
                 )
+
+    def finish(self, index):
+        try:
+            return super().finish(index)
+        finally:
+            self._log_wait_total(index)
+
+    def reset(self):
+        self._wait_totals.clear()
+        return super().reset()
 
 
 class _OffloadResult(Future):
@@ -117,6 +152,8 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._forward_event_to_store = extra_config.get("forward_event_to_store", False)
         # Cache domains are scoped to a DP replica and shared by its TP ranks.
         parallel = get_parallel()
+        tp_rank = getattr(parallel, "tp_rank", None)
+        self._log_performance = (worker_index if tp_rank is None else tp_rank) == 0
         unique_id = fingerprint(
             (
                 self.layout.identity,
@@ -152,7 +189,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
         self._pending_puts = {}
         self._finished_requests = set()
         self._scheduler_lock = Lock()
-        self.layer_done_counter = _MeasuredLayerWiseLoadCounter(self.layout.num_layers)
+        self.layer_done_counter = _MeasuredLayerWiseLoadCounter(
+            self.layout.num_layers, log_performance=self._log_performance
+        )
         if PoolName.MAMBA in self.pools:
             params.req_to_token_pool.register_layer_transfer_counter(
                 self.layer_done_counter
@@ -320,7 +359,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 if not candidates:
                     break
         total_ms = (perf_counter() - start) * 1e3
-        if total_ms >= 10:
+        if self._log_performance and total_ms >= 10:
             logger.info(
                 "SGLang UCM V2 lookup: rid=%s requested_pages=%d "
                 "restorable_prefix_pages=%d candidates=%s total_ms=%.3f "
@@ -434,6 +473,16 @@ class UcmDirectLinker(UnifiedCacheLinker):
         start = perf_counter()
         queue_ms = (start - queued_at) * 1e3 if queued_at is not None else 0.0
         event_ms = prepare_ms = forward_ms = layers_ms = 0.0
+        metrics = dict(
+            payload_ms=0.0,
+            io_queue_ms=0.0,
+            submit_ms=0.0,
+            job_latency_sum_ms=0.0,
+            publish_lag_ms=0.0,
+            bytes=0,
+            segments=0,
+            jobs=0,
+        )
         try:
             with ExitStack() as requests:
                 indices_ready, *forward_events = events
@@ -462,7 +511,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 forward_ms = (perf_counter() - forward_start) * 1e3
                 layers_start = perf_counter()
                 try:
-                    self._load_layers(index, prepared, context)
+                    self._load_layers(index, prepared, context, metrics)
                 finally:
                     layers_ms = (perf_counter() - layers_start) * 1e3
         except Exception as error:
@@ -471,11 +520,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
             return False
         finally:
             total_ms = queue_ms + (perf_counter() - start) * 1e3
-            if total_ms >= 20:
+            if self._log_performance and total_ms >= 20:
                 logger.info(
                     "SGLang UCM V2 load: batch=%s requests=%d total_ms=%.3f "
                     "queue_ms=%.3f event_ms=%.3f prepare_ms=%.3f "
-                    "forward_ms=%.3f layers_ms=%.3f",
+                    "forward_ms=%.3f layers_ms=%.3f "
+                    "payload_ms=%.3f io_queue_ms=%.3f submit_ms=%.3f "
+                    "job_latency_sum_ms=%.3f publish_lag_ms=%.3f "
+                    "bytes=%d segments=%d jobs=%d",
                     index,
                     len(pending),
                     total_ms,
@@ -484,6 +536,14 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     prepare_ms,
                     forward_ms,
                     layers_ms,
+                    metrics["payload_ms"],
+                    metrics["io_queue_ms"],
+                    metrics["submit_ms"],
+                    metrics["job_latency_sum_ms"],
+                    metrics["publish_lag_ms"],
+                    metrics["bytes"],
+                    metrics["segments"],
+                    metrics["jobs"],
                 )
         return True
 
@@ -498,30 +558,42 @@ class UcmDirectLinker(UnifiedCacheLinker):
         if not context.prerequisite_handle:
             forward_done.synchronize()
 
-    def _load_layers(self, index, prepared, context):
+    def _load_layers(self, index, prepared, context, metrics):
         layer_jobs = []
         next_complete = 0
         try:
             for layer in range(self.layout.num_layers):
+                payload_start = perf_counter()
                 submissions = [
                     (payloads, token)
                     for pages, token in prepared
                     if (payloads := pages.payloads(layer))
                 ]
+                metrics["payload_ms"] += (perf_counter() - payload_start) * 1e3
+                # All pages of a section/layer share the same fragment geometry.
+                # Count once per submission rather than traversing every page again.
+                for payloads, _ in submissions:
+                    metrics["bytes"] += len(payloads) * sum(payloads[0].sizes)
+                    metrics["segments"] += len(payloads) * len(payloads[0].sizes)
                 jobs = []
                 layer_jobs.append(jobs)
                 # Wait only for submission. Store I/O continues on the backend.
                 self._io_executor.submit(
-                    self._submit_load_layer, submissions, context, jobs
+                    self._submit_load_layer,
+                    submissions,
+                    context,
+                    jobs,
+                    metrics,
+                    perf_counter(),
                 ).result()
                 while next_complete <= layer and all(
                     job.done() for job in layer_jobs[next_complete]
                 ):
-                    self._publish_load_layer(index, next_complete, layer_jobs)
+                    self._publish_load_layer(index, next_complete, layer_jobs, metrics)
                     next_complete += 1
 
             for layer in range(next_complete, len(layer_jobs)):
-                self._publish_load_layer(index, layer, layer_jobs)
+                self._publish_load_layer(index, layer, layer_jobs, metrics)
         finally:
             # Keep the Get window and the destination pages alive until all
             # accepted jobs finish, including after partial submission failure.
@@ -529,16 +601,27 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 for job in jobs:
                     job.result()
 
-    def _submit_load_layer(self, submissions, context, jobs):
+    def _submit_load_layer(self, submissions, context, jobs, metrics, queued_at):
+        metrics["io_queue_ms"] += (perf_counter() - queued_at) * 1e3
         for payloads, token in submissions:
             result = _OffloadResult()
-            self._submit_job(self.runtime.submit_get, result, payloads, token, context)
+            result.load_metrics = metrics
+            result.submitted_at = perf_counter()
+            try:
+                self._submit_job(self.runtime.submit_get, result, payloads, token, context)
+            finally:
+                metrics["submit_ms"] += (perf_counter() - result.submitted_at) * 1e3
+            metrics["jobs"] += 1
             jobs.append(result)
 
-    def _publish_load_layer(self, index, layer, layer_jobs):
+    def _publish_load_layer(self, index, layer, layer_jobs, metrics):
         results = [job.result() for job in layer_jobs[layer]]
         if not all(results):
             raise RuntimeError(f"Store Get failed for layer {layer}")
+        if layer_jobs[layer]:
+            metrics["publish_lag_ms"] += (
+                perf_counter() - max(job.observed_at for job in layer_jobs[layer])
+            ) * 1e3
         self.layer_done_counter.complete(index, layer)
 
     @_log_duration("finish_layer_wise_loading")
@@ -580,7 +663,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
         def log_completion(future):
             duration_ms = (perf_counter() - start) * 1e3
-            if duration_ms >= 20:
+            if self._log_performance and duration_ms >= 20:
                 logger.info(
                     "SGLang UCM V2 offload: session=%s total_ms=%.3f "
                     "queue_ms=%.3f event_ms=%.3f prepare_ms=%.3f "
@@ -917,6 +1000,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
             results = self.runtime.get_finished()
             for result in results:
                 completion, resources = self._jobs.pop(result.job_id)
+                self._measure_load_completion(completion)
                 completion.set_result(result.success)
             if not results:
                 sleep(0.001)
@@ -929,9 +1013,22 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 except Exception:
                     success = False
                 completion, resources = self._jobs.pop(job_id)
+                self._measure_load_completion(completion)
                 completion.set_result(success)
         if self._jobs:
             self._schedule_poll()
+
+    @staticmethod
+    def _measure_load_completion(completion):
+        if not hasattr(completion, "load_metrics"):
+            return
+        completion.observed_at = perf_counter()
+        # Includes native submission, transfer and polling delay. This is NOT
+        # a CUDA-event measurement; overlapping job latencies are not additive
+        # with the batch wall time.
+        completion.load_metrics["job_latency_sum_ms"] += (
+            completion.observed_at - completion.submitted_at
+        ) * 1e3
 
     def num_completed_offloads(self):
         self._request_store_offload()

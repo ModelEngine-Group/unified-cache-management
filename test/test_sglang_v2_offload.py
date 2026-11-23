@@ -50,6 +50,12 @@ def load_linker(*, mamba=False):
         def wait_until(self, threshold):
             pass
 
+        def reset(self):
+            pass
+
+        def finish(self, index):
+            return True
+
     modules[names[8]].LayerWiseLoadCounter = Counter
     modules[names[8]].UnifiedCacheLinker = object
     modules[names[9]].get_model = lambda: types.SimpleNamespace(model_path="test")
@@ -234,16 +240,23 @@ class OffloadTest(unittest.TestCase):
         )
         self.addCleanup(self.cleanup)
 
-    def test_counter_logs_slow_wait_with_batch_and_layer(self):
+    def test_counter_aggregates_short_waits_once_per_batch(self):
+        counter = self.module._MeasuredLayerWiseLoadCounter(3)
         with (
-            patch.object(self.module, "perf_counter", side_effect=[1.0, 1.025]),
+            patch.object(self.module, "perf_counter", side_effect=[1, 1.01, 2, 2.01, 3, 3.01]),
             patch.object(self.module.LayerWiseLoadCounter, "wait_until") as wait,
             patch.object(self.module.logger, "info") as info,
         ):
-            self.linker.layer_done_counter.wait_until(3)
-        wait.assert_called_once_with(3)
+            counter.wait_until(0)
+            counter.wait_until(1)
+            info.assert_not_called()
+            counter.wait_until(2)
+            counter.finish(2)
+        self.assertEqual(wait.call_count, 3)
+        info.assert_called_once()
         self.assertEqual(info.call_args.args[1:3], (2, 3))
-        self.assertAlmostEqual(info.call_args.args[3], 25.0)
+        self.assertAlmostEqual(info.call_args.args[3], 30.0)
+        self.assertAlmostEqual(info.call_args.args[4], 10.0)
 
     def test_counter_does_not_log_fast_wait(self):
         with (
@@ -260,12 +273,43 @@ class OffloadTest(unittest.TestCase):
         with (
             patch.object(self.module, "perf_counter", side_effect=clock),
             patch.object(self.module.logger, "info") as info,
+            patch.object(self.linker, "_load_layers"),
         ):
             self.assertTrue(self.linker._load_worker(0, {}, [event], queued_at=99))
         values = info.call_args.args
         self.assertAlmostEqual(values[3], 1010.0)
         self.assertAlmostEqual(values[4], 1000.0)
         self.assertAlmostEqual(values[5], 5.0)
+
+    def test_load_metrics_count_bytes_and_publish_only_after_completion(self):
+        metrics = dict(payload_ms=0.0, io_queue_ms=0.0, submit_ms=0.0,
+                       job_latency_sum_ms=0.0, publish_lag_ms=0.0,
+                       bytes=0, segments=0, jobs=0)
+        payload = types.SimpleNamespace(sizes=[16, 32])
+        pages = types.SimpleNamespace(payloads=lambda layer: [payload, payload])
+        self.linker.layer_done_counter.complete = Mock()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            loading = executor.submit(self.linker._load_layers, 0,
+                                      [(pages, object())], object(), metrics)
+            job_id, _ = self.next_job("get")
+            self.linker.layer_done_counter.complete.assert_not_called()
+            self.store.finish(job_id)
+            loading.result(timeout=2)
+        self.linker.layer_done_counter.complete.assert_called_once_with(0, 0)
+        self.assertEqual(metrics["bytes"], 96)
+        self.assertEqual(metrics["segments"], 4)
+        self.assertEqual(metrics["jobs"], 1)
+        self.assertGreaterEqual(metrics["job_latency_sum_ms"], metrics["submit_ms"])
+        self.assertGreaterEqual(metrics["publish_lag_ms"], 0)
+
+    def test_load_completion_measurement_uses_observed_time(self):
+        result = Future()
+        result.load_metrics = {"job_latency_sum_ms": 0.0}
+        result.submitted_at = 10.0
+        with patch.object(self.module, "perf_counter", return_value=10.025):
+            self.linker._measure_load_completion(result)
+        self.assertAlmostEqual(result.load_metrics["job_latency_sum_ms"], 25.0)
+        self.assertFalse(result.done())
 
     def test_mamba_pool_uses_the_linkers_layer_counter(self):
         self.params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
