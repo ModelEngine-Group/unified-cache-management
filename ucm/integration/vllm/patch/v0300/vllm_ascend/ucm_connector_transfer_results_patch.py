@@ -4,16 +4,15 @@ The adapter delegates ``get_finished`` to the UCM engine but has no
 ``get_transfer_results`` override, so the upstream wrapper repacks the
 tuple with an always-empty ``failed_recving`` — a failed async load is
 then promoted as a success (half-loaded blocks get cached; multi-group
-engines like HLA/FAWA cannot report failures through flat block ids).
+engines cannot report failures through flat block ids).
 
-Imported unconditionally (like ``mamba_layer_hooks_patch``): every guard
-is inside, and the patch stays inert unless all hold — the adapter
-module is imported, the engine defines ``KVConnectorTransferResults``
-(vLLM >= 0.29.1), and the adapter does not already implement the hook
-(an upstream fix is never shadowed). The forwarding override routes
-through the reserved-hook mechanism to the UCM facade or inner
-connector, reproducing base-class behavior where the inner connector
-does not override it.
+Imported unconditionally: every guard is inside, and the patch stays
+inert unless all hold — the adapter module is imported, the engine
+defines ``KVConnectorTransferResults`` (vLLM >= 0.29.1), and the
+adapter does not already implement the hook (an upstream fix is never
+shadowed). The forwarding override routes through the reserved-hook
+mechanism to the UCM facade or inner connector, reproducing base-class
+behavior where the inner connector does not override it.
 """
 
 from typing import Any

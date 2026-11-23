@@ -2947,7 +2947,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     pending.failed = True
                     _record_counter("connector_load_wait_errors_total")
                     logger.error(
-                        f"request {request_id} async HLA load failed. "
+                        f"request {request_id} wait direct load task error. "
                         f"{type(e).__name__}: {e}"
                     )
             pending.tasks = remaining
@@ -2976,11 +2976,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if KVConnectorTransferResults is None and self._failed_hla_loads:
             # Legacy engines lack failed_recving and cannot identify failed
             # multi-group requests; fail closed after draining.
-            raise RuntimeError(
-                "Async HLA load failed after draining Store I/O; this vLLM "
-                "version lacks KVConnectorTransferResults.failed_recving: "
-                f"{sorted(self._failed_hla_loads)}"
-            )
+            raise RuntimeError(f"Async load failed: {sorted(self._failed_hla_loads)}")
         # No delay_free: blocks are freed at request_finished and cancelled
         # requests are held by the scheduler until finished_recving arrives.
         return None, finished_recving or None
