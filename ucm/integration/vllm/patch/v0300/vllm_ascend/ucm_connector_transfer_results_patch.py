@@ -23,6 +23,7 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
+@when_imported("vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector.connector")
 def patch_ucm_connector_transfer_results(mod: Any) -> None:
     try:
         from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -47,8 +48,3 @@ def patch_ucm_connector_transfer_results(mod: Any) -> None:
         "UCM Patching vllm-ascend UCMConnectorV1.get_transfer_results to "
         "forward failed_recving from the UCM engine"
     )
-
-
-when_imported("vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector.connector")(
-    patch_ucm_connector_transfer_results
-)
