@@ -82,7 +82,9 @@ TensorLayout ParseTensorLayout(const std::string& layout)
 }
 
 std::size_t AlignUp(std::size_t value, std::size_t alignment)
-{ return ((value + alignment - 1) / alignment) * alignment; }
+{
+    return ((value + alignment - 1) / alignment) * alignment;
+}
 
 std::uint64_t HashAsuKey(const Detail::BlockId& block)
 {
@@ -602,7 +604,9 @@ public:
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
-    { return client_->Check(static_cast<kv::TaskId>(taskId)); }
+    {
+        return client_->Check(static_cast<kv::TaskId>(taskId));
+    }
 
     Status Wait(Detail::TaskHandle taskId) override
     {

@@ -100,11 +100,15 @@ Status ResolveHccpAclBinding(const TransportConfig& config, HccpAclBinding& bind
 
 ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& binding)
     : stage_(stage), binding_(binding)
-{ status_ = Bind(); }
+{
+    status_ = Bind();
+}
 
 ScopedHccpAclContext::ScopedHccpAclContext(const char* stage, HccpAclBinding& binding, InitialBind)
     : stage_(stage), binding_(binding)
-{ status_ = BindInitial(); }
+{
+    status_ = BindInitial();
+}
 
 Status ScopedHccpAclContext::Capture(const char* stage, HccpAclBinding& binding)
 {
