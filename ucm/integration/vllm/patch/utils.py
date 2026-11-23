@@ -10,6 +10,7 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 _POST_IMPORT_HOOKS = defaultdict(list)
+_POST_IMPORT_PENDING = set()
 
 
 class HookingFinder(importlib.abc.MetaPathFinder):
@@ -19,6 +20,7 @@ class HookingFinder(importlib.abc.MetaPathFinder):
     """
 
     def find_spec(self, fullname, path, target=None):
+        self._drain_pending()
         if fullname not in _POST_IMPORT_HOOKS:
             return None
 
@@ -58,6 +60,35 @@ class HookingFinder(importlib.abc.MetaPathFinder):
             sys.meta_path = meta_path_original
             sys.path_importer_cache.clear()
 
+    @classmethod
+    def _drain_pending(cls):
+        """Fire hooks for pending modules that have finished loading.
+
+        Called from find_spec on every import: the one guaranteed retry
+        point after a hook was registered mid-module-load.
+        """
+        if not _POST_IMPORT_PENDING:
+            return
+        for name in list(_POST_IMPORT_PENDING):
+            mod = sys.modules.get(name)
+            if mod is None:
+                # The module's import failed and it was removed.
+                _POST_IMPORT_PENDING.discard(name)
+                continue
+            if getattr(mod, "__initializing__", False):
+                continue
+            _POST_IMPORT_PENDING.discard(name)
+            if getattr(mod, "_ucm_patched", False):
+                continue
+            try:
+                setattr(mod, "_ucm_patched", True)
+                for hook in _POST_IMPORT_HOOKS.get(name, ()):
+                    hook(mod)
+            except Exception as e:
+                logger.error(
+                    f"Error executing deferred post-import hooks for {name}: {e}"
+                )
+
 
 class PatchOpProxy(wrapt.ObjectProxy):
     """
@@ -95,7 +126,14 @@ def when_imported(module_name):
 
         if module_name in sys.modules:
             mod = sys.modules[module_name]
-            if not getattr(mod, "_ucm_patched", False):
+            if getattr(mod, "__initializing__", False):
+                # The module body is still executing (e.g. its own imports
+                # triggered this registration): its classes are not defined
+                # yet and this import was not intercepted by HookingFinder.
+                # Do not claim the _ucm_patched flag here - retry via
+                # _drain_pending once the module finishes loading.
+                _POST_IMPORT_PENDING.add(module_name)
+            elif not getattr(mod, "_ucm_patched", False):
                 setattr(mod, "_ucm_patched", True)
                 func(mod)
         return func
