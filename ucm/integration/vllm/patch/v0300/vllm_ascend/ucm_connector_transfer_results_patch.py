@@ -43,8 +43,8 @@ def patch_ucm_connector_transfer_results(mod: Any) -> None:
         return self._call_ucm_reserved_hook("get_transfer_results", finished_req_ids)
 
     cls.get_transfer_results = get_transfer_results
-    logger.debug(
-        "Patched vllm-ascend UCMConnectorV1.get_transfer_results to "
+    logger.info(
+        "UCM Patching vllm-ascend UCMConnectorV1.get_transfer_results to "
         "forward failed_recving from the UCM engine"
     )
 

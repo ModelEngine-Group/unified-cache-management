@@ -416,9 +416,10 @@ def apply_all_patches() -> None:
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
             case "0.30.0":
-                logger.info(
-                    "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
-                )
+                logger.info("UCM patching vllm-ascend for chunked-prefill alignment...")
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
+            case "0.32.0":
+                logger.info("UCM patching vllm-ascend for chunked-prefill alignment...")
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
