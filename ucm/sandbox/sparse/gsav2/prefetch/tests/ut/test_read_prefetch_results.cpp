@@ -55,9 +55,13 @@ protected:
     }
 
     static torch::Tensor Make2DTensor(int s, int t, int d)
-    { return torch::zeros({s, t, d}, torch::dtype(torch::kFloat32)); }
+    {
+        return torch::zeros({s, t, d}, torch::dtype(torch::kFloat32));
+    }
     static torch::Tensor Make1DIndexTensor(int s, int t)
-    { return torch::zeros({s, t}, torch::dtype(torch::kInt64)); }
+    {
+        return torch::zeros({s, t}, torch::dtype(torch::kInt64));
+    }
 
     PrefetchShmLayout MakeLayout()
     {
@@ -122,7 +126,7 @@ TEST_F(ReadPrefetchResultsTest, WriteThenReadRoundTripsMissTokensAndSlots)
     std::vector<int> useBlockTable(engine->mSpaTopkLen, 42);
     auto layout = MakeLayout();
     engine->WritePrefetchResult(/*i=*/0, /*layerID=*/0, useBlockTable, layout,
-                               engine->mMissGlobalToken[reqID][0], engine->mLoadSlot[reqID][0]);
+                                engine->mMissGlobalToken[reqID][0], engine->mLoadSlot[reqID][0]);
 
     // Clear local state to simulate a reader.
     engine->mMissGlobalToken[reqID][0].clear();

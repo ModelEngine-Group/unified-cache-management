@@ -219,8 +219,7 @@ TEST(AbortPaths, BuildUCMMergeBlockContextsAbortsOnNegativeMissGlobalId)
     engine->mMissGlobalToken[reqID][0] = {-1};  // negative -> KVPackAbort
     std::vector<ucmprefetch::UCMMergeBlockContext> blockContexts;
     std::map<int, std::vector<size_t>> blockIdxToTokenIdx;
-    EXPECT_DEATH(engine->BuildUCMMergeBlockContexts(0, reqID, 0, blockContexts,
-                                                    blockIdxToTokenIdx),
+    EXPECT_DEATH(engine->BuildUCMMergeBlockContexts(0, reqID, 0, blockContexts, blockIdxToTokenIdx),
                  "");
 }
 

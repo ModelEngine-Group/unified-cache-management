@@ -74,7 +74,7 @@ public:
     std::atomic<bool> mIsPrefetchRunning{false};
     std::atomic<bool> mIsIndexerLoadRunning{false};
     // 任务完成事件：worker 尾部在 mTaskDoneMutex 内翻转状态位、锁外 notify_all
-    //（杜绝丢唤醒）。本锁不与任何引擎锁嵌套。
+    // （杜绝丢唤醒）。本锁不与任何引擎锁嵌套。
     std::mutex mTaskDoneMutex;
     std::condition_variable mPrefetchDoneCv;
     std::condition_variable mIndexerDoneCv;
@@ -207,8 +207,8 @@ public:
                          const torch::Tensor& topkList);
 
     // RunOneBsPrefetch 分解辅助（提前识别/判别在并行域外完成）
-    int AcquireIndexerTopkBase(const torch::Tensor& topkList, const std::string& reqID,
-                               int topkLen, PrefetchTopkView& topkView);
+    int AcquireIndexerTopkBase(const torch::Tensor& topkList, const std::string& reqID, int topkLen,
+                               PrefetchTopkView& topkView);
 
     void GetHitAndMissBlock(PrefetchReqInfo oneBsInfo, std::vector<int>& topkList,
                             std::unordered_set<int>& hitBlocks, std::map<int, int>& hitBlocksIdx,
@@ -466,7 +466,8 @@ public:
                                std::byte* kDstBase, std::byte* vDstBase, size_t previousLoadNum,
                                UCMTokenLoadPlan& plan);
     void BuildFallbackSlotIndices(const UCMMergeBlockContext& context, size_t dstBase,
-                                  const std::vector<int>& missSlots, const std::vector<int>& blockTable,
+                                  const std::vector<int>& missSlots,
+                                  const std::vector<int>& blockTable,
                                   std::vector<uint64_t>& hbmSlotIndex, int layerID,
                                   const std::string& reqID);
 
@@ -476,9 +477,8 @@ public:
                                     std::vector<UCMMergeBlockContext>& blockContexts,
                                     std::map<int, std::vector<size_t>>& blockIdxToTokenIdx);
 
-    void UCMTensorMergeBatch(const TaskInfo& taskInfo,
-                             const std::vector<uint32_t>& requestIndices, int layerID,
-                             int streamIdx, std::vector<uint64_t>& hbmSlotIndex);
+    void UCMTensorMergeBatch(const TaskInfo& taskInfo, const std::vector<uint32_t>& requestIndices,
+                             int layerID, int streamIdx, std::vector<uint64_t>& hbmSlotIndex);
 
     void CollectUCMMergeRequests(const TaskInfo& taskInfo,
                                  const std::vector<uint32_t>& requestIndices, int layerID,
@@ -551,8 +551,7 @@ public:
                           std::vector<int>& missGlobalIds, std::vector<int>& loadSlots);
 
     void WritePrefetchResult(size_t i, int layerID, const std::vector<int>& useBlockTable,
-                             const PrefetchShmLayout& layout,
-                             const std::vector<int>& missGlobalIds,
+                             const PrefetchShmLayout& layout, const std::vector<int>& missGlobalIds,
                              const std::vector<int>& loadSlots);
 
     void ClearPrefetchResultSlot(size_t i, int layerID, const PrefetchShmLayout& layout);
@@ -561,7 +560,7 @@ public:
 
     // ReadPrefetchResults 分解辅助
     void ReadOneReqLayerResults(const TaskInfo& taskInfo, const PrefetchShmLayout& layout, size_t i,
-                                 int layerID, std::vector<int>& useBlockTable);
+                                int layerID, std::vector<int>& useBlockTable);
 
     void MergeAndCopyPrefetchLayer(const TaskInfo& taskInfo, ThreadInfo& threadInfo, int layerID,
                                    PrefetchTiming& timing);
@@ -631,8 +630,7 @@ public:
     bool AppendLastChunkTokens(int layerID, const std::string& reqID,
                                const std::vector<int>& moveMap, const std::vector<BlockId>& hashVec,
                                const std::unordered_map<int, LastKVBlockAddress>& lastKVCopy,
-                               int lastUCMBlockIdx,
-                               std::vector<LastChunkSourceBlock>& sourceBlocks,
+                               int lastUCMBlockIdx, std::vector<LastChunkSourceBlock>& sourceBlocks,
                                UCMTokenLoadPlan& plan);
     void OpenUcmShard(size_t i, size_t blockIdxSz, int layerID, const std::vector<BlockId>& hashVec,
                       std::vector<size_t>& blockFirstDst, std::vector<int>& blockShardIdx,
@@ -653,9 +651,8 @@ public:
     void BuildIndexerLayerTables(int layerID, std::vector<int>& blockTableList,
                                  std::vector<std::vector<int>>& remainIdx,
                                  std::vector<std::vector<int>>& prefetchIdx,
-                                 std::vector<int>& blockSlot,
-                                 std::map<int, int>& oneDocTable, std::map<int, int>& oneBlockMap,
-                                 std::vector<int>& onePrefetchIdx,
+                                 std::vector<int>& blockSlot, std::map<int, int>& oneDocTable,
+                                 std::map<int, int>& oneBlockMap, std::vector<int>& onePrefetchIdx,
                                  std::vector<std::pair<int, int>>& oneDsaSparseBlock);
     void WriteIndexerLayerTables(const std::string& reqID, int layerID,
                                  std::vector<std::pair<int, int>>& oneDsaSparseBlock);

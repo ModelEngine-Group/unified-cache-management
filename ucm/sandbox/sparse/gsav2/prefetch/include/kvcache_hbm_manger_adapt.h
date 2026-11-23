@@ -8,8 +8,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
-#include <vector>
 #include <kvcache_log.h>
+#include <vector>
 
 #ifdef DEBUG
 #define HBM_ASSERT(f) assert(f)
@@ -76,7 +76,7 @@ inline int getWindowSize(HbmWindowPlan plan, int layerId, int immutableSize)
     }
 }
 
-} // namespace gsa_layer_window
+}  // namespace gsa_layer_window
 
 // ================= HBM 管理器 =================
 /* HBMManagerLayered：kvcache_hbm_manger.h 中 HBMManager 的可调参扩展。
@@ -120,8 +120,8 @@ public:
      * 各项传 kAuto*（或越界值）则取默认值：Lru + Uniform + lambda 0.85 +
      * steps 20 + 不去重（与 HBMManager 等价的原始方案）。 */
     void init(int dramTensorCount, int hbmCapacity, int hbmImmutableSize, int topkSize,
-              Logger& mLogger, bool preloadHbm = true, int maxTotalSlots = 32768,
-              int layerId = -1, int evictMode = kAutoEvict, int windowPlan = kAutoPlan,
+              Logger& mLogger, bool preloadHbm = true, int maxTotalSlots = 32768, int layerId = -1,
+              int evictMode = kAutoEvict, int windowPlan = kAutoPlan,
               float decayLambda = kAutoLambda, int windowSteps = kAutoSteps,
               int outputDedup = kAutoDedup)
     {
@@ -173,8 +173,8 @@ public:
             mSlotToGlobal[slotIdx] = slotIdx;
         }
         const int identityCount = slotIdx;
-        for (int gid = mDramTensorCount - 1;
-             slotIdx < mHbmCapacity && gid >= identityCount; --gid, ++slotIdx) {
+        for (int gid = mDramTensorCount - 1; slotIdx < mHbmCapacity && gid >= identityCount;
+             --gid, ++slotIdx) {
             mGlobalToSlot[gid] = slotIdx;
             mSlotToGlobal[slotIdx] = gid;
         }
@@ -219,8 +219,7 @@ public:
         for (int i = 0; i < mTopkSize; ++i) {
             if (!classifyTopkGid(topkIds[i], i, dedupedCount, missGlobalIds, mLogger)) { break; }
         }
-        processTopkMisses(mScratchSlotIds, missGlobalIds, missSlots, mScratchMissIndices,
-                          mLogger);
+        processTopkMisses(mScratchSlotIds, missGlobalIds, missSlots, mScratchMissIndices, mLogger);
         if (mOutputDedup) { refreshResidentSlots(dedupedCount); }
         if (mEvictMode == HbmEvictMode::Decay) {
             touchLoadedVictims(missSlots);
@@ -242,8 +241,7 @@ public:
     int getGidForSlot(int slot) const
     {
         if (slot >= 0 && slot < mHbmCapacity) { return mSlotToGlobal[slot]; }
-        if (slot >= mHbmCapacity && slot < mMaxTotalSlots &&
-            (mLru[slot].flags & kLruNodePinned)) {
+        if (slot >= mHbmCapacity && slot < mMaxTotalSlots && (mLru[slot].flags & kLruNodePinned)) {
             return slot - mHbmCapacity + mDramTensorCount;
         }
         return -1;
@@ -284,7 +282,11 @@ public:
         mWindowSize = win;
     }
 
-    void setDecayLambda(float lam) { mDecayLambda = lam; rebuildPowTable(); }
+    void setDecayLambda(float lam)
+    {
+        mDecayLambda = lam;
+        rebuildPowTable();
+    }
     /* 输出去重的运行时开关；开启后输出无重复槽 ID：raw 超界 pinned 槽
      * 每调用去重 + hit 槽驻留校验。默认关闭。 */
     void setOutputDedup(bool on) { mOutputDedup = on; }
@@ -365,8 +367,8 @@ private:
     struct LruNode {
         int prev;
         int next;
-        uint32_t gen;      // 本调用代际标记（原 mAddedSlotFlag）
-        uint32_t flags;    // bit0: kLruNodePinned（原 mIsPinned）
+        uint32_t gen;    // 本调用代际标记（原 mAddedSlotFlag）
+        uint32_t flags;  // bit0: kLruNodePinned（原 mIsPinned）
     };
     static constexpr uint32_t kLruNodePinned = 1u;
     std::vector<LruNode> mLru;
@@ -400,14 +402,14 @@ private:
     int mWindowSteps = gsa_layer_window::kDefaultWindowSteps;
 
     /* ---- 内部常量（行为契约的一部分，测试按字面值固化） ---- */
-    static constexpr int kMissThreshold = 2048;       /* 单调用 miss 上限，到达即 break */
-    static constexpr int kHitRateSamplePos = kMissThreshold - 1;  /* 命中率采样去重序号 */
-    static constexpr int kSeenGidGenerationMax = 255; /* uint8 去重代际回绕点（全清回 1） */
-    static constexpr int kPreloadIdentityLimit = 256; /* 恒等预载上界（原版行为，含 256） */
-    static constexpr int kMinPowTableSize = 64;       /* 有窗口模式的最小幂表长度 */
+    static constexpr int kMissThreshold = 2048; /* 单调用 miss 上限，到达即 break */
+    static constexpr int kHitRateSamplePos = kMissThreshold - 1; /* 命中率采样去重序号 */
+    static constexpr int kSeenGidGenerationMax = 255;   /* uint8 去重代际回绕点（全清回 1） */
+    static constexpr int kPreloadIdentityLimit = 256;   /* 恒等预载上界（原版行为，含 256） */
+    static constexpr int kMinPowTableSize = 64;         /* 有窗口模式的最小幂表长度 */
     static constexpr float kDecayTouchIncrement = 1.0f; /* 每次触达的分值增量 */
-    static constexpr float kMinDecayScore = 1e-3f;   /* no-cap 模式的存活分值阈值 */
-    static constexpr int kPowTableSize = 512;         /* no-cap 模式的幂表长度 */
+    static constexpr float kMinDecayScore = 1e-3f;      /* no-cap 模式的存活分值阈值 */
+    static constexpr int kPowTableSize = 512;           /* no-cap 模式的幂表长度 */
     std::vector<float> mPowTable;
     std::vector<std::pair<float, int>> mRankedBuf;
 
@@ -429,34 +431,33 @@ private:
                               int outputDedup)
     {
         mEvictMode = (evictMode == kAutoEvict)
-                        ? HbmEvictMode::Lru
-                        : ((evictMode == 1) ? HbmEvictMode::Decay : HbmEvictMode::Lru);
+                         ? HbmEvictMode::Lru
+                         : ((evictMode == 1) ? HbmEvictMode::Decay : HbmEvictMode::Lru);
         mWindowPlan = (windowPlan == kAutoPlan)
-                        ? HbmWindowPlan::Uniform
-                        : ((windowPlan == 1) ? HbmWindowPlan::Budget4096
-                                             : ((windowPlan == 2) ? HbmWindowPlan::Budget5120
-                                                                  : HbmWindowPlan::Uniform));
+                          ? HbmWindowPlan::Uniform
+                          : ((windowPlan == 1) ? HbmWindowPlan::Budget4096
+                                               : ((windowPlan == 2) ? HbmWindowPlan::Budget5120
+                                                                    : HbmWindowPlan::Uniform));
         mDecayLambda = (decayLambda > 0.0f && decayLambda <= 1.0f)
-                            ? decayLambda
-                            : gsa_layer_window::kDefaultDecayLambda;
+                           ? decayLambda
+                           : gsa_layer_window::kDefaultDecayLambda;
         mWindowSteps = (windowSteps >= 0) ? windowSteps : gsa_layer_window::kDefaultWindowSteps;
         mOutputDedup = (outputDedup >= 0) ? (outputDedup != 0) : false;
     }
 
     void logInitConfig(Logger& mLogger)
     {
-        mLogger.log(
-            LogLevel::DEBUG,
-            "|HBM Manager Layered| Init layer: %d, evictMode: %s, windowPlan: %s, "
-            "mDramTensorCount: %d, mHbmCapacity: %d, mHbmImmutableSize: %d, "
-            "mWindowSize: %d, mTopkSize: %d, mMaxTotalSlots: %d, lambda: %.2f, steps: %d, "
-            "outputDedup: %d\n",
-            mLayerId, (mEvictMode == HbmEvictMode::Decay) ? "decay" : "lru",
-            (mWindowPlan == HbmWindowPlan::Budget4096)
-                ? "4096"
-                : (mWindowPlan == HbmWindowPlan::Budget5120) ? "5120" : "uniform",
-            mDramTensorCount, mHbmCapacity, mHbmImmutableSize, mWindowSize, mTopkSize,
-            mMaxTotalSlots, mDecayLambda, mWindowSteps, (int)mOutputDedup);
+        mLogger.log(LogLevel::DEBUG,
+                    "|HBM Manager Layered| Init layer: %d, evictMode: %s, windowPlan: %s, "
+                    "mDramTensorCount: %d, mHbmCapacity: %d, mHbmImmutableSize: %d, "
+                    "mWindowSize: %d, mTopkSize: %d, mMaxTotalSlots: %d, lambda: %.2f, steps: %d, "
+                    "outputDedup: %d\n",
+                    mLayerId, (mEvictMode == HbmEvictMode::Decay) ? "decay" : "lru",
+                    (mWindowPlan == HbmWindowPlan::Budget4096)   ? "4096"
+                    : (mWindowPlan == HbmWindowPlan::Budget5120) ? "5120"
+                                                                 : "uniform",
+                    mDramTensorCount, mHbmCapacity, mHbmImmutableSize, mWindowSize, mTopkSize,
+                    mMaxTotalSlots, mDecayLambda, mWindowSteps, (int)mOutputDedup);
     }
 
     /* 按模式分配状态数组；decay 的分数/活跃集/幂表仅在该模式驻留，
@@ -498,8 +499,7 @@ private:
      * 与"从未标记"的初值撞车）。 */
     void bumpGeneration()
     {
-        mAddedSlotGeneration = (mAddedSlotGeneration == UINT32_MAX) ? 1
-                                                                    : mAddedSlotGeneration + 1;
+        mAddedSlotGeneration = (mAddedSlotGeneration == UINT32_MAX) ? 1 : mAddedSlotGeneration + 1;
     }
 
     /* uint8 去重代际推进：到回绕点全量清零重来，杜绝 8bit 空间的陈旧
@@ -552,17 +552,15 @@ private:
         int n = (mWindowSteps > 0) ? std::max(mWindowSteps, kMinPowTableSize) : kPowTableSize;
         mPowTable.resize(n + 1);
         mPowTable[0] = 1.0f;
-        for (int k = 1; k <= n; ++k) {
-            mPowTable[k] = mPowTable[k - 1] * mDecayLambda;
-        }
+        for (int k = 1; k <= n; ++k) { mPowTable[k] = mPowTable[k - 1] * mDecayLambda; }
     }
 
     /* 单 gid 分类入 scratch：去重命中跳过 / pinned gid 换入并出槽 / 负 gid
      * 占序号不出槽 / 常规 gid hit 出槽或 miss 入栈（kMissThreshold 上限
      * break）。hit rate 在去重序号 kHitRateSamplePos 处采样。返回 false =
      * miss 上限到达，停止循环。 */
-    bool classifyTopkGid(int gid, int origIndex, int& dedupedCount,
-                         std::vector<int>& missGlobalIds, Logger& mLogger)
+    bool classifyTopkGid(int gid, int origIndex, int& dedupedCount, std::vector<int>& missGlobalIds,
+                         Logger& mLogger)
     {
         /* 去重开关开启时记录每个去重位置的 gid，供 miss 后的驻留校验使用；
          * 重复 gid 提前返回不占位，同一下标会被下一个新 gid 覆写。 */
@@ -663,9 +661,9 @@ private:
     /* miss 换入与回填：victim 自 LRU 尾部驱逐（跳过 pinned）。missGlobalIds 与
      * missIndices 平行入栈（missIndices[j] 为第 j 个 miss 的去重后序号），回填
      * 直接取 missGlobalIds[j]，无需 deduped 序列二次查表。 */
-    void processTopkMisses(std::vector<int>& topkSlotIds,
-                           std::vector<int>& missGlobalIds, std::vector<int>& missSlots,
-                           const std::vector<int>& missIndices, Logger& mLogger)
+    void processTopkMisses(std::vector<int>& topkSlotIds, std::vector<int>& missGlobalIds,
+                           std::vector<int>& missSlots, const std::vector<int>& missIndices,
+                           Logger& mLogger)
     {
         const int missCount = (int)missGlobalIds.size();
         int loadedCount = 0;
@@ -699,10 +697,9 @@ private:
             mLogger.log(LogLevel::WARNING, "|HBM Manager| Evicting unallocated slot: %d\n",
                         victimSlot);
         } else {
-            mLogger.log(
-                LogLevel::ERROR,
-                "|HBM Manager| Evicting slot with out-of-range gid: %d in slot: %d\n",
-                oldGid, victimSlot);
+            mLogger.log(LogLevel::ERROR,
+                        "|HBM Manager| Evicting slot with out-of-range gid: %d in slot: %d\n",
+                        oldGid, victimSlot);
         }
         if (mEvictMode == HbmEvictMode::Decay) { clearDecay(victimSlot); }
 
@@ -724,16 +721,13 @@ private:
         for (int j = 0; j < loadedCount; ++j) {
             int slot = mGlobalToSlot[missGlobalIds[j]];
             topkSlotIds[missIndices[j]] = slot;
-            if (slot >= 0 && slot < mMaxTotalSlots) {
-                mLru[slot].gen = mAddedSlotGeneration;
-            }
+            if (slot >= 0 && slot < mMaxTotalSlots) { mLru[slot].gen = mAddedSlotGeneration; }
         }
     }
 
     /* 真实 topk 段：输出本调用 hit + 回填 miss 的槽（去重序，负值跳过，
      * raw 槽原样透传）。返回段长。 */
-    int emitRealTopk(const std::vector<int>& topkSlotIds, int dedupedSize,
-                     std::vector<int>& output)
+    int emitRealTopk(const std::vector<int>& topkSlotIds, int dedupedSize, std::vector<int>& output)
     {
         int realTopkSlotNum = 0;
         for (int i = 0; i < dedupedSize; ++i) {
@@ -802,9 +796,7 @@ private:
             collectRankedHistory(histNeeded);
             emitHistorySlots(output);
         }
-        while ((int)output.size() < mHbmImmutableSize) {
-            output.push_back(-1);
-        }
+        while ((int)output.size() < mHbmImmutableSize) { output.push_back(-1); }
         /* 真实 topk 段不做截断（原版 buildTopkOutput 亦不截断）：topkSize
          * 可大于 mHbmImmutableSize（init 仅断言 <= mHbmCapacity），超长输出
          * 由消费端按 mSpaTopkLen 契约拒收；截断反而让消费端拿到残缺的
@@ -849,9 +841,7 @@ private:
         if (slot < 0 || slot >= mMaxTotalSlots) { return; }
         if (mDecayLastStep[slot] >= 0) {
             int age = mDecayStep - mDecayLastStep[slot];
-            if (age > 0) {
-                mDecayScore[slot] *= powLambda(age);
-            }
+            if (age > 0) { mDecayScore[slot] *= powLambda(age); }
         }
         mDecayScore[slot] += kDecayTouchIncrement;
         mDecayLastStep[slot] = mDecayStep;

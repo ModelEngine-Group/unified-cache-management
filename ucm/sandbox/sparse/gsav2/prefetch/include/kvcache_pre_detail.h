@@ -12,9 +12,9 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <torch/torch.h>
 #include <unordered_map>
 #include <vector>
-#include <torch/torch.h>
 #include "ucmstore_v1.h"
 
 namespace ucmprefetch {
@@ -200,8 +200,7 @@ inline int64_t PrefetchTopkReadableNumel(const torch::Tensor& t)
     if (!t.defined()) { return 0; }
     const int64_t elemBytes = static_cast<int64_t>(t.element_size());
     if (elemBytes <= 0) { return 0; }
-    const int64_t storageElems = 
-        static_cast<int64_t>(t.storage().nbytes()) / elemBytes;
+    const int64_t storageElems = static_cast<int64_t>(t.storage().nbytes()) / elemBytes;
     return storageElems - static_cast<int64_t>(t.storage_offset());
 }
 

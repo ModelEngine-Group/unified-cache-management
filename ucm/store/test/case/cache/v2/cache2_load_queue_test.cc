@@ -1078,8 +1078,8 @@ TEST_F(UCCache2LoadQueueTest, DdrLoadHostInaccessibleHitFails)
     ASSERT_TRUE(waiter->WaitFor(kWaitMs));
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
-    EXPECT_TRUE(std::all_of(caller.begin(), caller.end(),
-                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_TRUE(
+        std::all_of(caller.begin(), caller.end(), [](std::byte b) { return b == std::byte{0}; }));
     EXPECT_EQ(buffer_.MarkedFailed(), 0);
     EXPECT_TRUE(FakeStream::d2dScatters.empty());
 }

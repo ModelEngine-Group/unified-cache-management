@@ -480,7 +480,7 @@ TEST_F(IndexerMapTest, SetTokensMapLayerNonZeroReusesExistingManagers)
     engine->SetTokensMap(/*layerID=*/1, reqID, qTopk, remainBlockTable, 2, slots, false);
     EXPECT_EQ(engine->mHBMMangers[reqID].size(), static_cast<size_t>(engine->mTopkIndexerNum));
     EXPECT_EQ(engine->mHBMMangers[reqID][1], nullptr);  // skipped, not built
-    EXPECT_EQ(engine->mPromptLen[reqID], 2);  // only layer-0 sets it
+    EXPECT_EQ(engine->mPromptLen[reqID], 2);            // only layer-0 sets it
 }
 
 // NOTE: The isNeedInit=true -> ProcessTokensMapTopk path on layerNum=1 engines

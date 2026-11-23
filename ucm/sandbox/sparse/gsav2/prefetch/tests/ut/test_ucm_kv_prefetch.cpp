@@ -34,10 +34,10 @@ UC::Detail::BlockId MakeBlockId(uint8_t v)
 }
 
 /* Status codes surfaced through the int64_t / int32_t returns. */
-constexpr int64_t kStatusOk = 0;                      /* Status::OK            */
-constexpr int64_t kStatusError = -1;                 /* Status::Error         */
-constexpr int64_t kStatusInvalidParam = -50000;       /* Status::InvalidParam  */
-constexpr int64_t kStatusNotFound = -50005;           /* Status::NotFound      */
+constexpr int64_t kStatusOk = 0;                /* Status::OK            */
+constexpr int64_t kStatusError = -1;            /* Status::Error         */
+constexpr int64_t kStatusInvalidParam = -50000; /* Status::InvalidParam  */
+constexpr int64_t kStatusNotFound = -50005;     /* Status::NotFound      */
 }  // namespace
 
 TEST(UCMKVPrefetch, StoreInitRejectsNullPointer)

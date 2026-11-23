@@ -59,8 +59,8 @@ BlockId MakeBlockId(uint8_t v)
 }
 
 constexpr int kBlockBytes = 32;  // mIndexerSizeBytesBlock for this fixture
-constexpr int kPhysBlocks = 8;    // mDeviceIndexerLen
-constexpr int kUcmBlocks = 6;     // blockIdx 0..5 are UCM, 6 is non-UCM
+constexpr int kPhysBlocks = 8;   // mDeviceIndexerLen
+constexpr int kUcmBlocks = 6;    // blockIdx 0..5 are UCM, 6 is non-UCM
 
 struct IndexerLoadFixture {
     static constexpr int kLayerNum = 2;
@@ -88,17 +88,16 @@ struct IndexerLoadFixture {
          * is 32 bytes. */
         store->SetHostBufferPayload(kBlockBytes, kBlockBytes);
         auto model = MakeModelInfo(kLayerNum, /*maxBlockLen=*/4096, /*spaTopkLen=*/32,
-                                    /*streamNum=*/1, /*sparseLen=*/8, /*prefetchType=*/1,
-                                    /*dpRank=*/dpRank, /*tpSize=*/1, /*indexerOffload=*/1,
-                                    /*isSfaC8=*/0, /*maxBs=*/2);
+                                   /*streamNum=*/1, /*sparseLen=*/8, /*prefetchType=*/1,
+                                   /*dpRank=*/dpRank, /*tpSize=*/1, /*indexerOffload=*/1,
+                                   /*isSfaC8=*/0, /*maxBs=*/2);
         auto size = MakeSizeInfo(/*blockSize=*/4, /*numHead=*/1, /*kDim=*/2, /*vDim=*/2,
-                                  /*elementSize=*/2);
+                                 /*elementSize=*/2);
         std::vector<int> topkLayerMap(kLayerNum);
         for (int i = 0; i < kLayerNum; ++i) { topkLayerMap[i] = i; }
-        engine = std::make_unique<GSAPrefetchEngineC>(model, size, /*isLog=*/false,
-                                                      /*rank=*/0, /*threadNum=*/1,
-                                                      std::vector<int>{0}, topkLayerMap,
-                                                      logFile->Path());
+        engine = std::make_unique<GSAPrefetchEngineC>(
+            model, size, /*isLog=*/false,
+            /*rank=*/0, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap, logFile->Path());
         engine->SetStoreV1(store.get());
 
         for (int l = 0; l < kLayerNum; ++l) {
@@ -128,8 +127,9 @@ struct IndexerLoadFixture {
         blockIdxs.push_back(kUcmBlocks);
         addrs.push_back(reinterpret_cast<uintptr_t>(slab.data()));
         engine->SetBlocksMap("req1", hashes, /*maxIdx=*/32, blockIdxs, addrs, addrs);
-        engine->SetLastIndexerBlock("req1", std::vector<int>{kUcmBlocks},
-                                    std::vector<uintptr_t>{reinterpret_cast<uintptr_t>(slab.data())});
+        engine->SetLastIndexerBlock(
+            "req1", std::vector<int>{kUcmBlocks},
+            std::vector<uintptr_t>{reinterpret_cast<uintptr_t>(slab.data())});
 
         dsa = torch::zeros({kLayerNum, 8}, torch::dtype(torch::kInt32));
         /* SetIndexerMapForLayer consumes blockTableList in segment order:
@@ -168,7 +168,7 @@ struct IndexerLoadFixture {
         info.reqIdList = {"req1"};
         info.topkLenList = {static_cast<int>(topk.size())};
         auto tensor = torch::zeros({kLayerNum, static_cast<int64_t>(topk.size())},
-                                    torch::dtype(torch::kInt32));
+                                   torch::dtype(torch::kInt32));
         for (int l = 0; l < kLayerNum; ++l) {
             int* row = tensor.data_ptr<int>() + l * static_cast<int>(topk.size());
             for (size_t i = 0; i < topk.size(); ++i) { row[i] = topk[i]; }
@@ -187,8 +187,14 @@ struct IndexerLoadFixture {
         return n;
     }
 
-    const uint8_t* CacheBlock(int layer, int phys) const { return &cache[layer][phys * kBlockBytes]; }
-    const uint8_t* SlabSlice(int layer) const { return &slab[static_cast<size_t>(layer) * kBlockBytes]; }
+    const uint8_t* CacheBlock(int layer, int phys) const
+    {
+        return &cache[layer][phys * kBlockBytes];
+    }
+    const uint8_t* SlabSlice(int layer) const
+    {
+        return &slab[static_cast<size_t>(layer) * kBlockBytes];
+    }
 
     void ExpectBlockFill(int layer, int phys, uint8_t fill) const
     {
@@ -202,8 +208,8 @@ struct IndexerLoadFixture {
     {
         const uint8_t* block = CacheBlock(layer, phys);
         for (int i = 0; i < kBlockBytes; ++i) {
-            EXPECT_EQ(block[i], expected[i]) << "layer " << layer << " phys " << phys
-                                              << " byte " << i;
+            EXPECT_EQ(block[i], expected[i])
+                << "layer " << layer << " phys " << phys << " byte " << i;
         }
     }
 
@@ -250,7 +256,12 @@ struct IndexerLoadFixture {
     void ExpectInitialState() const
     {
         for (int l = 0; l < kLayerNum; ++l) {
-            ExpectDocTable(l, {{0, 0}, {1, 1}, {4, 6}, {5, 7}});
+            ExpectDocTable(l, {
+                                  {0, 0},
+                                  {1, 1},
+                                  {4, 6},
+                                  {5, 7}
+            });
             ExpectFreeList(l, {4, 5});
             ExpectIdxList(l, {0, 1, 7});
             ExpectDsaRow(l, {0, 1, 3});
@@ -282,7 +293,12 @@ TEST(IndexerLoadProcess, DecodeStepAllocatesFreeBlocksAndLoadsCacheBytes)
         f.ExpectDsaRow(l, {0, 6, 7});
         f.ExpectIdxList(l, {0, 2, 6});
         /* Doc table remapped: idx 4/5 evicted, idx 2/6 installed. */
-        f.ExpectDocTable(l, {{0, 0}, {1, 1}, {2, 6}, {6, 7}});
+        f.ExpectDocTable(l, {
+                                {0, 0},
+                                {1, 1},
+                                {2, 6},
+                                {6, 7}
+        });
         EXPECT_EQ(f.engine->mBlocksMap.at("req1")[l].at(6), 2);
         EXPECT_EQ(f.engine->mBlocksMap.at("req1")[l].at(7), 6);
         /* Free list = doc entries not referenced by this step's topk. */
@@ -326,7 +342,12 @@ TEST(IndexerLoadProcess, AllHitStepLeavesCacheAndTablesUntouched)
     for (int l = 0; l < IndexerLoadFixture::kLayerNum; ++l) {
         EXPECT_EQ(0, std::memcmp(f.cache[l].data(), cacheBefore[l].data(), cacheBefore[l].size()))
             << "layer " << l << " cache bytes changed on an all-hit step";
-        f.ExpectDocTable(l, {{0, 0}, {1, 1}, {2, 6}, {6, 7}});
+        f.ExpectDocTable(l, {
+                                {0, 0},
+                                {1, 1},
+                                {2, 6},
+                                {6, 7}
+        });
         f.ExpectFreeList(l, {1});
         f.ExpectIdxList(l, {0, 2, 6});
         f.ExpectDsaRow(l, {0, 6, 7});
@@ -357,7 +378,12 @@ TEST(IndexerLoadProcess, ExhaustedFreeListFallsBackToCachedBlocks)
          * idx 6 (phys 7). The dropped miss idx 4 must not appear. */
         f.ExpectDsaRow(l, {0, 1, 7});
         f.ExpectIdxList(l, {0, 3, 6});
-        f.ExpectDocTable(l, {{0, 0}, {2, 6}, {3, 1}, {6, 7}});
+        f.ExpectDocTable(l, {
+                                {0, 0},
+                                {2, 6},
+                                {3, 1},
+                                {6, 7}
+        });
         /* Free list = doc entries not referenced: idx 2 (phys 6) is the new
          * candidate; the fallback idx 6 is referenced so it stays resident. */
         f.ExpectFreeList(l, {2});

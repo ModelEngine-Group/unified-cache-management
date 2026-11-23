@@ -61,9 +61,13 @@ protected:
     }
 
     static torch::Tensor Make2DTensor(int streamNum, int tokens, int dim)
-    { return torch::zeros({streamNum, tokens, dim}, torch::dtype(torch::kFloat32)); }
+    {
+        return torch::zeros({streamNum, tokens, dim}, torch::dtype(torch::kFloat32));
+    }
     static torch::Tensor Make1DIndexTensor(int streamNum, int tokens)
-    { return torch::zeros({streamNum, tokens}, torch::dtype(torch::kInt64)); }
+    {
+        return torch::zeros({streamNum, tokens}, torch::dtype(torch::kInt64));
+    }
 
     /* Full setup: engine + SetKvBuffer + init'd HBMManagers + tensors. */
     void SetupFullEngine(int layerNum = 1, int isSfaC8 = 0)
@@ -268,7 +272,8 @@ TEST_F(PrefetchH2DTest, ProcessPrefetchRequestProcessesTopkAndWritesShm)
     }
     TaskInfo taskInfo{};
     taskInfo.reqIdList = {reqID};
-    taskInfo.topkLenList = {static_cast<int>(engine->mSpaTopkLen)};  // == mSpaTopkLen -> size check passes
+    taskInfo.topkLenList = {
+        static_cast<int>(engine->mSpaTopkLen)};  // == mSpaTopkLen -> size check passes
     taskInfo.topkList = topkList;
     PrefetchShmLayout layout{};
     layout.versionSize = 4;

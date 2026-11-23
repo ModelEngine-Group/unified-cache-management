@@ -25,8 +25,8 @@
 
 using ::TaskInfo;
 using ucmprefetch::GSAPrefetchEngineC;
-using ucmprefetch::PrefetchShmLayout;
 using ucmprefetch::kPrefetchSyncDefaultTimeoutMs;
+using ucmprefetch::PrefetchShmLayout;
 using ucmprefetch_test::CleanupShmFor;
 using ucmprefetch_test::MakeModelInfo;
 using ucmprefetch_test::MakeSizeInfo;
@@ -48,8 +48,7 @@ public:
 TEST(PrefetchSyncTimeoutEnv, DefaultIs30SecondsWhenEnvUnset)
 {
     EnvTimeoutGuard guard;
-    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(),
-              kPrefetchSyncDefaultTimeoutMs * 1000ULL);
+    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(), kPrefetchSyncDefaultTimeoutMs * 1000ULL);
     EXPECT_EQ(kPrefetchSyncDefaultTimeoutMs, 30000ULL);
 }
 
@@ -64,19 +63,16 @@ TEST(PrefetchSyncTimeoutEnv, NonNumericFallsBackToDefault)
 {
     EnvTimeoutGuard guard;
     setenv("UCM_PREFETCH_SYNC_TIMEOUT_MS", "not-a-number", 1);
-    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(),
-              kPrefetchSyncDefaultTimeoutMs * 1000ULL);
+    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(), kPrefetchSyncDefaultTimeoutMs * 1000ULL);
 }
 
 TEST(PrefetchSyncTimeoutEnv, NonPositiveFallsBackToDefault)
 {
     EnvTimeoutGuard guard;
     setenv("UCM_PREFETCH_SYNC_TIMEOUT_MS", "0", 1);
-    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(),
-              kPrefetchSyncDefaultTimeoutMs * 1000ULL);
+    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(), kPrefetchSyncDefaultTimeoutMs * 1000ULL);
     setenv("UCM_PREFETCH_SYNC_TIMEOUT_MS", "-5", 1);
-    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(),
-              kPrefetchSyncDefaultTimeoutMs * 1000ULL);
+    EXPECT_EQ(ucmprefetch::ResolvePrefetchSyncTimeoutUs(), kPrefetchSyncDefaultTimeoutMs * 1000ULL);
 }
 
 /* ---- SyncPrefetchResultsFromRank0 等待环 ---- */
@@ -118,12 +114,10 @@ protected:
         std::vector<int> topkLayerMap{0};
         rank0Engine = std::make_unique<GSAPrefetchEngineC>(
             model, size, /*isLog=*/false,
-            /*rank=*/0, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap,
-            logFile->Path());
+            /*rank=*/0, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap, logFile->Path());
         rank1Engine = std::make_unique<GSAPrefetchEngineC>(
             model, size, /*isLog=*/false,
-            /*rank=*/1, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap,
-            logFile->Path());
+            /*rank=*/1, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap, logFile->Path());
         rank0Engine->SetStoreV1(store.get());
         rank1Engine->SetStoreV1(store.get());
         auto kHost = torch::zeros({1, 64, 4}, torch::kFloat32);
@@ -162,8 +156,7 @@ TEST_F(SyncPrefetchResultsTest, VersionNeverPublishedTimesOutAndAborts)
     __atomic_store_n(&versionBuf, neverExpected, __ATOMIC_RELEASE);
     TaskInfo taskInfo{};
     PrefetchShmLayout layout{};
-    EXPECT_DEATH(rank1Engine->SyncPrefetchResultsFromRank0(taskInfo, layout, &versionBuf),
-                 "");
+    EXPECT_DEATH(rank1Engine->SyncPrefetchResultsFromRank0(taskInfo, layout, &versionBuf), "");
 }
 
 }  // namespace

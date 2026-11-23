@@ -9,10 +9,10 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "kvcache_pre_detail.h"
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "type/types.h"
-#include "kvcache_pre_detail.h"
 #include "ucmstore_v1.h"
 
 namespace ucmprefetch_test {

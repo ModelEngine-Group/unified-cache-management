@@ -52,7 +52,8 @@ int32_t CopyTrans(void** host_ptrs_addr, void** device_ptrs_addr, size_t size_by
     return 0;
 }
 
-int32_t ObtainStream(void** outputStream, void** outputContext, int32_t deviceID, int32_t mStreamNum)
+int32_t ObtainStream(void** outputStream, void** outputContext, int32_t deviceID,
+                     int32_t mStreamNum)
 {
     auto ret = aclrtSetDevice(deviceID);
     if (ret != ACL_SUCCESS) {

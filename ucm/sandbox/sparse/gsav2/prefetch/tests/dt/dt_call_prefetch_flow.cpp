@@ -109,17 +109,16 @@ struct FlowFixture {
         CleanupShmFor(dpRank);
         logFile = std::make_unique<TempLogFile>();
         store = std::make_unique<MockStoreV1>();
-        auto model = MakeModelInfo(kLayerNum, /*maxBlockLen=*/4096, kSpaTopkLen,
-                                    kStreamNum, kSparseLen, /*prefetchType=*/1, dpRank,
-                                    /*tpSize=*/1, /*indexerOffload=*/0, /*isSfaC8=*/0,
-                                    /*maxBs=*/2);
+        auto model = MakeModelInfo(kLayerNum, /*maxBlockLen=*/4096, kSpaTopkLen, kStreamNum,
+                                   kSparseLen, /*prefetchType=*/1, dpRank,
+                                   /*tpSize=*/1, /*indexerOffload=*/0, /*isSfaC8=*/0,
+                                   /*maxBs=*/2);
         auto size = MakeSizeInfo(kBlockSize, kNumHead, kKDim, kVDim, kElemSize);
         std::vector<int> topkLayerMap(kLayerNum);
         for (int i = 0; i < kLayerNum; ++i) { topkLayerMap[i] = i; }
-        engine = std::make_unique<GSAPrefetchEngineC>(model, size, /*isLog=*/false,
-                                                      /*rank=*/0, /*threadNum=*/1,
-                                                      std::vector<int>{0}, topkLayerMap,
-                                                      logFile->Path());
+        engine = std::make_unique<GSAPrefetchEngineC>(
+            model, size, /*isLog=*/false,
+            /*rank=*/0, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap, logFile->Path());
         engine->SetStoreV1(store.get());
 
         /* HBM KV cache tensor: 64 blocks * 16 bytes; last-chunk staging:
@@ -127,16 +126,18 @@ struct FlowFixture {
          * the last-chunk pointers used by LastChunkMove. */
         auto kCaches = torch::zeros({kKVHBMBlocks, kBlockSize, kKDim}, torch::dtype(torch::kInt16));
         auto vCaches = torch::zeros({kKVHBMBlocks, kBlockSize, kVDim}, torch::dtype(torch::kInt16));
-        auto lastChunkK = torch::zeros({kSparseLen / kBlockSize, kBlockSize, kKDim},
-                                       torch::dtype(torch::kInt16));
-        auto lastChunkV = torch::zeros({kSparseLen / kBlockSize, kBlockSize, kVDim},
-                                       torch::dtype(torch::kInt16));
+        auto lastChunkK =
+            torch::zeros({kSparseLen / kBlockSize, kBlockSize, kKDim}, torch::dtype(torch::kInt16));
+        auto lastChunkV =
+            torch::zeros({kSparseLen / kBlockSize, kBlockSize, kVDim}, torch::dtype(torch::kInt16));
         engine->SetKvTensor(kCaches, vCaches, lastChunkK, lastChunkV, /*layerID=*/0);
 
         /* H2D host/device buffers + KVPack shared staging (real POSIX shm).
          * 64 tokens * 2 dim * 4B = 512B per stream, staging window 512B. */
-        auto kHost = torch::zeros({kStreamNum, kBufferTokens, kKDim}, torch::dtype(torch::kFloat32));
-        auto vHost = torch::zeros({kStreamNum, kBufferTokens, kVDim}, torch::dtype(torch::kFloat32));
+        auto kHost =
+            torch::zeros({kStreamNum, kBufferTokens, kKDim}, torch::dtype(torch::kFloat32));
+        auto vHost =
+            torch::zeros({kStreamNum, kBufferTokens, kVDim}, torch::dtype(torch::kFloat32));
         auto kDev = torch::zeros({kStreamNum, kBufferTokens, kKDim}, torch::dtype(torch::kFloat32));
         auto vDev = torch::zeros({kStreamNum, kBufferTokens, kVDim}, torch::dtype(torch::kFloat32));
         auto idxHost = torch::zeros({kStreamNum, kBufferTokens}, torch::dtype(torch::kInt64));
@@ -165,8 +166,8 @@ struct FlowFixture {
      * via SetTokensMap (which also runs LastChunkMove). */
     void SetupRequest(const std::string& reqID, const std::vector<int>& initTopk)
     {
-        auto topIndices = torch::zeros({engine->mTopkIndexerNum, kSpaTopkLen},
-                                       torch::dtype(torch::kInt32));
+        auto topIndices =
+            torch::zeros({engine->mTopkIndexerNum, kSpaTopkLen}, torch::dtype(torch::kInt32));
         engine->SetTopkIndices(reqID, topIndices);
 
         std::vector<BlockId> hashes;
@@ -188,8 +189,8 @@ struct FlowFixture {
                                   torch::dtype(torch::kInt32));
         std::copy(initTopk.begin(), initTopk.end(), qTopk.data_ptr<int>());
         std::vector<int> slots;
-        engine->SetTokensMap(/*layerID=*/0, reqID, qTopk, blockTable, kDramTensorCount,
-                             slots, /*isNeedInit=*/true);
+        engine->SetTokensMap(/*layerID=*/0, reqID, qTopk, blockTable, kDramTensorCount, slots,
+                             /*isNeedInit=*/true);
     }
 
     /* TaskInfo shaped like SubmitTask builds it: topkList is
@@ -198,8 +199,8 @@ struct FlowFixture {
                               const std::vector<std::vector<int>>& topks)
     {
         const int64_t bs = static_cast<int64_t>(reqIds.size());
-        torch::Tensor topkList = torch::zeros({engine->mTopkIndexerNum, bs, kSpaTopkLen},
-                                              torch::dtype(torch::kInt32));
+        torch::Tensor topkList =
+            torch::zeros({engine->mTopkIndexerNum, bs, kSpaTopkLen}, torch::dtype(torch::kInt32));
         std::vector<int> lens;
         for (size_t i = 0; i < reqIds.size(); ++i) {
             lens.push_back(static_cast<int>(topks[i].size()));
@@ -291,10 +292,10 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
      * shardIdx+1 / shardIdx+2) and H2D-copied into the HBM KV cache tensor
      * at blockTable offsets {10,20,30,40}. */
     ASSERT_EQ(f.LoadOnTokenCount(), 2u);  // K leg + V leg
-    const auto* lastChunkK = reinterpret_cast<const uint8_t*>(
-        f.engine->mLastCHunkKBuffer[0].data_ptr());
-    const auto* lastChunkV = reinterpret_cast<const uint8_t*>(
-        f.engine->mLastCHunkVBuffer[0].data_ptr());
+    const auto* lastChunkK =
+        reinterpret_cast<const uint8_t*>(f.engine->mLastCHunkKBuffer[0].data_ptr());
+    const auto* lastChunkV =
+        reinterpret_cast<const uint8_t*>(f.engine->mLastCHunkVBuffer[0].data_ptr());
     for (int block = 0; block < 4; ++block) {
         for (int b = 0; b < 16; ++b) {
             EXPECT_EQ(lastChunkK[block * 16 + b], 1u + static_cast<uint8_t>(block))
@@ -303,10 +304,8 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
                 << "last-chunk V block " << block << " byte " << b;
         }
     }
-    const auto* kCache = reinterpret_cast<const uint8_t*>(
-        f.engine->mKcacheTensor[0].data_ptr());
-    const auto* vCache = reinterpret_cast<const uint8_t*>(
-        f.engine->mVcacheTensor[0].data_ptr());
+    const auto* kCache = reinterpret_cast<const uint8_t*>(f.engine->mKcacheTensor[0].data_ptr());
+    const auto* vCache = reinterpret_cast<const uint8_t*>(f.engine->mVcacheTensor[0].data_ptr());
     for (int i = 0; i < 4; ++i) {
         const size_t off = static_cast<size_t>(f.blockTable[i]) * 16;
         EXPECT_EQ(kCache[off], 1u + static_cast<uint8_t>(i))
@@ -318,7 +317,11 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
     /* ================= decode step 1: mixed hit / UCM miss / non-UCM miss */
     const size_t loadsBefore = f.LoadOnTokenCount();
     const int scatterBefore = acl_stub::Stub().inplaceScatterCount.load();
-    TaskInfo step1 = f.MakeFlowTaskInfo({"req1"}, {{0, 17, 18, 29}});
+    TaskInfo step1 = f.MakeFlowTaskInfo(
+        {
+            "req1"
+    },
+        {{0, 17, 18, 29}});
     f.engine->CallPrefetchProcess(step1, f.threadInfo);
 
     /* -- HBM manager bookkeeping: hit + misses + LRU eviction -- */
@@ -326,14 +329,14 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
     EXPECT_TRUE(VecEq(f.engine->mLoadSlot["req1"][0], {15, 14, 13}));
     {
         HBMManagerLayered* mgr = f.Manager("req1");
-        EXPECT_EQ(mgr->getSlotForGlobal(0), 0);   // hit token stayed resident
-        EXPECT_EQ(mgr->getSlotForGlobal(17), 15); // misses landed at victims
+        EXPECT_EQ(mgr->getSlotForGlobal(0), 0);    // hit token stayed resident
+        EXPECT_EQ(mgr->getSlotForGlobal(17), 15);  // misses landed at victims
         EXPECT_EQ(mgr->getSlotForGlobal(18), 14);
         EXPECT_EQ(mgr->getSlotForGlobal(29), 13);
-        EXPECT_EQ(mgr->getSlotForGlobal(15), -1); // evicted LRU tail gids
+        EXPECT_EQ(mgr->getSlotForGlobal(15), -1);  // evicted LRU tail gids
         EXPECT_EQ(mgr->getSlotForGlobal(14), -1);
         EXPECT_EQ(mgr->getSlotForGlobal(13), -1);
-        EXPECT_EQ(mgr->getSlotForGlobal(12), 12); // untouched so far
+        EXPECT_EQ(mgr->getSlotForGlobal(12), 12);  // untouched so far
         EXPECT_TRUE(mgr->validateLruChain());
         EXPECT_TRUE(mgr->validateMapping());
     }
@@ -347,8 +350,8 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
     ASSERT_NE(vLoad, nullptr);
     ASSERT_EQ(kLoad->task.size(), 1u);  // single UCM block (block 4)
     ASSERT_EQ(kLoad->filters.size(), 1u);
-    EXPECT_EQ(kLoad->task[0].addrs[0], reinterpret_cast<void*>(
-        static_cast<uintptr_t>(f.engine->mSharedKBufferHostPtr[0])));
+    EXPECT_EQ(kLoad->task[0].addrs[0],
+              reinterpret_cast<void*>(static_cast<uintptr_t>(f.engine->mSharedKBufferHostPtr[0])));
     ASSERT_EQ(kLoad->filters[0].ranges.size(), kStoreTensorCount);
     ASSERT_EQ(kLoad->filters[0].ranges[kKTensorIndex].size(), 2u);
     /* tokens 17,18 -> in-block offsets 1,2 -> byte offsets 4,8; dst offsets
@@ -360,8 +363,8 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
     EXPECT_EQ(kLoad->filters[0].ranges[kKTensorIndex][1].length, 4u);
     EXPECT_EQ(kLoad->filters[0].ranges[kKTensorIndex][1].dstOffset, 4u);
     ASSERT_EQ(vLoad->task.size(), 1u);
-    EXPECT_EQ(vLoad->task[0].addrs[0], reinterpret_cast<void*>(
-        static_cast<uintptr_t>(f.engine->mSharedVBufferHostPtr[0])));
+    EXPECT_EQ(vLoad->task[0].addrs[0],
+              reinterpret_cast<void*>(static_cast<uintptr_t>(f.engine->mSharedVBufferHostPtr[0])));
     ASSERT_EQ(vLoad->filters[0].ranges[kVTensorIndex].size(), 2u);
 
     /* -- merge output: mLoadNum + hbmSlotIndex published to load-index
@@ -383,10 +386,8 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
         const uint8_t expectV = (i < 8) ? 0x02 : 0x88;
         EXPECT_EQ(f.SharedK()[i], expectK) << "staging K byte " << i;
         EXPECT_EQ(f.SharedV()[i], expectV) << "staging V byte " << i;
-        EXPECT_EQ(f.TensorBytes(f.engine->mKBufferHost[0])[i], expectK)
-            << "H2D K host byte " << i;
-        EXPECT_EQ(f.TensorBytes(f.engine->mVBufferHost[0])[i], expectV)
-            << "H2D V host byte " << i;
+        EXPECT_EQ(f.TensorBytes(f.engine->mKBufferHost[0])[i], expectK) << "H2D K host byte " << i;
+        EXPECT_EQ(f.TensorBytes(f.engine->mVBufferHost[0])[i], expectV) << "H2D V host byte " << i;
         EXPECT_EQ(f.TensorBytes(f.engine->mKBufferDevice[0])[i], expectK)
             << "H2D K device byte " << i;
         EXPECT_EQ(f.TensorBytes(f.engine->mVBufferDevice[0])[i], expectV)
@@ -397,7 +398,11 @@ TEST(PrefetchFlowDt, ThreeDecodeStepsLoadHitEvictCorrectness)
 
     /* ================= decode step 2: all hits -> zero loads ============ */
     const size_t loadsAfterStep1 = f.LoadOnTokenCount();
-    TaskInfo step2 = f.MakeFlowTaskInfo({"req1"}, {{17, 18}});
+    TaskInfo step2 = f.MakeFlowTaskInfo(
+        {
+            "req1"
+    },
+        {{17, 18}});
     f.engine->CallPrefetchProcess(step2, f.threadInfo);
 
     EXPECT_EQ(f.LoadOnTokenCount(), loadsAfterStep1);  // nothing loaded
@@ -462,8 +467,11 @@ TEST(PrefetchFlowDt, TwoRequestBatchSharesOneTaskPerLayerLeg)
     const size_t loadsBefore = f.LoadOnTokenCount();
     ASSERT_EQ(loadsBefore, 4u);  // LastChunkMove K+V per request
 
-    TaskInfo batch = f.MakeFlowTaskInfo({"reqA", "reqB"},
-                                        {{0, 17, 18, 29}, {0, 19, 21, 23}});
+    TaskInfo batch = f.MakeFlowTaskInfo(
+        {
+            "reqA", "reqB"
+    },
+        {{0, 17, 18, 29}, {0, 19, 21, 23}});
     f.engine->CallPrefetchProcess(batch, f.threadInfo);
 
     /* -- per-request manager bookkeeping stayed independent -- */
@@ -501,8 +509,7 @@ TEST(PrefetchFlowDt, TwoRequestBatchSharesOneTaskPerLayerLeg)
     ASSERT_EQ(kLoad->filters.size(), 3u);
     const uintptr_t kBase = static_cast<uintptr_t>(f.engine->mSharedKBufferHostPtr[0]);
     const uintptr_t vBase = static_cast<uintptr_t>(f.engine->mSharedVBufferHostPtr[0]);
-    EXPECT_EQ(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(kLoad->task[0].addrs[0])),
-              kBase);
+    EXPECT_EQ(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(kLoad->task[0].addrs[0])), kBase);
     EXPECT_EQ(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(kLoad->task[1].addrs[0])),
               kBase + 3 * FlowFixture::kTokenBytes);
     EXPECT_EQ(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(kLoad->task[2].addrs[0])),

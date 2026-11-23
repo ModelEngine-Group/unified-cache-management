@@ -55,9 +55,13 @@ protected:
 
     /* Build tensors shaped [streamNum, tokens, dim] so [streamIdx] indexing works. */
     static torch::Tensor Make2DTensor(int streamNum, int tokens, int dim)
-    { return torch::zeros({streamNum, tokens, dim}, torch::dtype(torch::kFloat32)); }
+    {
+        return torch::zeros({streamNum, tokens, dim}, torch::dtype(torch::kFloat32));
+    }
     static torch::Tensor Make1DIndexTensor(int streamNum, int tokens)
-    { return torch::zeros({streamNum, tokens}, torch::dtype(torch::kInt64)); }
+    {
+        return torch::zeros({streamNum, tokens}, torch::dtype(torch::kInt64));
+    }
 };
 
 }  // namespace

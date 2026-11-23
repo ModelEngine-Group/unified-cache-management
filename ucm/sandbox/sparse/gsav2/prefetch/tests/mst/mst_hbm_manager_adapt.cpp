@@ -127,10 +127,10 @@ void RunBoth(HBMManager& ref, HBMManagerLayered& adapt, const std::vector<int>& 
 TEST(HBMAdaptEquivalence, InitStateMatchesWithDefaultParams)
 {
     const Shape shapes[] = {
-        {1024, 256, 128, 64, 512, true},
+        {1024, 256, 128, 64, 512, true },
         {1024, 256, 128, 64, 512, false},
-        {8, 4, 2, 2, 8, true},
-        {64, 32, 16, 16, 48, false},
+        {8,    4,   2,   2,  8,   true },
+        {64,   32,  16,  16, 48,  false},
     };
     for (const auto& s : shapes) {
         HBMManager ref;
@@ -238,9 +238,9 @@ TEST(HBMAdaptEquivalence, HitRateSamplingMatchesPast2047)
 TEST(HBMAdaptEquivalence, RandomFuzzMatchesAcrossShapes)
 {
     const Shape shapes[] = {
-        {8, 4, 2, 2, 8, true},
-        {1024, 256, 128, 64, 512, true},
-        {64, 32, 16, 16, 48, false},
+        {8,    4,   2,   2,  8,   true },
+        {1024, 256, 128, 64, 512, true },
+        {64,   32,  16,  16, 48,  false},
     };
     for (const auto& s : shapes) {
         HBMManager ref;
@@ -251,16 +251,15 @@ TEST(HBMAdaptEquivalence, RandomFuzzMatchesAcrossShapes)
         std::mt19937 rng(98765 + s.dram);
         /* gid domain spans negatives, regular, in-range pinned and
          * out-of-range pinned so every classify branch is exercised. */
-        std::uniform_int_distribution<int> gidDist(-3,
-                                                   s.dram + (s.maxTotal - s.cap) + 3);
+        std::uniform_int_distribution<int> gidDist(-3, s.dram + (s.maxTotal - s.cap) + 3);
         std::uniform_int_distribution<int> lenDist(0, 70);
         for (int iter = 0; iter < 200; ++iter) {
             std::vector<int> topk;
             const int n = lenDist(rng);
             topk.reserve(n);
             for (int i = 0; i < n; ++i) { topk.push_back(gidDist(rng)); }
-            ASSERT_NO_FATAL_FAILURE(RunBoth(ref, adapt, topk)) << "shape dram=" << s.dram
-                                                               << " iter " << iter;
+            ASSERT_NO_FATAL_FAILURE(RunBoth(ref, adapt, topk))
+                << "shape dram=" << s.dram << " iter " << iter;
         }
     }
 }
@@ -474,7 +473,7 @@ TEST(HBMAdaptDedup, FuzzNoDuplicatesWhenEnabled)
                 if (v == -1) { continue; }
                 const bool dup = std::find(seen.begin(), seen.end(), v) != seen.end();
                 ASSERT_FALSE(dup) << "mode " << mode << " iter " << iter << ": slot " << v
-                                 << " duplicated";
+                                  << " duplicated";
                 seen.push_back(v);
             }
         }
@@ -700,7 +699,6 @@ TEST(HBMAdaptDecay, RealTopkNeverTruncated)
  * adapt output (duplicates included) matches the original byte-for-byte. */
 TEST(HBMAdaptEquivalence, OutputDuplicateSemanticsMatchOriginal)
 {
-
     /* ---- Case B: deterministic in-call eviction rotation ---- */
     {
         /* dram 4, cap 2, preload: identities 0..1.  topk {0, 2, 3}: gid 0
@@ -922,9 +920,9 @@ public:
 
 private:
     /* 与头文件一致的字面常量（金标准必须镜像这些行为契约值）。 */
-    static constexpr int kMissLimit = 2048;       /* 单调用 miss 上限，到达即 break */
-    static constexpr int kHitRatePos = kMissLimit - 1;  /* 命中率采样去重序号 */
-    static constexpr int kPreloadIdentityLimit = 256;   /* 恒等预载上界（含 256） */
+    static constexpr int kMissLimit = 2048;            /* 单调用 miss 上限，到达即 break */
+    static constexpr int kHitRatePos = kMissLimit - 1; /* 命中率采样去重序号 */
+    static constexpr int kPreloadIdentityLimit = 256;  /* 恒等预载上界（含 256） */
 
     /* 单调用 scratch：各去重位置的 gid / 槽值与 miss 回填序号。 */
     struct CallCtx {
@@ -988,9 +986,7 @@ private:
                 ++c.misses;
                 if (c.misses == kMissLimit) { break; }
             }
-            if (c.deduped == kHitRatePos) {
-                hitRate = 1.0f - c.misses * 1.0f / (float)kMissLimit;
-            }
+            if (c.deduped == kHitRatePos) { hitRate = 1.0f - c.misses * 1.0f / (float)kMissLimit; }
             ++c.deduped;
         }
     }
@@ -1001,7 +997,10 @@ private:
         for (size_t i = 0; i < missGids.size(); ++i) {
             int victim = -1;
             for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-                if (pinned[*it] == 0) { victim = *it; break; }
+                if (pinned[*it] == 0) {
+                    victim = *it;
+                    break;
+                }
             }
             if (victim == -1) { continue; }
             const int oldGid = slotToGlobal[victim];
@@ -1136,7 +1135,7 @@ void CompareGoldenState(const HBMManagerLayered& adapt, const GoldenHbm& golden)
  * outAdapt / missSlotsAdapt (optional) receive adapt's results for
  * exact-value assertions. */
 void RunGolden(HBMManagerLayered& adapt, GoldenHbm& golden, const std::vector<int>& topk,
-              std::vector<int>* outAdapt = nullptr, std::vector<int>* missSlotsAdapt = nullptr)
+               std::vector<int>* outAdapt = nullptr, std::vector<int>* missSlotsAdapt = nullptr)
 {
     std::vector<int> outA, outG, missGidA, missGidG, missSlotA, missSlotG;
     adapt.processTopkWithDebug(topk, outA, missGidA, missSlotA, kNullLogger);
@@ -1189,11 +1188,11 @@ TEST(HBMAdaptGolden, LruScriptedMixMatchesGolden)
     golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, /*decay=*/false,
                 /*steps=*/20, /*lambda=*/0.85f, /*window=*/s.immu, /*dedup=*/false);
     const std::vector<std::vector<int>> calls = {
-        {0, 1, 2},                /* preloaded identity hits */
-        {5000, 5001, 5002},       /* valid pinned gids -> slots 1928..1930 */
-        {60000, 60000, 3},        /* raw out-of-range pin, repeat, hit */
-        {-1, 4095, 4096},         /* negative, reverse-preloaded hit, first pinned gid */
-        {0, 5000, 60000, -5, 300} /* mixed; 300 is not preloaded -> miss */
+        {0, 1, 2}, /* preloaded identity hits */
+        {5000, 5001, 5002}, /* valid pinned gids -> slots 1928..1930 */
+        {60000, 60000, 3}, /* raw out-of-range pin, repeat, hit */
+        {-1, 4095, 4096}, /* negative, reverse-preloaded hit, first pinned gid */
+        {0, 5000, 60000, -5, 300}  /* mixed; 300 is not preloaded -> miss */
     };
     for (const auto& topk : calls) { RunGolden(adapt, golden, topk); }
 }
@@ -1202,9 +1201,11 @@ TEST(HBMAdaptGolden, LruScriptedMixMatchesGolden)
  * adapt / golden on output, missGlobalIds and missSlots per call. */
 TEST(HBMAdaptGolden, LruFuzzMatchesGoldenAndOriginal)
 {
-    const Shape shapes[] = {{64, 32, 16, 8, 48, true},
-                            {256, 64, 32, 16, 128, false},
-                            {4, 2, 2, 2, 4, true}};
+    const Shape shapes[] = {
+        {64,  32, 16, 8,  48,  true },
+        {256, 64, 32, 16, 128, false},
+        {4,   2,  2,  2,  4,   true }
+    };
     for (const auto& s : shapes) {
         HBMManager ref;
         HBMManagerLayered adapt;
@@ -1249,10 +1250,10 @@ TEST(HBMAdaptGolden, LruSingleCapacitySlotRepeatedEvictions)
     golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, /*decay=*/false, /*steps=*/20,
                 /*lambda=*/0.85f, /*window=*/s.immu, /*dedup=*/false);
     const std::vector<std::vector<int>> calls = {
-        {1, 2, 3},           /* 3 consecutive misses: the only slot evicted+reloaded 3x */
-        {4, 5, 2},           /* new pins at slots 1/2 + a miss */
-        {0, 3, 5, 6, -1},    /* miss + pin re-touch + new pin + negative */
-        {7, 7, 2, 0, 3},     /* raw out-of-range pin repeated + regular mix */
+        {1, 2, 3}, /* 3 consecutive misses: the only slot evicted+reloaded 3x */
+        {4, 5, 2}, /* new pins at slots 1/2 + a miss */
+        {0, 3, 5, 6, -1}, /* miss + pin re-touch + new pin + negative */
+        {7, 7, 2, 0, 3}, /* raw out-of-range pin repeated + regular mix */
         {2, 1, 0, 3},
     };
     for (const auto& topk : calls) {
@@ -1283,8 +1284,7 @@ TEST(HBMAdaptGolden, LruMissThresholdAndHitRateMatchGolden)
         GoldenHbm golden;
         const Shape s = {16384, 1024, 512, 64, 4096, true};
         InitAdapt(adapt, s);
-        golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, false, 20, 0.85f, s.immu,
-                    false);
+        golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, false, 20, 0.85f, s.immu, false);
         std::vector<int> oA, oG, mA, mG, sA, sG;
         adapt.processTopkWithDebug(topk, oA, mA, sA, kNullLogger);
         golden.process(topk, oG, mG, sG);
@@ -1301,8 +1301,7 @@ TEST(HBMAdaptGolden, LruMissThresholdAndHitRateMatchGolden)
         GoldenHbm golden;
         const Shape s = {16384, 1024, 512, 64, 4096, false};
         InitAdapt(adapt, s);
-        golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, false, 20, 0.85f, s.immu,
-                    false);
+        golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, false, 20, 0.85f, s.immu, false);
         std::vector<int> oA, oG, mA, mG, sA, sG;
         adapt.processTopkWithDebug(topk, oA, mA, sA, kNullLogger);
         golden.process(topk, oG, mG, sG);
@@ -1337,9 +1336,18 @@ TEST(HBMAdaptGolden, DecayScriptedRankingMatchesGolden)
      *  c2 {3}:     history = age-1 ties {0,1,2}, slot asc
      *  c3 {3}:     repeat touch keeps the ranking
      *  c4 {0}:     slot 3 (score 0.85+1) outranks age-3 slots (eff 0.85^3) */
-    const std::vector<std::vector<int>> calls = {{0, 1, 2}, {3}, {3}, {0}};
+    const std::vector<std::vector<int>> calls = {
+        {0, 1, 2},
+        {3},
+        {3},
+        {0}
+    };
     const std::vector<std::vector<int>> prefixes = {
-        {0, 1, 2}, {3, 0, 1, 2}, {3, 0, 1, 2}, {0, 3, 1, 2}};
+        {0, 1, 2},
+        {3, 0, 1, 2},
+        {3, 0, 1, 2},
+        {0, 3, 1, 2}
+    };
     std::vector<int> out;
     for (size_t c = 0; c < calls.size(); ++c) {
         RunGolden(adapt, golden, calls[c], &out);
@@ -1355,14 +1363,17 @@ TEST(HBMAdaptGolden, DecayScriptedRankingMatchesGolden)
 /* Decay mode default config, fuzz: adapt == golden on every call. */
 TEST(HBMAdaptGolden, DecayFuzzMatchesGolden)
 {
-    const Shape shapes[] = {{64, 32, 16, 8, 48, true}, {256, 64, 32, 16, 128, false}};
+    const Shape shapes[] = {
+        {64,  32, 16, 8,  48,  true },
+        {256, 64, 32, 16, 128, false}
+    };
     for (const auto& f : shapes) {
         HBMManagerLayered a;
         GoldenHbm g;
         a.init(f.dram, f.cap, f.immu, f.topk, kNullLogger, f.preload, f.maxTotal, -1,
                /*evictMode=*/1);
-        g.init(f.dram, f.cap, f.immu, f.maxTotal, f.preload, true, 20, 0.85f,
-               a.getWindowSize(), false);
+        g.init(f.dram, f.cap, f.immu, f.maxTotal, f.preload, true, 20, 0.85f, a.getWindowSize(),
+               false);
         std::mt19937 rng(6789 + f.dram);
         std::uniform_int_distribution<int> gidDist(-2, f.dram + (f.maxTotal - f.cap) + 3);
         std::uniform_int_distribution<int> lenDist(0, 40);
@@ -1531,13 +1542,16 @@ TEST(HBMAdaptGolden, DedupOnScriptedMatchesGolden)
  * structure in both evict modes. */
 TEST(HBMAdaptGolden, DedupOnFuzzNoDuplicatesMatchesGolden)
 {
-    const Shape shapes[] = {{4, 2, 2, 2, 4, true}, {64, 32, 16, 8, 48, false}};
+    const Shape shapes[] = {
+        {4,  2,  2,  2, 4,  true },
+        {64, 32, 16, 8, 48, false}
+    };
     for (int mode = 0; mode < 2; ++mode) {
         for (const auto& s : shapes) {
             HBMManagerLayered adapt;
             GoldenHbm golden;
-            adapt.init(s.dram, s.cap, s.immu, s.topk, kNullLogger, s.preload, s.maxTotal, -1,
-                       mode, HBMManagerLayered::kAutoPlan, HBMManagerLayered::kAutoLambda,
+            adapt.init(s.dram, s.cap, s.immu, s.topk, kNullLogger, s.preload, s.maxTotal, -1, mode,
+                       HBMManagerLayered::kAutoPlan, HBMManagerLayered::kAutoLambda,
                        HBMManagerLayered::kAutoSteps, /*outputDedup=*/1);
             golden.init(s.dram, s.cap, s.immu, s.maxTotal, s.preload, mode == 1, 20, 0.85f,
                         adapt.getWindowSize(), /*dedup=*/true);

@@ -71,14 +71,13 @@ public:
     void preloadSlotMapping()
     {
         int slotIdx = 0;
-        for (; slotIdx <= 256 && slotIdx < mHbmCapacity && slotIdx < mDramTensorCount;
-             ++slotIdx) {
+        for (; slotIdx <= 256 && slotIdx < mHbmCapacity && slotIdx < mDramTensorCount; ++slotIdx) {
             mGlobalToSlot[slotIdx] = slotIdx;
             mSlotToGlobal[slotIdx] = slotIdx;
         }
         const int identityCount = slotIdx;
-        for (int gid = mDramTensorCount - 1;
-             slotIdx < mHbmCapacity && gid >= identityCount; --gid, ++slotIdx) {
+        for (int gid = mDramTensorCount - 1; slotIdx < mHbmCapacity && gid >= identityCount;
+             --gid, ++slotIdx) {
             mGlobalToSlot[gid] = slotIdx;
             mSlotToGlobal[slotIdx] = gid;
         }
@@ -105,9 +104,9 @@ public:
      * 此后不再被重复扫描）。missGlobalIds 与 missIndices 平行入栈
      *（missIndices[j] 为第 j 个 miss 的去重后序号），回填直接取
      * missGlobalIds[j]，无需 deduped 序列二次查表。 */
-    void processTopkMisses(std::vector<int>& topkSlotIds,
-                           std::vector<int>& missGlobalIds, std::vector<int>& missSlots,
-                           const std::vector<int>& missIndices, Logger& mLogger)
+    void processTopkMisses(std::vector<int>& topkSlotIds, std::vector<int>& missGlobalIds,
+                           std::vector<int>& missSlots, const std::vector<int>& missIndices,
+                           Logger& mLogger)
     {
         int missCount = missGlobalIds.size();
         int loadedCount = 0;
@@ -116,9 +115,9 @@ public:
                 int victimSlot = mEvictTail;
                 if (victimSlot == -1) {
                     mLogger.log(LogLevel::ERROR,
-                                 "|HBM Manager| No evictable slot for miss gid: %d, "
-                                 "remaining %d misses dropped\n",
-                                 missGlobalIds[i], missCount - i);
+                                "|HBM Manager| No evictable slot for miss gid: %d, "
+                                "remaining %d misses dropped\n",
+                                missGlobalIds[i], missCount - i);
                     continue;
                 }
                 int oldGid = mSlotToGlobal[victimSlot];
@@ -144,8 +143,7 @@ public:
                 /* victim 原前驱为 -1（victim 即链头，唯一常规槽场景）时，
                  * 回退查找为空：victim 已重载并仍在链头，它自身就是新的
                  * 最尾可驱逐节点。 */
-                mEvictTail =
-                    (victimOldPrev == -1) ? victimSlot : prevEvictable(victimOldPrev);
+                mEvictTail = (victimOldPrev == -1) ? victimSlot : prevEvictable(victimOldPrev);
             }
             missGlobalIds.resize(loadedCount);
             for (int j = 0; j < loadedCount; ++j) {
@@ -213,8 +211,8 @@ public:
     /* 单 gid 分类入 scratch：去重命中跳过 / pinned gid 换入并出槽 / 负 gid
      * 占序号不出槽 / 常规 gid hit 出槽或 miss 入栈（2048 上限 break）。
      * hit rate 在去重序号 2047 处采样。返回 false=miss 上限到达，停止循环。 */
-    bool classifyTopkGid(int gid, int origIndex, int& dedupedCount,
-                         std::vector<int>& missGlobalIds, Logger& mLogger)
+    bool classifyTopkGid(int gid, int origIndex, int& dedupedCount, std::vector<int>& missGlobalIds,
+                         Logger& mLogger)
     {
         constexpr int thresahold = 2048;
         constexpr int thresaholdSub = 2047;

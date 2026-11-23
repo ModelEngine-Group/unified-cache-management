@@ -99,7 +99,8 @@ public:
 
         for (const auto& blockId : blockIds) {
             for (uint32_t layerID = 0; layerID < mLayerNum; layerID++) {
-                task.emplace_back(UC::Detail::Shard{blockId, layerID, std::vector<void*>(mTensorCount, nullptr)});
+                task.emplace_back(
+                    UC::Detail::Shard{blockId, layerID, std::vector<void*>(mTensorCount, nullptr)});
             }
         }
         task.brief = "UCMLoadSSD";
@@ -124,9 +125,7 @@ public:
      */
     int32_t UCMCheck(uint64_t taskId)
     {
-        if (mStoreV1_ == nullptr) {
-            return UC::Status::Error("storeV1 is null").Underlying();
-        }
+        if (mStoreV1_ == nullptr) { return UC::Status::Error("storeV1 is null").Underlying(); }
         if (taskId == 0) { return UC::Status::InvalidParam("invalid task handle").Underlying(); }
         auto res = mStoreV1_->Check(static_cast<UC::Detail::TaskHandle>(taskId));
         if (!res) { return res.Error().Underlying(); }
@@ -145,9 +144,7 @@ public:
      */
     int32_t UCMWait(uint64_t taskId)
     {
-        if (mStoreV1_ == nullptr) {
-            return UC::Status::Error("storeV1 is null").Underlying();
-        }
+        if (mStoreV1_ == nullptr) { return UC::Status::Error("storeV1 is null").Underlying(); }
         if (taskId == 0) { return UC::Status::InvalidParam("invalid task handle").Underlying(); }
         auto s = mStoreV1_->Wait(static_cast<UC::Detail::TaskHandle>(taskId));
         return s.Underlying();

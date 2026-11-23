@@ -135,7 +135,9 @@ TEST_F(PreLogicTest, TokenIndexMapInterSkipsNegativeToken)
 {
     engine = MakeEngine(/*layerNum=*/1);
     const std::string reqID = "req1";
-    engine->mRealTimeIdx[reqID] = {{5, 9}};
+    engine->mRealTimeIdx[reqID] = {
+        {5, 9}
+    };
     engine->mSeqLen[reqID] = 1000;
     std::vector<int> oneTopkList = {-1, 0};
     engine->TokenIndexMapInter(oneTopkList, 0, 0, 2, reqID);
@@ -148,7 +150,9 @@ TEST_F(PreLogicTest, TokenIndexMapInterSkipsRevIdxOutOfRange)
 {
     engine = MakeEngine(/*layerNum=*/1);
     const std::string reqID = "req1";
-    engine->mRealTimeIdx[reqID] = {{5, 9}};  // only blocks 0..1 mapped
+    engine->mRealTimeIdx[reqID] = {
+        {5, 9}
+    };  // only blocks 0..1 mapped
     engine->mSeqLen[reqID] = 1000;
     std::vector<int> oneTopkList = {8};  // block 8/4 = 2 -> out of range
     engine->TokenIndexMapInter(oneTopkList, 0, 0, 1, reqID);
@@ -446,8 +450,8 @@ TEST_F(PreLogicTest, SubmitUCMTokenLoadLegReturnsTrueWhenTaskEmpty)
 {
     engine = MakeEngine();
     std::vector<UC::Detail::TokenFilter> filters;
-    EXPECT_TRUE(engine->SubmitUCMTokenLoadLeg(UC::Detail::TaskDesc{}, filters, "K",
-                                              "LastChunkMove", 0, "req1"));
+    EXPECT_TRUE(engine->SubmitUCMTokenLoadLeg(UC::Detail::TaskDesc{}, filters, "K", "LastChunkMove",
+                                              0, "req1"));
     EXPECT_TRUE(store->calls.empty());
 }
 
@@ -652,8 +656,8 @@ TEST_F(PreLogicTest, BuildUCMMergeLoadPlanSkipsUnownedAndNonUcmContexts)
     engine->mSharedVBufferHostPtr[0] = 1;
     std::vector<size_t> ti = {0};
     std::vector<UCMMergeBlockContext> blockContexts = {
-        {&ti, 0, /*isnoUCMblock=*/false, 0, nullptr, nullptr, /*owned=*/false},  // not owned
-        {&ti, 1, /*isnoUCMblock=*/true, 5, nullptr, nullptr, /*owned=*/true},   // non-UCM
+        {&ti, 0, /*isnoUCMblock=*/false, 0, nullptr, nullptr, /*owned=*/false}, // not owned
+        {&ti, 1, /*isnoUCMblock=*/true,  5, nullptr, nullptr, /*owned=*/true }, // non-UCM
     };
     UCMTokenLoadPlan plan;
     EXPECT_TRUE(engine->BuildUCMMergeLoadPlan(plan, blockContexts, 0, 0, reqID, 0));
@@ -878,7 +882,7 @@ TEST_F(PreLogicTest, CopyUCMMergeTokensParallelCopiesTokensToSharedBuffers)
     }
     std::vector<size_t> ti0 = {0}, ti1 = {1}, ti2 = {2}, ti3 = {3};
     std::vector<UCMMergeBlockContext> blockContexts = {
-        {&ti0, 0, /*isnoUCMblock=*/true, 0, kSrc, vSrc, /*owned=*/true},
+        {&ti0, 0, /*isnoUCMblock=*/true,  0, kSrc, vSrc, /*owned=*/true},
         {&ti1, 1, /*isnoUCMblock=*/false, 1, kSrc, vSrc, /*owned=*/true},
         {&ti2, 2, /*isnoUCMblock=*/false, 2, kSrc, vSrc, /*owned=*/true},
         {&ti3, 3, /*isnoUCMblock=*/false, 3, kSrc, vSrc, /*owned=*/true},
@@ -1123,8 +1127,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseOnInvalidBlockCount)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
-                                                  plan));
+    EXPECT_FALSE(
+        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenBlockTableTooSmall)
@@ -1136,8 +1140,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenBlockTableTooSmall)
     std::vector<int> blockTable;
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
-                                                  plan));
+    EXPECT_FALSE(
+        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenHbmSlotOutOfRange)
@@ -1149,8 +1153,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenHbmSlotOutOfRange)
     std::vector<int> blockTable = {-1};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
-                                                  plan));
+    EXPECT_FALSE(
+        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenNoNonUcmBlockMap)
@@ -1170,8 +1174,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenNoNonUcmBlockMap)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
-                                                  plan));
+    EXPECT_FALSE(
+        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
     std::free(kDst);
     std::free(vDst);
 }
@@ -1194,8 +1198,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesBuildsUcmShards)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_TRUE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
-                                                 plan));
+    EXPECT_TRUE(
+        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
     /* The whole UCM block is one shard per leg: the shard's single address is
      * the block's dst-window base (kDst + firstDst * kTokenBytes, firstDst=0),
      * and each of the 4 tokens adds one K / V TokenRange. */
@@ -1250,9 +1254,9 @@ TEST_F(PreLogicTest, BuildLastChunkSourcesHandlesNonUcmBlock)
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
     EXPECT_TRUE(engine->BuildLastChunkSources(0, "req1", moveMap, sourceBlocks, plan));
-    EXPECT_TRUE(plan.kTask.empty());      // non-UCM -> no LoadOnToken shard
-    EXPECT_TRUE(plan.vTask.empty());      // (and no V shard)
-    ASSERT_GE(sourceBlocks.size(), 6u);   // resized to blockIdx+1=6
+    EXPECT_TRUE(plan.kTask.empty());     // non-UCM -> no LoadOnToken shard
+    EXPECT_TRUE(plan.vTask.empty());     // (and no V shard)
+    ASSERT_GE(sourceBlocks.size(), 6u);  // resized to blockIdx+1=6
     EXPECT_NE(sourceBlocks[5].kBase, nullptr);
     EXPECT_NE(sourceBlocks[5].vBase, nullptr);
     std::free(kDst);
@@ -1426,7 +1430,7 @@ TEST_F(PreLogicTest, CopyLastChunkTokensSkipsUcmBlocksPlacedByLoadOnToken)
     // Block 0: UCM (no source); block 1: non-UCM (with sources).
     std::vector<int> moveMap = {0, 1, 2, 3, 4, 5, 6, 7};
     std::vector<LastChunkSourceBlock> sourceBlocks = {
-        {nullptr, nullptr},
+        {nullptr,   nullptr  },
         {kSrcBlock, vSrcBlock},
     };
     engine->CopyLastChunkTokens(0, "req1", moveMap, sourceBlocks);
