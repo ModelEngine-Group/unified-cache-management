@@ -1776,13 +1776,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             "persist_token_threshold", 0
         )
 
-        # PD-decode 等待兜底：记录每个请求首次进入等待的时间，超时后放弃等待、
-        # 回退到 decode 本地 prefill，避免对端始终不写 KV 时请求无限 defer。
-        self._pd_wait_since: dict[str, float] = {}
-        self.pd_wait_timeout_s = float(
-            self.launch_config.get("pd_wait_timeout_s", 30.0)
-        )
-
         # invalid block ids due to load errors
         self._invalid_block_ids: set[int] = set()
         self._async_dump_req_ids: set[str] = set()
@@ -3766,6 +3759,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         enable_ucm_patch = os.getenv("ENABLE_UCM_PATCH")
         self._pd_loads_this_step: set[str] = set()
+
+        # PD-decode 等待兜底：记录每个请求首次进入等待的时间，超时后放弃等待、
+        # 回退到 decode 本地 prefill，避免对端始终不写 KV 时请求无限 defer。
+        self._pd_wait_since: dict[str, float] = {}
+        self.pd_wait_timeout_s = float(
+            self.launch_config.get("pd_wait_timeout_s", 30.0)
+        )
         vllm_cpu_affinity = os.getenv("VLLM_CPU_AFFINITY")
         if enable_ucm_patch is None or vllm_cpu_affinity is None:
             logger.warning(
@@ -4085,11 +4085,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             if remaining_tokens >= self.get_block_size():
                 # 超时兜底：prefill 未写入 / 命中不足 / 请求被取消时，不能让
                 # 请求永久停留在 deferred_waiting，超时后交给 decode 本地计算。
-                t0 = self._pd_wait_since.setdefault(
-                    request.request_id, time.monotonic()
-                )
+                _wait_since = getattr(self, "_pd_wait_since", None)
+                if _wait_since is None:
+                    _wait_since = self._pd_wait_since = {}
+                t0 = _wait_since.setdefault(request.request_id, time.monotonic())
                 waited = time.monotonic() - t0
-                if waited >= self.pd_wait_timeout_s:
+                if waited >= getattr(self, "pd_wait_timeout_s", 30.0):
                     logger.warning(
                         "PD wait timeout after %.1fs, fallback to local prefill: "
                         "req=%s remaining=%d hit=%s",
@@ -4098,10 +4099,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                         remaining_tokens,
                         external_hit_tokens,
                     )
-                    self._pd_wait_since.pop(request.request_id, None)
+                    _wait_since.pop(request.request_id, None)
                     return 0, False
                 return None, False
-            self._pd_wait_since.pop(request.request_id, None)
+            _wait_since = getattr(self, "_pd_wait_since", None)
+            if _wait_since is not None:
+                _wait_since.pop(request.request_id, None)
 
         self._record_prefix_cache_token_metrics(
             request,
