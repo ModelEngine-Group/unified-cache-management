@@ -432,7 +432,7 @@ def test_handshake_reports_missing_stage_metadata():
     conn._is_pp = True
 
     # Stage 0 is complete, stage 1 never reported.
-    with pytest.raises(ValueError, match=r"PP stage 1, tp_rank 0"):
+    with pytest.raises(ValueError, match=r"PP stage 1, worker coordinates zero"):
         conn.set_xfer_handshake_metadata_pp_aware(_metadata([(0, 4)]))
 
 
@@ -443,7 +443,7 @@ def test_handshake_requires_layer_allocation():
     conn._is_pp = True
     metadata = {(0, 0): {"block_size": 12288, "shard_size": 4096}}
 
-    with pytest.raises(ValueError, match="no layer allocation"):
+    with pytest.raises(ValueError, match="missing required fields:.*layer_start"):
         conn.set_xfer_handshake_metadata_pp_aware(metadata)
 
     assert factory.call_count == 0
@@ -508,6 +508,7 @@ def _lookup_connector(hits: list[int]):
     stores = [_store_with_hit(hit) for hit in hits]
     connector.store = stores[0]
     connector._pp_stores = stores
+    connector._is_pp = True
     # _lookup_one_stage lives on the base class, which is not extracted here.
     connector._lookup_one_stage = lambda store, block_ids: store.lookup_on_prefix(
         block_ids
@@ -581,6 +582,7 @@ def test_lookup_stops_early_only_on_a_full_miss():
 
     cls, _, _ = _load_connector_class()
     connector = cls.__new__(cls)
+    connector._is_pp = True
     connector._lookup_one_stage = lambda store, block_ids: store.lookup_on_prefix(
         block_ids
     )
@@ -620,6 +622,7 @@ def test_lookup_propagates_store_errors():
 
     cls, _, _ = _load_connector_class()
     connector = cls.__new__(cls)
+    connector._is_pp = True
     connector._lookup_one_stage = lambda store, block_ids: store.lookup_on_prefix(
         block_ids
     )
@@ -648,11 +651,11 @@ def test_partial_stage_load_error_still_surfaces_as_a_safety_net():
 
 
 # --------------------------------------------------------------------------
-# CP + PP rejection
+# CP + PP uses the layer-wise parent
 # --------------------------------------------------------------------------
 
 
-def test_cp_connector_rejects_pipeline_parallelism():
+def test_cp_connector_accepts_pp_and_reaches_layerwise_parent():
     tree = ast.parse(CONNECTOR_PATH.read_text(encoding="utf-8-sig"))
     cp_class = next(
         node
@@ -665,29 +668,34 @@ def test_cp_connector_rejects_pipeline_parallelism():
         if isinstance(node, ast.FunctionDef) and node.name == "__init__"
     )
 
-    # The guard must run before super().__init__ installs the PP state that
-    # makes the eagerly created scheduler store fail with KeyError('shard_size').
-    guard_if = None
-    guard_message = None
-    for stmt in init.body:
-        if not isinstance(stmt, ast.If):
-            continue
-        for sub in ast.walk(stmt):
-            if (
-                isinstance(sub, ast.Raise)
-                and isinstance(sub.exc, ast.Call)
-                and getattr(sub.exc.func, "id", None) == "ValueError"
-            ):
-                guard_if = stmt
-                guard_message = sub.exc.args[0].value
-    super_call = next(
-        node
-        for node in init.body
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and getattr(node.value.func, "attr", None) == "__init__"
-    )
+    class ParentReached(RuntimeError):
+        pass
 
-    assert guard_if is not None, "UCMCPConnector.__init__ has no PP rejection"
-    assert "pipeline parallelism" in guard_message
-    assert init.body.index(guard_if) < init.body.index(super_call)
+    class Parent:
+        def __init__(self, *args):
+            raise ParentReached("layerwise parent reached")
+
+    node = ast.ClassDef(
+        name="CPUnderTest",
+        bases=[ast.Name(id="Parent", ctx=ast.Load())],
+        keywords=[],
+        body=[init],
+        decorator_list=[],
+    )
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            node,
+        ],
+        type_ignores=[],
+    )
+    namespace = {"Parent": Parent}
+    exec(
+        compile(ast.fix_missing_locations(module), str(CONNECTOR_PATH), "exec"),
+        namespace,
+    )
+    config = SimpleNamespace(parallel_config=SimpleNamespace(pipeline_parallel_size=2))
+    with pytest.raises(ParentReached, match="layerwise parent reached"):
+        namespace["CPUnderTest"](config, None)

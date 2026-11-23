@@ -37,16 +37,16 @@ public:
     explicit IoScheduler(const TransportConfig& config);
 
     struct ScheduledIoBatch {
-        BatchView<KVBuffer> entries;
+        BatchView<ResolvedKVBuffer> entries;
     };
 
     struct ScheduledKeyBatch {
-        BatchView<CacheKey> keys;
+        BatchView<ResolvedCacheKey> keys;
     };
 
-    std::vector<ScheduledIoBatch> SplitForAsu(const BatchView<KVBuffer>& entries,
+    std::vector<ScheduledIoBatch> SplitForAsu(const BatchView<ResolvedKVBuffer>& entries,
                                               AsuOpType opType) const;
-    std::vector<ScheduledKeyBatch> SplitForAsu(const BatchView<CacheKey>& keys,
+    std::vector<ScheduledKeyBatch> SplitForAsu(const BatchView<ResolvedCacheKey>& keys,
                                                AsuOpType opType) const;
     std::size_t GetSqeIoNum(AsuOpType opType) const;
 

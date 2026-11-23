@@ -91,9 +91,9 @@ TEST(Logger, SetLevelDynamicallyChangesFilter)
     std::remove(path.c_str());
 }
 
-/* ---- BUG-FOCUS: Logger ctor prints "Fail to open" when the file IS open
- * (inverted condition). See tests/README.md. Documenting current behaviour. ---- */
-TEST(LoggerBug, InvertedFailMessageOnSuccess)
+/* ---- L-13 fixed: ctor reports "Fail to open" only on genuine failure
+ * (inverted condition corrected in kvcache_log.h). ---- */
+TEST(Logger, NoFailBannerWhenFileOpensSuccessfully)
 {
     std::string path = WriteTempLog("");
     ASSERT_FALSE(path.empty());
@@ -102,9 +102,22 @@ TEST(LoggerBug, InvertedFailMessageOnSuccess)
         Logger log(path, LogLevel::INFO, /*enable=*/true);
     }
     std::string err = testing::internal::GetCapturedStderr();
-    /* The buggy branch prints the failure banner on success. */
-    EXPECT_NE(err.find("Fail to open log file"), std::string::npos);
+    EXPECT_EQ(err.find("Fail to open log file"), std::string::npos);
     std::remove(path.c_str());
+}
+
+TEST(Logger, FailBannerWhenPathUnopenable)
+{
+    /* Nonexistent parent directory -> ofstream cannot open -> banner on
+     * stderr, and log() degrades to no-op (guarded by !is_open()). */
+    const std::string badPath = "/tmp/opencode_no_such_dir_9417/logger.log";
+    testing::internal::CaptureStderr();
+    {
+        Logger log(badPath, LogLevel::INFO, /*enable=*/true);
+        log.log(LogLevel::ERROR, "no crash without file\n");
+    }
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("Fail to open log file"), std::string::npos);
 }
 
 TEST(Logger, ClosesFileOnDestruction)

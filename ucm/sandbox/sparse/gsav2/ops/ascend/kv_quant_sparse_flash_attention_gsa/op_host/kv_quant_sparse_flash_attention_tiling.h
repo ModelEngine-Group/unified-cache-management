@@ -34,7 +34,7 @@ constexpr uint32_t BLOCK_TABLE_INPUT_INDEX = 6;
 constexpr uint32_t ACT_SEQ_LEN_Q_INPUT_INDEX = 7;
 constexpr uint32_t ACT_SEQ_LEN_KV_INPUT_INDEX = 8;
 constexpr uint32_t SINKS_INPUT_INDEX = 9;
-// GSA-P1: 每个 batch 的真实 topk 有效长度
+// 每个 batch 的真实 topk 有效长度
 constexpr uint32_t ACTUAL_SPARSE_LENGTHS_INPUT_INDEX = 10;
 // Outputs Index
 constexpr uint32_t OUTPUT_INDEX = 0;
@@ -117,7 +117,7 @@ struct QSFAParaInfo {
     QSFAOptionalParaInfo keyRope = {nullptr, nullptr};
     QSFAOptionalParaInfo keyDequantScale = {nullptr, nullptr};
     QSFAOptionalParaInfo valueDequantScale = {nullptr, nullptr};
-    // GSA-p1: 每个 batch 的真实 topk 有效长度
+    // 每个 batch 的真实 topk 有效长度
     QSFAOptionalParaInfo actualSparseLengths = {nullptr, nullptr};
     QSFARequiredParaInfo attenOut = {nullptr, nullptr};
 
@@ -161,11 +161,9 @@ TILING_DATA_FIELD_DEF(uint32_t, sparseBlockCount)
 TILING_DATA_FIELD_DEF(int64_t, dSizeVInput)
 TILING_DATA_FIELD_DEF(uint32_t, isActualLenDimsNull)
 TILING_DATA_FIELD_DEF(uint32_t, isActualLenDimsKVNull)
-// GSA-P1: 有效 sparse count（非-1的实际topk数量），0表示未知（kernel退化为sparseBlockCount）
-TILING_DATA_FIELD_DEF(uint32_t, effectiveSparseCount)
-// GSA-P1: 是否传入 actual_sparse_lengths （1=是，kernel 按 per-batch 长度计算有效KV）
+// 是否传入 actual_sparse_lengths （1=是，kernel 按 per-batch 长度计算有效KV）
 TILING_DATA_FIELD_DEF(uint32_t, hasActualSparseLengths)
-// GSA-v2: 是否返回 softmax_max / softmax_sum
+// 是否返回 softmax_max / softmax_sum
 TILING_DATA_FIELD_DEF(uint32_t, returnSoftmaxLse)
 END_TILING_DATA_DEF
 
@@ -186,9 +184,12 @@ REGISTER_TILING_DATA_CLASS(KvQuantSparseFlashAttentionSingleCoreTensorSizeMlaOp,
                            KvQuantSparseFlashAttentionSingleCoreTensorSizeMla)
 
 BEGIN_TILING_DATA_DEF(KvQuantSparseFlashAttentionSplitKVParamsMla)
-TILING_DATA_FIELD_DEF(uint32_t, s2)             // S2切分份数
+TILING_DATA_FIELD_DEF(uint32_t, s2)             // S2切分份数P(仅尾波任务)
 TILING_DATA_FIELD_DEF(uint32_t, accumOutSize)   // FD workspace
 TILING_DATA_FIELD_DEF(uint32_t, logSumExpSize)  // FD workspace
+TILING_DATA_FIELD_DEF(uint32_t, tailTaskNum)    // 被切分的尾波任务数x(其余任务P=1)
+TILING_DATA_FIELD_DEF(uint32_t, taskNumTotal)  // host 估计的全局任务总数(取上界,仅用于 FD 尺寸上界)
+TILING_DATA_FIELD_DEF(uint32_t, s2LoopsEst)    // host 估计的每任务 s2 迭代数 L(kernel 加权分核用)
 END_TILING_DATA_DEF
 REGISTER_TILING_DATA_CLASS(KvQuantSparseFlashAttentionSplitKVParamsMlaOp,
                            KvQuantSparseFlashAttentionSplitKVParamsMla)
@@ -259,11 +260,9 @@ struct QSFATilingInfo {
     uint32_t actualLenDimsQ = 0;
     uint32_t maxActualseq = 0;
 
-    // GSA-P1: 有效 sparse count（host侧扫描sparse_indices统计非-1的个数，0表示未知）
-    uint32_t effectiveSparseCount = 0;
-    // GSA-P1: 是否传入 actual_sparse_lengths （per-batch 真实 topk 长度）
+    // 是否传入 actual_sparse_lengths（per-batch 真实 topk 长度）
     bool hasActualSparseLengths = false;
-    // GSA-v2: 是否返回 softmax 统计结果
+    // 是否返回 softmax 统计结果
     bool returnSoftmaxLse = false;
 
     bool actualQSeqLenFlag = false;
@@ -320,11 +319,12 @@ private:
     void ZeroTensorProcess() const;
     void InitParams();
 
-    void Split();
     bool IsBalanceSplitCore();
 
     void SplitBalanced();
     void CalcInnerSize(uint32_t qsfaS2Size);
+    // 决定是否启用 S2 跨核切分及切分份数 P(写入 kvSplitPart_/splitKVFlag_)
+    void DecideSplitKV();
 
     bool IsFlashDecode(uint32_t coreNum);
 
@@ -341,8 +341,6 @@ private:
     void CalcFDWorkSpace(const uint32_t actCoreNum);
     void GetWorkspaceSize();
 
-    uint32_t CalcBalanceFDParamNums(const uint32_t actCoreNum) const;
-
     void CalcBlockDim();
 
     bool balanceModeFlag_ = false;
@@ -351,6 +349,9 @@ private:
     uint32_t coreNum_ = 0;
     QSFAPerfMode perfMode_ = QSFAPerfMode::V_TEMPLATE_MODE;
     uint32_t kvSplitPart_ = 1;
+    uint32_t kvSplitTailTaskNum_ = 0;  // 被切分的尾波任务数 x
+    uint32_t kvSplitS2LoopsEst_ = 0;   // 每任务 s2 迭代数估计 L
+    uint64_t kvSplitTaskNumEst_ = 0;   // 全局任务总数估计(上界)
     size_t mmResUbSize_ = 0;
     size_t bmm2ResUbSize_ = 0;
     size_t qPreSizeMla_ = 0;
@@ -455,6 +456,9 @@ private:
     ge::graphStatus CheckActualSeqLens();
     ge::graphStatus CheckActualSeqLensDType();
     ge::graphStatus CheckActualSeqLensShape();
+    // actualSparseLengths: per-req 真实 topk 长度（kernel 按 bIdx 读取，
+    // batchSize = len(actualSeqLengthsQ)），可选输入，nullptr 时跳过校验
+    ge::graphStatus CheckActualSparseLengths();
     ge::graphStatus CheckMultiParaConsistency();
 
     ge::graphStatus CheckFeatureMlaAntiquantShape() const;
@@ -572,10 +576,7 @@ public:
     void GenerateInfo(QSFATilingInfo &qsfaInfo);
     void FillTilingInfoAttrsAndLayouts(QSFATilingInfo &qsfaInfo);
     ge::graphStatus Parse(QSFATilingInfo &qsfaInfo);
-    // GSA-P1: 扫描 sparse_indices 统计有效(非-1)的 topk 数量，返回最小值(跨所有batch/head)
-    // 0 表示无法获取(host无权访问device数据)或全有效，kernel侧退化为 sparseBlockCount
-    uint32_t ScanEffectiveSparseCount();
-    // GSA-v2: 解析 return_softmax_lse 属性
+    // 解析 return_softmax_lse 属性
     bool ParseReturnSoftmaxLse();
 
     const gert::TilingContext *context_ = nullptr;

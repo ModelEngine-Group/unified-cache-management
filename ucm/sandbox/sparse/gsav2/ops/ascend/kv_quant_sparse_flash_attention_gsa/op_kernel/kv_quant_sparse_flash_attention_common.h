@@ -128,7 +128,9 @@ struct RunInfo {
     uint32_t actMBaseSize;
     int32_t nextTokensPerBatch = 0;
     bool isLastS2Loop;
-    uint8_t resv[3];
+    // splitKV(C): 当前(task,part)子任务在全局sub序列中的编号，用于FD workspace寻址
+    // sub编号 = taskIdx<tailStart ? taskIdx : tailStart+(taskIdx-tailStart)*P+part
+    uint32_t splitSubIdx = 0;
     int64_t threshold;
 };
 
@@ -137,7 +139,6 @@ struct ConstInfo {
     static constexpr uint32_t QSFA_SYNC_MODE2 = 2;
     // BUFFER的字节数
     static constexpr uint32_t BUFFER_SIZE_BYTE_1K = 1024;
-    static constexpr uint32_t BUFFER_SIZE_BYTE_2K = 2048;
     static constexpr uint32_t BUFFER_SIZE_BYTE_4K = 4096;
     static constexpr uint32_t BUFFER_SIZE_BYTE_8K = 8192;
     static constexpr uint32_t BUFFER_SIZE_BYTE_16K = 16384;
@@ -158,7 +159,6 @@ struct ConstInfo {
     uint32_t syncC1V1 = 0U;
     uint32_t syncV1C2 = 0U;
     uint32_t syncC2V2 = 0U;
-    uint32_t syncC2V1 = 0U;
     uint32_t syncV1NupdateC2 = 0U;
 
     uint32_t mmResUbSize = 0U;    // Matmul1输出结果GM上的大小
@@ -192,6 +192,17 @@ struct ConstInfo {
     uint32_t s2Start = 0U;  // TND场景下，S2的起始位置
     uint32_t s2End = 0U;    // 单核TND场景下S2循环index上限
 
+    // 本核在全局 sub 序列上的区间 [splitSubStart, splitSubEnd)
+    uint32_t splitSubStart = 0U;
+    uint32_t splitSubEnd = 0U;
+    // 本核首个被枚举任务的全局编号
+    uint32_t splitTaskStart = 0U;
+    // 尾波切分参数——kernel按真实任务总数推导tailStart=taskNumKernel-tailTaskNum
+    uint32_t splitTailTaskNum = 0U;
+    uint32_t splitTailStart = 0U;      // 真实尾波起点(=taskNumKernel-tailTaskNum)
+    uint32_t splitTaskNumKernel = 0U;  // kernel枚举出的真实任务总数
+    uint32_t splitS2LoopsEst = 0U;     // host估计的每任务s2迭代数L(加权分核用)
+
     uint32_t bN2Start = 0U;
     uint32_t bN2End = 0U;
     uint32_t gS1Start = 0U;
@@ -206,9 +217,7 @@ struct ConstInfo {
     // sparse attr
     uint32_t sparseBlockCount = 0;
     int64_t sparseBlockSize = 0;
-    // GSA-P1: 有效 sparse count（host侧扫描非-1的个数，0/等于sparseBlockCount表示全有效）
-    uint32_t effectiveSparseCount = 0;
-    // GSA-v2: 是否返回 softmax_max / softmax_sum
+    // 是否返回 softmax_max / softmax_sum
     uint32_t returnSoftmaxLse = 0;
 
     // attention模式与量化模式
@@ -225,6 +234,15 @@ struct MSplitInfo {
     uint32_t nBufferDealM = 0U;
     uint32_t vecStartM = 0U;
     uint32_t vecDealM = 0U;
+};
+
+// combine 阶段的任务描述符，记录本核持有 part 0 的尾波切分任务
+// C阶段仅尾波任务(共x个)参与combine，单核owner任务数<=ceil(x/aicNum)+1，数组长度留有余量
+struct SplitKVTaskInfo {
+    uint64_t attenOutOffset = 0ULL;  // 任务输出行0在attentionOut上的偏移(元素,TND/BSND各自公式)
+    uint32_t subBase = 0U;           // 任务part 0在全局sub序列中的编号(FD寻址基)
+    uint32_t partNum = 0U;           // 任务切分数P(仅尾波任务>1)
+    uint32_t s2Loops = 0U;           // 任务完整的s2迭代次数L(分part前)
 };
 
 #endif  // KV_QUANT_SPARSE_FLASH_ATTENTION_COMMON_H

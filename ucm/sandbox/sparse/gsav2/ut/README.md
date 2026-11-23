@@ -4,24 +4,26 @@
 
 | 被测模块 | 测试文件 | 用例数 |
 |---|---|---|
-| `gsa.py` | `test_gsa.py` | 254 |
-| `gsa_shared_memory.py` | `test_gsa_shared_memory.py` | 48 |
+| `gsa.py` | `test_gsa.py` | 242 |
+| `gsa_shared_memory.py` | `test_gsa_shared_memory.py` | 50 |
 | `gsa_log.py` | `test_gsa_log.py` | 48 |
 | `gsa_tensor_slot_manager_ds.py` | `test_gsa_slot_manager.py` | 16 |
-| `prefetch/prefetch_engine.py` | `test_prefetch_engine.py` | 11 |
+| `prefetch/prefetch_engine.py` | `test_prefetch_engine.py` | 9 |
+| 缺陷回归锚点（A2/P0-F4/P1-F1） | `test_gsa_findings.py` | 7（含 2 个 xfail） |
+| 跨语言绑定契约（A1/A3 看护） | `test_binding_contract.py` | 6 |
 
-合计 **366 个用例**，本机（CPU）实测约 4s 跑完。
+合计 **378 个用例**（376 passed + 2 xfailed），本机（CPU）实测约 4s 跑完。
 
 ## 覆盖率结果（pytest-cov --cov-branch）
 
 | 模块 | 语句 | 行覆盖 | 分支覆盖 |
 |---|---|---|---|
-| gsa.py | 1431 | **100%** | 99% |
+| gsa.py | 1425 | **100%** | 99% |
 | gsa_shared_memory.py | 270 | **100%** | 100% |
 | gsa_log.py | 148 | **100%** | 99% |
 | gsa_tensor_slot_manager_ds.py | 66 | **100%** | 98% |
-| prefetch_engine.py | 61 | **100%** | 100% |
-| **合计** | 1976 | **100%** | **99.2%** |
+| prefetch_engine.py | 58 | **100%** | 100% |
+| **合计** | 1967 | **100%** | **99.2%** |
 
 > 目标：行覆盖 100%、分支覆盖 >90%。剩余少量部分分支均为 `while` 循环退出转移等
 > 不可构造路径（如忙等循环的自然退出侧已在超时用例中覆盖）。
@@ -94,7 +96,7 @@ ut/                      # 位于 ucm/sandbox/sparse/gsav2/ 下（无 __init__.p
    避免跨用例段污染。
 3. **平台分支**（gsa.py L30-43）：conftest 保证 import 走 True 侧（fake `torch.npu`），
    reload 用例覆盖 False 侧。
-4. **模块常量**（`IS_INDEXER_OFFLOAD`/`PTOPK_PREFETCH_ENABLE`/
+4. **模块常量**（`IS_INDEXER_OFFLOAD`/`IS_OPEN_GSA`/
    `IS_PERFORMANCE_LOG`/`SEG_PREFILL_THRESHOLD`/`VLLM_ASCEND_VERSION`/
    `UCM_LOOKUP_MAX_RETRY` 等）逐用例 monkeypatch 构造分支矩阵。
 5. **微型配置**：FakeVllmConfig（layer=2、max_model_len=2048、max_bs=4、
@@ -108,34 +110,40 @@ ut/                      # 位于 ucm/sandbox/sparse/gsav2/ 下（无 __init__.p
 
 ## 发现的源码问题（测试中以 workaround 覆盖，建议修复）
 
-1. **`indexer_cache_preempt_i_ptr` 属性名不一致**（gsa.py）
-   `_init_indexer_preempt`（L2673-2678）设置的是 `indexer_cache_preempt_ptr/_offset`，
-   但 `_inject_block_hashes`（L1028-1029）读取 `indexer_cache_preempt_i_ptr/_i_offset`
-   —— 后者在任何路径下都不会被赋值。offload + inject_indexer 路径会直接
-   `AttributeError`。测试中手动补设 `_i_` 属性以覆盖该分支。
-   （`test_gsa.py::TestWarmup::test_warmup_dump_offload_indexer_copy`、
-   `TestInjectBlockHashes::test_injection_with_indexer`）
+1. **`indexer_cache_preempt_i_ptr` 属性名不一致**（历史缺陷，**已修复**）
+    原 `_init_indexer_preempt` 写入 `indexer_cache_preempt_ptr/_offset`，而
+    `_inject_block_hashes` 读取 `indexer_cache_preempt_i_ptr/_i_offset`——后者
+    任何路径下不会被赋值，offload + inject_indexer 路径直接 AttributeError。
+    已统一为 `_i_ptr/_i_offset`（gsa.py 与 gsa_old.py / gsa_for_pd.py 快照同步），
+    回归断言 `test_init_host_slabs_indexer_offload`。
 
-2. **`GSA._inject_store_ptr` 方法不存在**（gsa.py）
-   模块级 `inject_store_v1_ptr`（L111）在 `GSA_INSTANCE` 非空时调用
-   `GSA_INSTANCE._inject_store_ptr(...)`，但 GSA 类未定义该方法，
-   一旦实例存在即触发 `AttributeError`。测试用独立 fake 对象覆盖模块级函数。
+2. **`GSA._inject_store_ptr` 方法不存在**（历史缺陷，**已处理：整条孤儿通路删除**）
+    模块级 `inject_store_v1_ptr` 在 `GSA_INSTANCE` 非空时调用
+    `GSA_INSTANCE._inject_store_ptr(...)`，但 GSA 类未定义该方法。经全仓核查
+    （含 C++/patch/备份树），该通路无任何生产调用方——`GSA_INSTANCE` 无生产
+    赋值、`_pending_store_ptr` 无消费者，实际注入走
+    `build_sparse_meta → _ensure_store_injected → _inject_store_v1(connector)`。
+    已整体删除 `inject_store_v1_ptr / GSA_INSTANCE / _pending_store_ptr /
+    GSA._inject_store_ptr` 及对应测试（真实注入路径的 `test_inject_store_v1_*`
+    用例保留）。
 
-3. **`indexer_last_query` 构造后被覆盖为 None**（gsa.py）
-   `_init_worker_indexer_state` 中 `self.indexer_last_query = None`（L685）
-   执行在 `self.init_gsa_metadata()`（L672，内部创建 TopkIndices）**之后**，
-   导致构造完成后 `indexer_last_query/indexer_last_weight` 恒为 None，
-   `cal_indexer_topk_blocks` 主路径会 `AttributeError`。
-   测试中手动重建这两个 TopkIndices。
-   （`test_gsa.py::TestIndexer::_setup_topk`）
+3. **`indexer_last_query` 构造后被覆盖为 None**（历史缺陷，**已修复**）
+    原 `_init_worker_indexer_state` 中 `self.indexer_last_query = None` 执行在
+    `init_gsa_metadata()`（内部创建 TopkIndices）之后，构造完成后恒为 None，
+    `cal_indexer_topk_blocks` 主路径 AttributeError。已将占位 None 声明移到
+    `init_gsa_metadata` 之前。回归断言
+    `test_offload_construction_keeps_topk_indices`；`_setup_topk` 的重建仅为
+    钉住 bs=4 断言形状。
 
-4. **`build_sparse_meta` 向 `_load_kv_dram` 传对象而非 req_id**（gsa.py L2391-2392）
-   `for req_id in scheduler_output.scheduled_new_reqs: self._load_kv_dram(req_id)`
-   —— 迭代得到的是 NewRequestData 对象，而 `_load_kv_dram` 以 req_id 为键查
-   `gsa_metadata.gsa_stats`，类型不匹配（真实 vllm 的 dataclass 同样不可哈希，
-   会 TypeError/KeyError）。测试用自引用对象（`req_id` 指向自身）兼容两者以覆盖
-   该行。修复建议：改为 `self._load_kv_dram(new_req.req_id)`。
-   （`test_gsa.py::TestSchedulerSide::test_build_sparse_meta_new_reqs_and_has_prefill`）
+4. **`build_sparse_meta` 向 `_load_kv_dram` 传对象而非 req_id**（历史缺陷，
+    **已修复 P0-F2**）
+    原实现 `for req_id in scheduler_output.scheduled_new_reqs:
+    self._load_kv_dram(req_id)` 迭代得到 NewRequestData 对象，而
+    `_load_kv_dram` 以 req_id 为键查 `gsa_metadata.gsa_stats`，类型不匹配。
+    已改为 `self._load_kv_dram(new_req.req_id)`；测试同步改用
+    `SimpleNamespace(req_id="r_new")` 真实键控（自引用对象 hack 已删除）。
+    （`test_gsa.py::TestSchedulerSide::test_build_sparse_meta_new_reqs_and_has_prefill`、
+    `test_gsa_findings.py::TestBuildSparseMetaNewReqArg`）
 
 ## 其他说明
 

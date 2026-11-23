@@ -123,7 +123,7 @@ public:
     using KV_T = typename QSFAT::kvType;
     using K_ROPE_T = typename QSFAT::kRopeType;
     using OUT_T = typename QSFAT::outputType;
-    using MM_OUT_T = T;
+    using MM_OUT_T = T;  // L0C 累加域，Mmad 输出必须 fp32；GM 中间量同为 fp32
 
     __aicore__ inline QSFAMatmulService(){};
     __aicore__ inline void InitParams(const ConstInfo &constInfo);

@@ -74,32 +74,32 @@ KvOpcode RequestOpcode(const std::uint32_t* request)
     return static_cast<KvOpcode>(request[0] & 0xFF);
 }
 
-CacheKey ReadKey(const std::uint32_t* data)
+BinaryKey ReadKey(const std::uint32_t* data)
 {
-    CacheKey key{};
+    BinaryKey key{};
     std::memcpy(key.data(), data, kCacheKeySizeBytes);
     return key;
 }
 
-std::uint64_t KeyHash(const CacheKey& key)
+std::uint64_t KeyHash(const BinaryKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
-    for (auto byte : key) {
-        const auto ch = std::to_integer<unsigned char>(byte);
+    for (auto byte : CacheKeyView(key)) {
+        const auto ch = static_cast<unsigned char>(byte);
         hash ^= ch;
         hash *= 1099511628211ULL;
     }
     return hash;
 }
 
-std::string KeyFileName(const CacheKey& key)
+std::string KeyFileName(const BinaryKey& key)
 {
     std::ostringstream stream;
     stream << std::hex << std::setw(16) << std::setfill('0') << KeyHash(key) << ".bin";
     return stream.str();
 }
 
-std::shared_mutex& KeyMutex(const CacheKey& key)
+std::shared_mutex& KeyMutex(const BinaryKey& key)
 {
     return g_keyMutexes[KeyHash(key) % kKeyLockCount];
 }
@@ -109,7 +109,7 @@ std::filesystem::path AsuRoot(const std::string& storePath, NodeId nodeId)
     return std::filesystem::path(storePath) / ("asu-" + std::to_string(nodeId));
 }
 
-std::filesystem::path KeyPath(const std::string& storePath, NodeId nodeId, const CacheKey& key)
+std::filesystem::path KeyPath(const std::string& storePath, NodeId nodeId, const BinaryKey& key)
 {
     return AsuRoot(storePath, nodeId) / KeyFileName(key);
 }
@@ -142,7 +142,7 @@ void PackResultBuffer1Bit(std::uint32_t* resultData, const std::vector<std::uint
 }
 
 struct BatchEntry {
-    CacheKey key{};
+    BinaryKey key{};
     std::uint32_t offset{0};
     std::uint64_t bufferAddr{0};
     std::uint32_t length{0};
@@ -164,9 +164,9 @@ std::vector<BatchEntry> ReadBatchEntries(const std::uint32_t* request, std::uint
     return entries;
 }
 
-std::vector<CacheKey> ReadKeyEntries(const std::uint32_t* request, std::uint16_t batchNumber)
+std::vector<BinaryKey> ReadKeyEntries(const std::uint32_t* request, std::uint16_t batchNumber)
 {
-    std::vector<CacheKey> keys;
+    std::vector<BinaryKey> keys;
     keys.reserve(batchNumber);
     for (std::uint16_t index = 0; index < batchNumber; ++index) {
         const auto* entry = request + kSqeDwordCount + index * kKeyEntryDwordCount;
@@ -383,7 +383,7 @@ Status FakeTransProvider::ResolveLocalAddress(const void* providerAddr, std::siz
                          "fake backend IO buffer is not registered");
 }
 
-bool FakeTransProvider::StoreBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset,
+bool FakeTransProvider::StoreBytes(NodeId nodeId, const BinaryKey& key, std::uint32_t offset,
                                    std::uint64_t addr, std::uint32_t length)
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
@@ -426,7 +426,7 @@ bool FakeTransProvider::StoreBytes(NodeId nodeId, const CacheKey& key, std::uint
     return output.good();
 }
 
-bool FakeTransProvider::LoadBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset,
+bool FakeTransProvider::LoadBytes(NodeId nodeId, const BinaryKey& key, std::uint32_t offset,
                                   std::uint64_t addr, std::uint32_t length)
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
@@ -463,7 +463,7 @@ bool FakeTransProvider::LoadBytes(NodeId nodeId, const CacheKey& key, std::uint3
     return true;
 }
 
-bool FakeTransProvider::DeleteKey(NodeId nodeId, const CacheKey& key)
+bool FakeTransProvider::DeleteKey(NodeId nodeId, const BinaryKey& key)
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
@@ -471,7 +471,7 @@ bool FakeTransProvider::DeleteKey(NodeId nodeId, const CacheKey& key)
     return !errorCode;
 }
 
-bool FakeTransProvider::ExistsKey(NodeId nodeId, const CacheKey& key)
+bool FakeTransProvider::ExistsKey(NodeId nodeId, const BinaryKey& key)
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
