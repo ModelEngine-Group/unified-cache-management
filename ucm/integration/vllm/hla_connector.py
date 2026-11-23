@@ -35,6 +35,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnectorMetadata,
     UCMDirectConnector,
     UCMLiteConnector,
+    _log_pd_sync_load_result,
     _record_counter,
     _scheduler_read_block_size,
     _short_list,
@@ -2626,7 +2627,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def _prepare_load_plan(self, metadata: "UCMConnectorMetadata") -> None:
         """Rank-scope every request's load blocks into ``request_data``."""
         for request_id, request in metadata.request_meta.items():
-            if len(request.load_block_ids[0]) == 0:
+            if not request.load_block_ids[0]:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
             n = getattr(request, "load_full_attn_count", 0)
             _, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
@@ -2637,6 +2639,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 is_dump=False,
             )
             if not scoped_ucm:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
             self.need_load = True
             self.request_data.append(
@@ -2705,7 +2708,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         assert isinstance(layout, HybridLinearAttentionLayout)
         load_start_time = time.perf_counter() * 1000
         num_loaded_block = 0
-        request_tasks: list[tuple[str, Task, int]] = []
+        request_tasks: dict[str, list[tuple[Task, int]]] = {}
         for (
             request_id,
             unscoped_ucm,
@@ -2740,7 +2743,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         ptrs,
                         distribute_backend_load=distribute_load,
                     )
-                    request_tasks.append((request_id, task, end - start))
+                    request_tasks.setdefault(request_id, []).append((task, end - start))
                     num_loaded_block += end - start
                     self._load_bytes_total += sum(
                         layout.direct_group_bytes.get(gid, 0)
@@ -2754,26 +2757,26 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     self._mark_load_failed(metadata, request_id)
                     break
 
-        for request_id, task, n_blocks in request_tasks:
-            try:
-                self._rank_consistency.wait_load(task)
-            except Exception as e:
-                logger.error(
-                    f"request {request_id} wait direct load task error. "
-                    f"{type(e).__name__}: {e}"
-                )
-                self._mark_load_failed(metadata, request_id)
-                num_loaded_block -= n_blocks
+        for request_id, tasks in request_tasks.items():
+            for task, n_blocks in tasks:
+                try:
+                    self._rank_consistency.wait_load(task)
+                except Exception as e:
+                    logger.error(
+                        f"request {request_id} wait direct load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._mark_load_failed(metadata, request_id)
+                    num_loaded_block -= n_blocks
+            if request_id not in self._failure_req_ids:
+                _log_pd_sync_load_result(metadata, request_id)
 
         load_end_time = time.perf_counter() * 1000
         load_duration_ms = load_end_time - load_start_time
         load_speed = self._load_bytes_total / max(load_duration_ms, 1) / 1024 / 1024
         ucmmetrics.update_stats(
             {
-                "load_requests_num": len(
-                    {request_id for request_id, _, _ in request_tasks}
-                    - self._failure_req_ids
-                ),
+                "load_requests_num": len(request_tasks.keys() - self._failure_req_ids),
                 "load_blocks_num": num_loaded_block,
                 "load_duration": load_duration_ms,
                 "load_speed": load_speed,
@@ -3085,6 +3088,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     layout = self.kv_cache_layout
                     assert isinstance(layout, HybridLinearAttentionLayout)
                     layout.unpack_ple_blocks(ple_ids)
+                pending = self._pd_pending_pairs.get(request_id)
+                if pending and pair_key in pending:
+                    pending.remove(pair_key)
+                    if not pending and request_id not in self._failure_req_ids:
+                        _log_pd_sync_load_result(metadata, request_id)
         self._load_bytes_total += self._load_bytes_by_pair.pop(pair_key, 0)
 
     def _record_load_bytes(self) -> None:
@@ -3312,11 +3320,25 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
+        self._pd_pending_pairs: dict[str, set[tuple[int, int]]] = {}
         self._reset_transfer_state()
         self._prepare_load_plan(metadata)
 
         if not self.need_load or not self.layer_order:
             return
+
+        # Several layers can alias one (group, slot) Store task on this rank.
+        if metadata.pd_sync_load_req_ids:
+            for request_id, _, _, _, scoped_groups in self.request_data:
+                if request_id in metadata.pd_sync_load_req_ids:
+                    groups = set(scoped_groups)
+                    self._pd_pending_pairs[request_id] = {
+                        (self.layer_to_group[name], self.layer_to_slot[name])
+                        for name in self.layer_order
+                        if self.layer_to_group[name] in groups
+                    }
+                    if not self._pd_pending_pairs[request_id]:
+                        _log_pd_sync_load_result(metadata, request_id, skipped=True)
 
         # Ensure do_mamba_copy_block (preprocess_mamba, compute stream)
         # has completed before load DMA (store stream) can overwrite the

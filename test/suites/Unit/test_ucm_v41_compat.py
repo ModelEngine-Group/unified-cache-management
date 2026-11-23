@@ -601,7 +601,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     expected.append(tuple(labels))
                     expected.append(("destroy", 7))
                 else:
-                    expected = [()]
+                    expected = []
                 self.assertEqual(events, expected)
 
     def test_spec_formats_select_packed_value_scale_descriptors(self):

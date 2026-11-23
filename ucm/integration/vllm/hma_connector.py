@@ -29,6 +29,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _get_store_gc_block_size,
+    _log_pd_sync_load_result,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
     build_kv_hash_meta,
@@ -769,6 +770,8 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
 
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
+    pd_sync_load_req_ids: set[str] = field(default_factory=set, kw_only=True)
+    pd_sync_load_workers: int = field(default=0, kw_only=True)
 
 
 @dataclass
@@ -2452,9 +2455,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         ):
             load_event_handle = self._get_event_handle()
 
-        tasks: list[FAWALoadTask] = []
+        sync_loads: list[FAWAPendingLoad] = []
         for request_id, request in metadata.request_meta.items():
             if not request.load_keys:
+                _log_pd_sync_load_result(metadata, request_id, skipped=True)
                 continue
             if request.load_async and request_id in self._pending_fawa_loads:
                 logger.warning(
@@ -2464,6 +2468,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 continue
 
             pending = FAWAPendingLoad(request_id=request_id)
+            if not request.load_async:
+                sync_loads.append(pending)
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
@@ -2492,7 +2498,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     fa_ptrs,
                     event_handle=submit_handle,
                 )
-                tasks.append(fa_task)
                 pending.tasks.append(fa_task)
 
                 if not self.window_group_ids:
@@ -2513,7 +2518,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     window_ptrs,
                     event_handle=submit_handle,
                 )
-                tasks.append(wa_task)
                 pending.tasks.append(wa_task)
                 if request.load_async:
                     self._pending_fawa_loads[request_id] = pending
@@ -2557,14 +2561,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         load_task.store.wait, load_task.task
                     )
 
-        sync_tasks = [
-            task
-            for request_id, request in metadata.request_meta.items()
-            if not request.load_async
-            for task in tasks
-            if task.request_id == request_id
-        ]
-        self._wait_all_load_task(sync_tasks)
+        for load in sync_loads:
+            succeeded = self._wait_all_load_task(load.tasks)
+            if succeeded and not load.failed:
+                _log_pd_sync_load_result(metadata, load.request_id)
 
         if load_event_handle:
             self.device.destroy_event_handle(load_event_handle)
@@ -2613,13 +2613,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
         return finished
 
-    def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
+    def _wait_all_load_task(self, tasks: list[FAWALoadTask]) -> bool:
         load_bytes = 0
+        succeeded = bool(tasks)
         for load_task in tasks:
             if self._wait_load_task(load_task):
                 load_bytes += load_task.key_count * self.file_size[load_task.label]
+            else:
+                succeeded = False
         if tasks:
             ucmmetrics.update_stats({"load_bytes_total": load_bytes})
+        return succeeded
 
     def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
