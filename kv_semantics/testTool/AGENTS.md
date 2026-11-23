@@ -57,7 +57,7 @@ cmake --build build -j                        # 增量编译
 - **clang-format 风格（硬性）**：全部 C/C++ 代码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、IndentWidth 4、ColumnLimit 100）保持一致，改动的源文件交付前必须过 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。环境未预置该工具时先 `apt-get install clang-format`，以 `clang-format --style=file:<仓库根>/.clang-format -i <文件>` 执行。
 - 头文件统一使用 `#pragma once` 防止重复包含，不使用传统 include 守卫。
 
-- 模块化设计：`src/` 根放置顶层编排（`main`、`scheduler`），功能按 `src/` 下模块目录（`log` / `request` / `utils` / `worker` / `test`）划分，职责单一；模块间通过头文件公开接口交互，不直接依赖其他模块内部实现细节。`test/` 为临时测试代码目录，全部模块开发完成后整体删除。
+- 模块化设计：`src/` 根放置顶层编排（`main`、`scheduler`），功能按 `src/` 下模块目录（`log` / `request` / `utils` / `worker`）划分，职责单一；模块间通过头文件公开接口交互，不直接依赖其他模块内部实现细节。
 - 方法（函数）前需有中文注释说明职责，一句话即可；仅参数较多或含义不直观时补充 `@param` / `@return`，简单参数不写；方法体内只在关键逻辑处注释，不逐行注释。
 - CMake 文件分段编写，每段以注释标明该段内容的作用。
 - 默认不使用 namespace，类名直接全局命名；确需 namespace 时另行约定。

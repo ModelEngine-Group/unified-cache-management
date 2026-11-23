@@ -33,7 +33,6 @@
 #include "log/logger_manager.h"
 #include "request/request_manager.h"
 #include "scheduler.h"
-// #include "test/log_test.h"  // 日志模块自测暂时停用，恢复时随下方调用段一并取消注释
 #include "utils/config_util.h"
 
 /** SIGINT 到达标志（信号处理器与主线程共享；lock-free 原子 store 为 async-signal-safe） */
@@ -193,15 +192,9 @@ int main(int argc, char *argv[])
         // 完成标记行（仅成功时输出；与启动标记对称）：warn 级别仅作醒目标记，可见性随 log.level
         if (runOk) { LOG_WARN("======Test Completed Successfully======="); }
 
-        // 临时：日志模块功能自测，全部正式功能开发完成后随 src/test/
-        // 目录整体移除本段（仅正式流程成功时运行） ——暂时停用（2026-11-17 指令：暂时注释 log
-        // 模块的验证），恢复时取消下行注释并删除占位行 const bool logTestOk = runOk ?
-        // RunLogTest(config) : true;
-        const bool logTestOk = true;  // 日志自测停用期间的占位恒真值
-
         // ---- 统一收尾：回收调度器（注销 region、关闭 kv client）与全部日志资源 ----
         CloseAll(scheduler);
-        return (runOk && logTestOk) ? 0 : 1;
+        return runOk ? 0 : 1;
     } catch (const std::exception &e) {
         // 配置 getter 安全访问抛出的缺 key / 坏值等异常统一在此兜底：报错退出前对已初始化组件收尾
         std::cerr << "[FAIL] " << e.what() << std::endl;
