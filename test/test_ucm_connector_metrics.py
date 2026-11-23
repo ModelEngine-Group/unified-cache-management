@@ -1671,6 +1671,82 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
     ]
 
 
+@pytest.mark.parametrize(
+    "num_tokens,slots,matched", [(129, [7], 127), (148, [7, 9], 146)]
+)
+def test_partial_tail_lookup_dispatches_only_reusable_slots(num_tokens, slots, matched):
+    connector = object.__new__(UCMLayerWiseConnector)
+    connector.block_size = 128
+    connector.cp_world_size = 1
+    connector.use_layerwise = True
+    connector._vllm_config = SimpleNamespace(speculative_config=None)
+    connector.requests_meta = {}
+    connector._async_load_req_ids = set()
+    connector._pending_async_load_dispatches = {}
+    connector.enable_record_traces = False
+    connector.persist_token_threshold = 0
+    connector.use_request_async_load = False
+    keys = [b"full", b"tail"]
+    connector.request_block_hasher = lambda request: keys
+    connector._lookup_all_stages = lambda block_ids: len(block_ids) - 1
+    connector._prefetch_direct_hit_key_hotness = Mock()
+    request = SimpleNamespace(
+        request_id="req",
+        status="waiting",
+        num_tokens=num_tokens,
+        all_token_ids=list(range(num_tokens)),
+    )
+    assert connector.get_num_new_matched_tokens(request, 0) == (matched, False)
+    # After reserving two tokens for recompute, schedule just one of them.
+    plan = connector._generate_dispatch_meta(
+        connector.requests_meta["req"], 1, slots, True
+    )
+    assert plan.load_block_ids == (keys[: len(slots)], slots)
+    # The final scheduled token makes the short tail eligible for dump.
+    extra_slots = [9] if num_tokens == 129 else []
+    final = connector._generate_dispatch_meta(
+        connector.requests_meta["req"], 1, extra_slots, False
+    )
+    assert final.dump_block_ids == ([keys[-1]], [9])
+    assert final.dump_tail_tokens == num_tokens % 128
+
+
+def test_pending_tail_is_consumed_before_registered_page_is_reused():
+    connector = object.__new__(UCMDirectConnector)
+    connector.is_mla = False
+    connector.tp_rank = 0
+    connector.block_data_size = 128
+    connector._pending_dump_tasks = []
+    connector.store = Mock()
+    connector._get_event_handle = lambda: 0
+    writes = []
+    page = []
+
+    def stage(slot, tokens, layer):
+        page[:] = [slot, tokens]
+        return page
+
+    connector._tail_buffer = SimpleNamespace(stage=stage)
+
+    def wait(pending):
+        writes.append(tuple(pending.task))
+
+    connector._wait_pending_dump_task = wait
+    connector._rank_consistency = SimpleNamespace(
+        submit_dump=lambda store, context, keys, shards, pointers, event: pointers
+    )
+    for slot in (7, 9):
+        request = RequestDispatchMeta(
+            ([], []), ([b"full", b"tail"], [3, slot]), dump_tail_tokens=20
+        )
+        assert connector._submit_tail_and_get_full_blocks("req", request) == (
+            [b"full"],
+            [3],
+        )
+    assert writes == [(7, 20)]
+    assert connector._pending_dump_tasks[0].task == [9, 20]
+
+
 def test_request_async_alloc_dispatches_load_without_scheduled_forward():
     connector = object.__new__(UCMDirectConnector)
     connector.use_request_async_load = True
