@@ -1970,6 +1970,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 f"HLA group count {self.group_manager.num_groups}"
             )
         req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
+        # The scheduler may accept fewer external tokens than the lookup
+        # reported; truncate the residue so no load is planned for tokens
+        # the request recomputes.
+        accepted_blocks = req_meta.hbm_hit_block_num + (
+            math.ceil(num_external_tokens / self.group_manager.lcm_block_size)
+        )
+        if req_meta.total_hit_block_num > accepted_blocks:
+            req_meta.total_hit_block_num = accepted_blocks
+            req_meta.token_processed = accepted_blocks * self.group_manager.lcm_block_size
         if not self.use_request_async_load or num_external_tokens <= 0:
             return
 
