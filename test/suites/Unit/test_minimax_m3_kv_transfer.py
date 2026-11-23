@@ -197,6 +197,31 @@ def test_release_without_the_fused_method_keeps_the_eager_hook(runtime):
     assert SparseAttention._run_sparse_attention._ucm_kv_hooks_patched
 
 
+def test_partially_patched_class_still_gets_the_fused_hook(runtime):
+    if runtime.backend != "ascend":
+        pytest.skip("only the Ascend patch has two entry points")
+
+    def eager_only(self):
+        return "eager"
+
+    # Another patch (or an earlier UCM revision) already took the eager method:
+    # the fused entry point must still be wrapped instead of being skipped.
+    eager_only._ucm_kv_hooks_patched = True
+
+    class SparseAttention:
+        layer_name = "layer.attn"
+        kv_cache = (object(), object())
+        _run_sparse_attention = eager_only
+
+        def _run_fused_sparse_attention(self):
+            return "fused"
+
+    module = SimpleNamespace(MiniMaxM3SparseAttention=SparseAttention)
+    runtime.patch.patch_minimax_m3_kv_hooks(module)
+    assert SparseAttention._run_sparse_attention is eager_only
+    assert SparseAttention._run_fused_sparse_attention._ucm_kv_hooks_patched
+
+
 @pytest.mark.parametrize(
     "inactive", ["no_group", "not_v1", "no_connector_meta", "profile"]
 )
