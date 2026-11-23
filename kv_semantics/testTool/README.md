@@ -5,7 +5,7 @@ kv_semantics 测试工具（C++17），开发中。
 ## 目录结构
 
 - `src/` 源码（根目录为顶层编排 `main` / `scheduler`；模块目录 `log` / `request` / `utils` / `worker`）
-- `conf/` 运行时配置（simu 环境默认三件套 + 真机验证三件套 `kv_client_real.conf` / `kv_client_view_real.conf` / `test_config_onlyconnect.conf`）
+- `conf/` 运行时配置（三件套 `test_config.conf` / `kv_client.conf` / `kv_client_view.conf`，simu 环境缺省直接可用；RoCE / HCCP 真机验证复制副本修改，模板段已内置，见 `sop/`）
 - `sop/` 建链断链 SOP（`0. 构建与运行-SOP.md` 原理与排障 / `1. CPU建链断链-SOP.md` / `2. NPU建链断链-SOP.md`）
 - `input/` 流量模型输入文件（`input.txt` 为驱动源，格式见 `input/readme.md`）
 - `scripts/` 辅助脚本（`build-kv-link.sh` 建链测试一键编译，CPU/NPU 双模式）
