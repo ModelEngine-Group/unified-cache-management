@@ -84,6 +84,7 @@ const char* log_level_name(LogLevel level)
 // NOLINTBEGIN(huge_method, huge_cyclomatic_complexity)
 int AgentLogger::init(const char* base_dir, const std::string& component)
 {
+    std::lock_guard guard(lock);
     if (output.is_open()) { output.close(); }
     output.clear();
     if (!base_dir || base_dir[0] == '\0') { return 0; }

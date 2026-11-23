@@ -17,6 +17,7 @@ namespace agent {
 
 #define KV_VIEW_REFRESH_INTERVAL_DEFAULT 30 /* 视图刷新周期默认值(秒) */
 #define KV_VIEW_FETCH_TIMEOUT_DEFAULT 10    /* 单次拉取超时默认值(秒) */
+#define KV_VIEW_FALLBACK_DELAY_DEFAULT 900  /* 触发回退MON拉取的持续失败时长默认值(秒) */
 
 struct KVClientAgentConfig {
     std::string mon_host;
@@ -25,6 +26,7 @@ struct KVClientAgentConfig {
     // 视图刷新配置, 可选参数, 0表示使用默认值
     int view_refresh_interval = KV_VIEW_REFRESH_INTERVAL_DEFAULT;
     int view_fetch_timeout = KV_VIEW_FETCH_TIMEOUT_DEFAULT;
+    int view_fallback_delay = KV_VIEW_FALLBACK_DELAY_DEFAULT;
 };
 
 struct KVClientNodeView {

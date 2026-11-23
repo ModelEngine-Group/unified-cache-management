@@ -14,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -38,11 +39,6 @@
 namespace agent {
 namespace {
 
-// 连接就绪轮询: 最多轮询次数与每次间隔, 封顶阻塞约 500ms.
-// 给异步连接握手一点时间, 避免在 CephX 认证完成前发送消息导致连接被 reset.
-constexpr int KV_CONN_READY_POLL_MAX = 50;
-constexpr int KV_CONN_READY_POLL_INTERVAL_MS = 10;
-
 // OSD Agent 固定监听端口, 与 KVOSDAgent 中 KV_OSD_AGENT_DEFAULT_PORT 一致.
 // OSDMap 中地址端口为 0 时用此值补齐.
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
@@ -60,10 +56,14 @@ struct ViewRefresherState {
     // 配置参数
     std::chrono::seconds refresh_interval{KV_VIEW_REFRESH_INTERVAL_DEFAULT};
     std::chrono::seconds fetch_timeout{KV_VIEW_FETCH_TIMEOUT_DEFAULT};
+    std::chrono::seconds fallback_delay{KV_VIEW_FALLBACK_DELAY_DEFAULT};
+    // per dpu 拉取失败时间点
+    std::optional<std::chrono::steady_clock::time_point> fail_start;
 
     // 异步拉取状态
-    // pending_fetch_osd >= 0 表示正在等待该 OSD 的MOSDMap 响应
+    // pending_fetch_osd >= 0 表示正在等待该 OSD 的MOSDMap 响应，-1 空闲；-2 等待期间连接失败
     std::atomic<int> pending_fetch_osd{-1};
+    static constexpr int PENDING_FETCH_CONN_FAILED = -2;
 
     // 连接缓存: osd_id -> ConnectionRef
     std::map<int, ConnectionRef> conn_cache;
@@ -122,8 +122,15 @@ public:
         if (r < 0) { return r; }
 
         // 保存配置参数供 view refresher 使用
-        view_refresh_interval_cfg = std::chrono::seconds(config.view_refresh_interval);
-        view_fetch_timeout_cfg = std::chrono::seconds(config.view_fetch_timeout);
+        view_refresh_interval_cfg = std::chrono::seconds(config.view_refresh_interval > 0
+                                                             ? config.view_refresh_interval
+                                                             : KV_VIEW_REFRESH_INTERVAL_DEFAULT);
+        view_fetch_timeout_cfg =
+            std::chrono::seconds(config.view_fetch_timeout > 0 ? config.view_fetch_timeout
+                                                               : KV_VIEW_FETCH_TIMEOUT_DEFAULT);
+        view_fallback_delay_cfg =
+            std::chrono::seconds(config.view_fallback_delay > 0 ? config.view_fallback_delay
+                                                                : KV_VIEW_FALLBACK_DELAY_DEFAULT);
 
         initialized = true;
         return 0;
@@ -384,7 +391,7 @@ private:
         AGENT_LOG(logger, LogLevel::WARNING,
                   "connection to OSD " + std::to_string(osd_id) +
                       " reset/refused (peer=" + c->get_peer_addr().ip_only_to_str() + ")");
-        view_refresher->pending_fetch_osd.store(-1);
+        view_refresher->pending_fetch_osd.store(ViewRefresherState::PENDING_FETCH_CONN_FAILED);
         {
             std::lock_guard cl(view_refresher->conn_cache_lock);
             view_refresher->conn_cache.erase(osd_id);
@@ -493,10 +500,12 @@ private:
         view_refresher = std::make_unique<ViewRefresherState>();
         view_refresher->refresh_interval = view_refresh_interval_cfg;
         view_refresher->fetch_timeout = view_fetch_timeout_cfg;
+        view_refresher->fallback_delay = view_fallback_delay_cfg;
         view_refresher->running = true;
         view_refresher->stop_requested = false;
         view_refresher->next_dpu_idx = 0;
         view_refresher->pending_fetch_osd = -1;
+        view_refresher->fail_start.reset();
         view_refresher->refresh_thread = std::thread(&KVOSDClientAgent::view_refresh_loop, this);
         AGENT_LOG(logger, LogLevel::INFO,
                   "view refresh thread started (interval=" +
@@ -548,38 +557,64 @@ private:
             // ② 获取 UP IN DPU 列表
             std::vector<int> dpu_list;
             extract_up_in_dpu_list(dpu_list);
+            bool success = false;
             if (dpu_list.empty()) {
                 AGENT_LOG(logger, LogLevel::INFO,
                           "OSD map not yet received or no UP IN DPU, skipping");
+            } else {
+                // ③ Round-Robin 选择 DPU 并拉取
+                int start_idx = view_refresher->next_dpu_idx.load();
+                int count = static_cast<int>(dpu_list.size());
+
+                for (int i = 0; i < count; ++i) {
+                    int idx = (start_idx + i) % count;
+                    int target_osd = dpu_list[idx];
+
+                    success = fetch_view_from_dpu(target_osd);
+                    if (success) {
+                        // ④ 游标更新: 成功 DPU 索引 +1 取模
+                        view_refresher->next_dpu_idx.store((idx + 1) % count);
+                        break;
+                    }
+                    // 失败继续尝试下一个 DPU
+                }
+            }
+            if (success) {
+                view_refresher->fail_start.reset();
                 continue;
             }
 
-            // ③ Round-Robin 选择 DPU 并拉取
-            bool success = false;
-            int start_idx = view_refresher->next_dpu_idx.load();
-            int count = static_cast<int>(dpu_list.size());
-
-            for (int i = 0; i < count; ++i) {
-                int idx = (start_idx + i) % count;
-                int target_osd = dpu_list[idx];
-
-                success = fetch_view_from_dpu(target_osd);
-                if (success) {
-                    // ④ 游标更新: 成功 DPU 索引 +1 取模
-                    view_refresher->next_dpu_idx.store((idx + 1) % count);
-                    break;
-                }
-                // 失败继续尝试下一个 DPU
-            }
-
-            if (!success) {
-                // 全部 DPU 失败, 游标保持不变, 下一轮从同一位置重试
-                AGENT_LOG(logger, LogLevel::WARNING,
-                          "all DPU view fetch failed, will retry next cycle");
+            // all dpu failed or dpu list empty
+            auto now = std::chrono::steady_clock::now();
+            if (!view_refresher->fail_start.has_value()) { view_refresher->fail_start = now; }
+            auto elapsed = now - *view_refresher->fail_start;
+            auto elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+            AGENT_LOG(
+                logger, LogLevel::WARNING,
+                "all DPU view fetch failed, elapsed=" + std::to_string(elapsed_sec) +
+                    "s, fallback_delay=" + std::to_string(view_refresher->fallback_delay.count()) +
+                    "s, will retry next cycle");
+            if (elapsed >= view_refresher->fallback_delay) {
+                fallback_fetch_osdmap_from_mon();
+                view_refresher->fail_start.reset();
             }
         }
 
         AGENT_LOG(logger, LogLevel::INFO, "view refresh loop exiting");
+    }
+
+    void fallback_fetch_osdmap_from_mon()
+    {
+        epoch_t current_epoch;
+        {
+            std::lock_guard guard(lock);
+            current_epoch = osdmap.get_epoch();
+        }
+        AGENT_LOG(logger, LogLevel::INFO,
+                  "view fallback: subscribing OSDMap from MON (from_epoch=" +
+                      std::to_string(current_epoch + 1) + ")");
+        monc->sub_want("osdmap", current_epoch + 1, CEPH_SUBSCRIBE_ONETIME);
+        monc->renew_subs();
     }
 
     // --- Phase 3: extract_up_in_dpu_list ---
@@ -674,10 +709,9 @@ private:
         if (!conn->is_connected()) {
             AGENT_LOG(logger, LogLevel::DEBUG,
                       "waiting for async connection to OSD " + std::to_string(osd_id) + "...");
-            for (int i = 0; i < KV_CONN_READY_POLL_MAX; ++i) {
+            for (int i = 0; i < 50; ++i) {
                 if (conn->is_connected()) break;
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(KV_CONN_READY_POLL_INTERVAL_MS));
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             AGENT_LOG(logger, LogLevel::INFO,
                       "OSD " + std::to_string(osd_id) + " connection ready: is_connected=" +
@@ -739,7 +773,9 @@ private:
                       " is_connected=" + std::to_string(conn->is_connected()));
 
         // ⑤ 等待响应或超时 (异步等待: cv.wait_for)
+        bool fetch_failed = false;
         bool timed_out = false;
+        bool conn_failed = false;
         {
             std::unique_lock<std::mutex> lk(view_refresher->refresher_lock);
             view_refresher->cv.wait_for(lk, view_refresher->fetch_timeout, [this, osd_id] {
@@ -752,22 +788,34 @@ private:
                       "wait_for woke: pending=" + std::to_string(pending_after) +
                           " stop=" + std::to_string(stop) + " osd_id=" + std::to_string(osd_id) +
                           " is_connected=" + std::to_string(conn->is_connected()));
-            // 检查是否超时 (pending 仍为 osd_id 说明未收到响应)
-            if (pending_after == osd_id) { timed_out = true; }
+            // 检查是否超时或连接失败
+            timed_out = (pending_after == osd_id);
+            conn_failed = (pending_after == ViewRefresherState::PENDING_FETCH_CONN_FAILED);
+            fetch_failed = timed_out || conn_failed;
         }
 
-        if (timed_out) {
-            // ⑥ 超时: 清除 pending, 清除可能已坏的连接, 尝试下一个 DPU
+        if (fetch_failed) {
+            // 拉取失败
             view_refresher->pending_fetch_osd.store(-1);
             {
                 std::lock_guard cl(view_refresher->conn_cache_lock);
                 view_refresher->conn_cache.erase(osd_id);
             }
-            AGENT_LOG(logger, LogLevel::WARNING,
-                      "DPU " + std::to_string(osd_id) + " view fetch timeout (timeout=" +
-                          std::to_string(view_refresher->fetch_timeout.count()) +
-                          "s), is_connected=" + std::to_string(conn->is_connected()) +
-                          ", trying next");
+            if (conn_failed) {
+                AGENT_LOG(logger, LogLevel::WARNING,
+                          "DPU " + std::to_string(osd_id) +
+                              " view fetch failed: connection reset/refused"
+                              " (peer=" +
+                              conn->get_peer_addr().ip_only_to_str() + "), is_connected=" +
+                              std::to_string(conn->is_connected()) + ", trying next");
+            } else {
+                AGENT_LOG(logger, LogLevel::WARNING,
+                          "DPU " + std::to_string(osd_id) + " view fetch timeout (timeout=" +
+                              std::to_string(view_refresher->fetch_timeout.count()) +
+                              "s), is_connected=" + std::to_string(conn->is_connected()) +
+                              ", trying next");
+            }
+
             return false;
         }
 
@@ -835,6 +883,7 @@ private:
     std::unique_ptr<ViewRefresherState> view_refresher;
     std::chrono::seconds view_refresh_interval_cfg{KV_VIEW_REFRESH_INTERVAL_DEFAULT};
     std::chrono::seconds view_fetch_timeout_cfg{KV_VIEW_FETCH_TIMEOUT_DEFAULT};
+    std::chrono::seconds view_fallback_delay_cfg{KV_VIEW_FALLBACK_DELAY_DEFAULT};
 };
 
 }  // namespace

@@ -11,9 +11,6 @@
 #include <new>
 #include "KVAgentImpl.h"
 
-// 存储侧日志固定目录, 运行环境暂定不可修改.
-#define KV_AGENT_LOG_DIR "/home/ibc_os_hs/agent_log"
-
 struct kv_agent_handle {
     agent::AgentLogger logger;
     std::unique_ptr<agent::KVAgentImpl> impl;
@@ -54,7 +51,7 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_init(kv_agent_handle* agent,
         return INVALID_AGENT_HANDLE;
     }
 
-    int r = agent->logger.init(KV_AGENT_LOG_DIR, "kv_agent");
+    int r = agent->logger.init("/home/ibc_os_hs/agent_log", "kv_agent");
     if (r < 0) {
         AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
                   "failed to initialize file logging: " + std::to_string(r));
@@ -111,6 +108,17 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_is_initialized(kv_agent_handle* agen
     }
 
     return agent->impl->is_initialized() ? 1 : 0;
+}
+
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_is_online(kv_agent_handle* agent)
+{
+    if (!agent || !agent->impl) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
+                  "invalid agent handle: " + std::to_string(INVALID_AGENT_HANDLE));
+        return INVALID_AGENT_HANDLE;
+    }
+
+    return agent->impl->kv_agent_is_online() ? 1 : 0;
 }
 
 extern "C" KV_AGENT_EXPORT int32_t kv_agent_start_heartbeat(kv_agent_handle* agent)
@@ -199,4 +207,59 @@ extern "C" KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(kv_agent_hand
 
     return agent->impl->kv_agent_delete_ceph_pool_async(
         kvnsName, nameLen, [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+}
+
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_osd_out_async(kv_agent_handle* agent,
+                                                          kv_agent_async_cb cb, void* user_data)
+{
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
+                  "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_osd_out_async([cb](int32_t result, void* ud) { cb(result, ud); },
+                                               user_data);
+}
+
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_osd_crush_rm_async(kv_agent_handle* agent,
+                                                               kv_agent_async_cb cb,
+                                                               void* user_data)
+{
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
+                  "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_osd_crush_rm_async(
+        [cb](int32_t result, void* ud) { cb(result, ud); }, user_data);
+}
+
+extern "C" KV_AGENT_EXPORT int32_t
+kv_agent_is_crush_root_empty_async(kv_agent_handle* agent, char* kvPoolName, uint32_t nameLen,
+                                   bool* isEmpty, kv_agent_async_cb cb, void* user_data)
+{
+    if (!agent || !agent->impl || !cb) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
+                  "invalid agent handle or callback: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    return agent->impl->kv_agent_is_crush_root_empty_async(
+        kvPoolName, nameLen, isEmpty, [cb](int32_t result, void* ud) { cb(result, ud); },
+        user_data);
+}
+
+extern "C" KV_AGENT_EXPORT int32_t kv_agent_set_timeout_down_callback(kv_agent_handle* agent,
+                                                                      void (*callback)(void))
+{
+    if (!agent || !agent->impl) {
+        AGENT_LOG(nullptr, ::agent::LogLevel::ERROR,
+                  "invalid agent handle: " + std::to_string(-EINVAL));
+        return -EINVAL;
+    }
+
+    agent->impl->set_timeout_down_callback(callback);
+    return 0;
 }

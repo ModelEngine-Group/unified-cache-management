@@ -25,9 +25,11 @@
 // vim: ts=8 sw=2 smarttab
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/system/error_code.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -37,8 +39,10 @@
 #include <random>
 #include <set>
 #include <string>
+#include <sys/socket.h>
 #include <system_error>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 #include "AgentLogger.h"
@@ -69,10 +73,11 @@ namespace {
 // Boot 指数退避参数（编译期宏常量, 不通过C ABI配置传入）
 constexpr int BOOT_RETRY_DELAY = 5;       // 秒, Boot 重试初始等待时间
 constexpr int BOOT_RETRY_MAX_DELAY = 60;  // 秒, Boot 重试等待上限
+constexpr int MON_DISCONNECT_DOWN_THRESHOLD_SEC = 900;
+// init 失败自愈窗口内重建通信层的重试间隔
+constexpr int INIT_RETRY_INTERVAL_SEC = 60;
 // OSD Agent 固定监听端口, 配置未指定端口时使用此值
 constexpr int KV_OSD_AGENT_DEFAULT_PORT = 6800;
-// 创建 kv 命名空间 pool 时使用的 pg_num 固定值
-constexpr int KV_OSD_AGENT_PG_NUM = 4;
 
 int parse_public_addrs(const std::string& value, entity_addrvec_t* result,
                        AgentLogger* logger = nullptr)
@@ -413,13 +418,44 @@ class KVOSDAgent final : public KVAgentImpl {
 public:
     ~KVOSDAgent() override
     {
+        stop_heal_thread();
         shutdown();
         async_worker_stop();
+    }
+
+    int32_t check_listen_port_available(const entity_addrvec_t& addrs)
+    {
+        AGENT_LOG(
+            logger, ::agent::LogLevel::INFO,
+            "checking listen port availability for " + std::to_string(addrs.v.size()) + " addr(s)");
+        for (const auto& addr : addrs.v) {
+            if (!addr.is_ip()) { continue; }
+            const sockaddr* sa = addr.get_sockaddr();
+            int fd = ::socket(sa->sa_family, SOCK_STREAM, 0);
+            if (fd < 0) { continue; }
+            int opt = 1;
+            ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+            int bind_ret = ::bind(fd, sa, addr.get_sockaddr_len());
+            int bind_errno = errno;
+            ::close(fd);
+            if (bind_ret == 0 || bind_errno != EADDRINUSE) { continue; }
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                      "listen port is already in use: " + addr.get_legacy_str() +
+                          ", please check for a leftover agent instance or another process");
+            return -EADDRINUSE;
+        }
+        return 0;
     }
 
     int init(const KVAgentConfig& config, AgentLogger* agent_logger) override
     {
         logger = agent_logger;
+        const auto init_begin = std::chrono::steady_clock::now();
+        const auto init_elapsed_ms = [&init_begin]() {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - init_begin)
+                .count();
+        };
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "initializing OSD agent");
         AGENT_LOG(logger, ::agent::LogLevel::DEBUG, "validating OSD agent configuration");
         if (config.osd_id < 0 || config.mon_host.empty() || config.osd_key.empty() ||
@@ -429,24 +465,75 @@ public:
             return -EINVAL;
         }
 
-        // 保存完整配置副本, 供 mon断链后重建通信层 (messenger/monc) 时复用.
-        // 切换 DPU IP 时仅更新 addrs 字段, 其余保持不变.
-        saved_config_ = config;
-        // 首次 init 时以配置的 addrs 顺序为起点; 重新 init (IP切换) 时保持
-        // current_addrs_ (已被 rotate）不变.
-        if (!reinitializing_) { current_addrs_ = config.addrs; }
-
+        heartbeat_interval = config.osd_mon_heartbeat_interval;
+        bool reconfig_rebuild = false;
         {
             AGENT_LOG(logger, ::agent::LogLevel::DEBUG, "acquiring OSD agent state lock");
             std::lock_guard l(state_lock);
             AGENT_LOG(logger, ::agent::LogLevel::DEBUG, "OSD agent state lock acquired");
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "init: initialized=" + std::to_string(initialized) +
+                          ", starting=" + std::to_string(starting) +
+                          ", reinitializing_=" + std::to_string(reinitializing_));
             if (initialized || starting) {
-                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
-                          "agent is already initialized: " + cpp_strerror(-EALREADY));
-                return -EALREADY;
+                if (reinitializing_ && config_changed(config, saved_config_)) {
+                    AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                              "external re-config during IP switch, requesting yield");
+                    ip_switch_abort_requested_ = true;
+                    reconfig_rebuild = true;
+                } else if (reinitializing_ || !config_changed(config, saved_config_)) {
+                    AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                              "agent is already initialized: " + cpp_strerror(-EALREADY));
+                    return -EALREADY;
+                } else {
+                    AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                              "init: external config changed, entering reconfig "
+                              "rebuild, osd_id=" +
+                                  std::to_string(config.osd_id) + ", addrs=" + config.addrs);
+                    reconfig_rebuild = true;
+                }
+            } else {
+                starting = true;
+                stopping = false;
             }
-            starting = true;
-            stopping = false;
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "init: reconfig_rebuild=" + std::to_string(reconfig_rebuild));
+        if (reconfig_rebuild) {
+            std::lock_guard rb(rebuild_mutex);
+            {
+                std::lock_guard l(state_lock);
+                ip_switch_abort_requested_ = false;
+                if (!config_changed(config, saved_config_)) { return -EALREADY; }
+            }
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "configuration changed, rebuilding OSD agent with new config");
+
+            bool was_heartbeat_running = false;
+            {
+                std::lock_guard l(state_lock);
+                was_heartbeat_running = heartbeat_running;
+            }
+            shutdown();
+            const int r = rebuild(config, false, logger);
+            if (r < 0) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          "re-config rebuild failed: " + cpp_strerror(r));
+                return r;
+            }
+            if (was_heartbeat_running) {
+                const int hb = start_heartbeat();
+                if (hb < 0) {
+                    AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                              "restart heartbeat after re-config failed: " + cpp_strerror(hb));
+                }
+            }
+            return 0;
+        }
+
+        if (!reinitializing_) {
+            saved_config_ = config;
+            current_addrs_ = config.addrs;
         }
 
         CephInitParameters init_params(CEPH_ENTITY_TYPE_OSD);
@@ -477,6 +564,9 @@ public:
         cct->_conf.apply_changes(nullptr);
         common_init_finish(cct.get());
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "Ceph context initialized");
+        AGENT_LOG(
+            logger, ::agent::LogLevel::INFO,
+            "[TIMING] init: ceph context ready cost=" + std::to_string(init_elapsed_ms()) + "ms");
 
         poolctx = std::make_unique<ceph::async::io_context_pool>(
             cct->_conf.get_val<std::uint64_t>("osd_asio_thread_count"));
@@ -487,11 +577,13 @@ public:
         // 都周期检查 monc->is_connected(), 一旦发现断链立即触发 DPU IP 切换.
         mon_watch_timer = std::make_unique<boost::asio::steady_timer>(poolctx->get_io_context());
 
-        monc = std::make_unique<MonClient>(cct.get(), *poolctx);
+        monc = std::make_shared<MonClient>(cct.get(), *poolctx);
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "building initial monitor map");
         r = monc->build_initial_monmap();
         if (r < 0) { return fail_init(r, "failed to build initial monmap"); }
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "initial monitor map built");
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "[TIMING] init: monmap ready cost=" + std::to_string(init_elapsed_ms()) + "ms");
 
         const auto msg_type = cct->_conf.get_val<std::string>("ms_type");
         // Use nonce 0 so that Compute Agents connecting with the bare
@@ -501,10 +593,16 @@ public:
         messenger.reset(
             Messenger::create(cct.get(), msg_type, entity_name_t::OSD(config.osd_id), "kv_osd", 0));
         if (!messenger) { return fail_init(-ENOMEM, "failed to create messenger"); }
+        AGENT_LOG(
+            logger, ::agent::LogLevel::INFO,
+            "[TIMING] init: messenger created cost=" + std::to_string(init_elapsed_ms()) + "ms");
 
         entity_addrvec_t public_addrs;
         r = parse_public_addrs(config.addrs, &public_addrs, logger);
         if (r < 0) { return fail_init(r, "failed to parse addrs"); }
+
+        r = check_listen_port_available(public_addrs);
+        if (r < 0) { return fail_init(r, "agent listen port is already in use"); }
 
         r = messenger->bindv(public_addrs);
         if (r < 0) { return fail_init(r, "failed to bind messenger"); }
@@ -519,6 +617,9 @@ public:
             }
             AGENT_LOG(logger, ::agent::LogLevel::INFO,
                       "messenger bound to [" + addr_str + "] config_addrs=[" + config.addrs + "]");
+            AGENT_LOG(
+                logger, ::agent::LogLevel::INFO,
+                "[TIMING] init: messenger bound cost=" + std::to_string(init_elapsed_ms()) + "ms");
         }
 
         // Allow Compute Agents (CEPH_ENTITY_TYPE_CLIENT) to connect and
@@ -541,6 +642,9 @@ public:
         messenger_started = true;
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
                   "messenger started, listening for client connections");
+        AGENT_LOG(
+            logger, ::agent::LogLevel::INFO,
+            "[TIMING] init: messenger started cost=" + std::to_string(init_elapsed_ms()) + "ms");
 
         monc->set_want_keys(CEPH_ENTITY_TYPE_MON | CEPH_ENTITY_TYPE_OSD);
         // Register the dispatcher so MonClient::handle_auth_request can call
@@ -549,13 +653,18 @@ public:
         r = monc->init();
         if (r < 0) { return fail_init(r, "monclient init failed"); }
         monc_started = true;
+        AGENT_LOG(
+            logger, ::agent::LogLevel::INFO,
+            "[TIMING] init: monclient inited cost=" + std::to_string(init_elapsed_ms()) + "ms");
 
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
                   "authenticating osd." + std::to_string(config.osd_id) + " (timeout " +
                       std::to_string(KV_AGENT_MON_AUTH_TIMEOUT_SECONDS) + " seconds)");
         r = monc->authenticate(KV_AGENT_MON_AUTH_TIMEOUT_SECONDS);
         if (r < 0) { return fail_init(r, "monclient authenticate failed"); }
-        AGENT_LOG(logger, ::agent::LogLevel::INFO, "monitor authentication completed");
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "[TIMING] init: monitor authentication completed cost=" +
+                      std::to_string(init_elapsed_ms()) + "ms");
 
         // Wait for rotating service keys so we can validate incoming client
         // authorizers.  Without this, the first client connection may arrive
@@ -563,7 +672,9 @@ public:
         // to reject the authorizer and reset the connection.
         r = monc->wait_auth_rotating(KV_AGENT_MON_AUTH_TIMEOUT_SECONDS);
         if (r < 0) { return fail_init(r, "failed to obtain rotating service keys from monitor"); }
-        AGENT_LOG(logger, ::agent::LogLevel::INFO, "rotating service keys obtained");
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "[TIMING] init: rotating service keys obtained cost=" +
+                      std::to_string(init_elapsed_ms()) + "ms");
 
         superblock.cluster_fsid = monc->get_fsid();
         superblock.osd_fsid = cct->_conf->osd_uuid;
@@ -579,7 +690,6 @@ public:
         monc->sub_want("osd_pg_creates", dispatcher->get_last_pg_create_epoch(), 0);
         monc->renew_subs();
 
-        heartbeat_interval = config.osd_mon_heartbeat_interval;
         boot_beacon_delay = std::chrono::seconds(config.boot_beacon_delay);
         // 退避参数为编译期宏常量 BOOT_RETRY_DELAY/BOOT_RETRY_MAX_DELAY, 不从 config 读取
         {
@@ -589,8 +699,12 @@ public:
             // First successful init marks the agent as externally initialized
             // stays true even if re-init by ip rotate.
             externally_initialized_ = true;
+            timeout_down_fired_ = false;
         }
+        clear_healing_state();
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "OSD agent initialized");
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "[TIMING] init: total cost=" + std::to_string(init_elapsed_ms()) + "ms");
         return 0;
     }
 
@@ -628,10 +742,11 @@ public:
         heartbeat_timer = std::make_unique<boost::asio::steady_timer>(poolctx->get_io_context());
         // 状态机初始化
         state = AgentState::DOWN;
+        awaiting_first_boot_ = true;
         current_retry_delay = std::chrono::seconds{0};
         // 首次启动 / IP 切换后重启: 都要尽快发 boot.
         // boot_beacon_delay 在切换时被置 0, 保证重新 boot 无 delay.
-        if (boot_beacon_delay.count() > 0 && !ip_switch_pending_) {
+        if (boot_beacon_delay.count() > 0 && !self_healing_) {
             arm_boot();
         } else {
             // 直接进入 boot 发送路径 (不等待 boot_beacon_delay)
@@ -665,10 +780,33 @@ public:
         heartbeat_timer->cancel();
         heartbeat_running = false;
         state = AgentState::DOWN;
+        awaiting_first_boot_ = false;
         // 标记手动停止: IP切换重启后不再自动恢复，需外部显式start_heartbeat
         heartbeat_manually_stopped_ = true;
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "OSD heartbeat stopped");
         return 0;
+    }
+
+    bool kv_agent_is_online() override
+    {
+        bool selfHealing = false;
+        {
+            std::lock_guard l(state_lock);
+            selfHealing = self_healing_;
+        }
+        bool online = selfHealing;
+        online = online || (initialized && !stopping && state == AgentState::ACTIVE);
+        online = online || (initialized && !stopping && state == AgentState::BOOT_SENT);
+        online = online || (initialized && !stopping && heartbeat_running &&
+                            state == AgentState::DOWN && awaiting_first_boot_);
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "kv_agent_is_online: initialized=" + std::to_string(initialized) +
+                      ", stopping=" + std::to_string(stopping) +
+                      ", state=" + std::to_string(static_cast<int>(state)) +
+                      ", awaiting_first_boot=" + std::to_string(awaiting_first_boot_) +
+                      ", self_healing=" + std::to_string(selfHealing) +
+                      " -> online=" + std::to_string(online));
+        return online;
     }
 
     // 添加 root
@@ -679,10 +817,6 @@ public:
     {
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
-            return -1;
-        }
-        if (listSize > 0 && osdIdList == nullptr) {
-            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList");
             return -1;
         }
 
@@ -729,7 +863,7 @@ public:
 
         if (root_exists) {
             AGENT_LOG(logger, ::agent::LogLevel::INFO,
-                      "CRUSH root already exists, continuing: " + outs);
+                      "RUSH root already exists, continuing: " + outs);
         } else if (ret < 0) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to create CRUSH bucket: " + outs);
             return ret;
@@ -803,10 +937,6 @@ public:
         // -------- 输入合法性检测 --------
         if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen) {
             AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName");
-            return -1;
-        }
-        if (listSize > 0 && osdIdList == nullptr) {
-            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList");
             return -1;
         }
 
@@ -1023,8 +1153,7 @@ public:
         // [<pool_type:replicated|erasure>] [<rule>] 创建ceph pool并绑定对应的规则
         int32_t ret = mon_command_sync(
             {std::string("{\"prefix\": \"osd pool create\", \"pool\": \"") + kvnsNameString +
-             "\", \"pg_num\": " + std::to_string(KV_OSD_AGENT_PG_NUM) +
-             ", \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"},
+             "\", \"pg_num\": 4, \"pool_type\": \"replicated\", \"rule\": \"" + ruleName + "\"}"},
             &outbl, &outs);
         AGENT_LOG(logger, ::agent::LogLevel::INFO,
                   "kv_agent_create_ceph_pool: osd pool create ret=" + std::to_string(ret) +
@@ -1069,7 +1198,7 @@ public:
                           "ceph pool " + kvnsNameString +
                               " already bound to another crush rule, expected: " + ruleName +
                               ", actual: " + boundRule);
-                return -17;  // EEXIST: pool 已存在但绑定 rule 与期望不一致
+                return ERR_POOL_RULE_MISMATCH;  // EEXIST: pool 已存在但绑定 rule 与期望不一致
             }
             AGENT_LOG(logger, ::agent::LogLevel::INFO,
                       "ceph pool " + kvnsNameString + " bound to expected crush rule: " + ruleName);
@@ -1137,6 +1266,95 @@ public:
         return 0;
     }
 
+    int32_t kv_agent_osd_out_impl()
+    {
+        const int32_t osd_id = saved_config_.osd_id;
+        ceph::bufferlist outbl;
+        std::string outs;
+        int32_t ret = mon_command_sync(
+            {R"({"prefix": "osd out", "ids": [")" + std::to_string(osd_id) + R"("]})"}, &outbl,
+            &outs);
+        if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                      "Failed to set osd." + std::to_string(osd_id) + " out: " + outs);
+            return ret;
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "osd." + std::to_string(osd_id) + " set out: " + outs);
+        return 0;
+    }
+
+    int32_t kv_agent_osd_crush_rm_impl()
+    {
+        const int32_t osd_id = saved_config_.osd_id;
+        ceph::bufferlist outbl;
+        std::string outs;
+        int32_t ret = mon_command_sync(
+            {R"({"prefix": "osd crush rm", "name": "osd.)" + std::to_string(osd_id) + R"("})"},
+            &outbl, &outs);
+        if (ret < 0) {
+            AGENT_LOG(
+                logger, ::agent::LogLevel::ERROR,
+                "Failed to remove osd." + std::to_string(osd_id) + " from crush map: " + outs);
+            return ret;
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "osd." + std::to_string(osd_id) + " removed from crush map: " + outs);
+        return 0;
+    }
+
+    void set_timeout_down_callback(KVAgentTimeoutDownCb callback) override
+    {
+        {
+            std::lock_guard l(state_lock);
+            timeout_down_cb_ = callback;
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  "set timeout down callback: " +
+                      std::string(callback != nullptr ? "registered" : "cleared") + ", agent(" +
+                      std::to_string(reinterpret_cast<unsigned long long>(this)) + ")");
+    }
+
+    int32_t kv_agent_is_crush_root_empty_impl(char* kvPoolName, uint32_t nameLen, bool* isEmpty)
+    {
+        if (kvPoolName == nullptr || strnlen(kvPoolName, nameLen + 1) != nameLen ||
+            isEmpty == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid kvPoolName or isEmpty");
+            return -1;
+        }
+
+        std::string root_name = std::string(kvPoolName) + "-root";
+        ceph::bufferlist outbl;
+        std::string outs;
+
+        int32_t ret = mon_command_sync(
+            {R"({"prefix": "osd ls-tree", "name":")" + root_name + R"(","format":"plain"})"},
+            &outbl, &outs);
+
+        if (ret == -ENOENT) {
+            *isEmpty = true;
+            AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                      "ceph crush root " + root_name + " is not exist");
+            return 0;
+        }
+
+        if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query osd ls-tree: " + outs);
+            return ret;
+        }
+
+        if (outbl.length() > 0) {
+            *isEmpty = false;
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "ceph crush root " + root_name + " is not empty");
+        } else {
+            *isEmpty = true;
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "ceph crush root " + root_name + " is empty");
+        }
+
+        return 0;
+    }
     // ============== 异步变体 ==============
     // 4个 _async 方法将任务投递到单 worker 线程, 在 worker 内执行对应sync
     // 实现, 完成后调用回调. 单 worker 足够: 4个 crush/pool 操作共享
@@ -1145,21 +1363,9 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
-        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
-        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function) 一同
-        // 存活, 因此任务执行期间始终安全.
-        const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
-        const std::vector<int32_t> osd_ids =
-            (osdIdList && listSize > 0) ? std::vector<int32_t>(osdIdList, osdIdList + listSize)
-                                        : std::vector<int32_t>();
         return async_dispatch(
-            [this, pool_name, nameLen, osd_ids]() {
-                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
-                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
-                const int32_t* osd_ids_data = osd_ids.empty() ? nullptr : osd_ids.data();
-                return kv_agent_create_crush_root_impl(const_cast<char*>(pool_name_data), nameLen,
-                                                       const_cast<int32_t*>(osd_ids_data),
-                                                       static_cast<uint32_t>(osd_ids.size()));
+            [this, kvPoolName, nameLen, osdIdList, listSize]() {
+                return kv_agent_create_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
             },
             std::move(cb), user_data);
     }
@@ -1168,21 +1374,9 @@ public:
                                              uint32_t listSize, KVAgentAsyncCallback cb,
                                              void* user_data) override
     {
-        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
-        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function) 一同
-        // 存活, 因此任务执行期间始终安全.
-        const std::string pool_name = kvPoolName ? std::string(kvPoolName, nameLen) : std::string();
-        const std::vector<int32_t> osd_ids =
-            (osdIdList && listSize > 0) ? std::vector<int32_t>(osdIdList, osdIdList + listSize)
-                                        : std::vector<int32_t>();
         return async_dispatch(
-            [this, pool_name, nameLen, osd_ids]() {
-                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
-                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
-                const int32_t* osd_ids_data = osd_ids.empty() ? nullptr : osd_ids.data();
-                return kv_agent_delete_crush_root_impl(const_cast<char*>(pool_name_data), nameLen,
-                                                       const_cast<int32_t*>(osd_ids_data),
-                                                       static_cast<uint32_t>(osd_ids.size()));
+            [this, kvPoolName, nameLen, osdIdList, listSize]() {
+                return kv_agent_delete_crush_root_impl(kvPoolName, nameLen, osdIdList, listSize);
             },
             std::move(cb), user_data);
     }
@@ -1191,19 +1385,9 @@ public:
                                             uint32_t kvnsLen, KVAgentAsyncCallback cb,
                                             void* user_data) override
     {
-        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
-        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function) 一同
-        // 存活, 因此任务执行期间始终安全.
-        const std::string pool_name =
-            kvPoolName ? std::string(kvPoolName, kvPoolLen) : std::string();
-        const std::string ns_name = kvnsName ? std::string(kvnsName, kvnsLen) : std::string();
         return async_dispatch(
-            [this, pool_name, kvPoolLen, ns_name, kvnsLen]() {
-                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
-                const char* pool_name_data = pool_name.empty() ? nullptr : pool_name.data();
-                const char* ns_name_data = ns_name.empty() ? nullptr : ns_name.data();
-                return kv_agent_create_ceph_pool_impl(const_cast<char*>(pool_name_data), kvPoolLen,
-                                                      const_cast<char*>(ns_name_data), kvnsLen);
+            [this, kvPoolName, kvPoolLen, kvnsName, kvnsLen]() {
+                return kv_agent_create_ceph_pool_impl(kvPoolName, kvPoolLen, kvnsName, kvnsLen);
             },
             std::move(cb), user_data);
     }
@@ -1211,15 +1395,31 @@ public:
     int32_t kv_agent_delete_ceph_pool_async(char* kvnsName, uint32_t nameLen,
                                             KVAgentAsyncCallback cb, void* user_data) override
     {
-        // 入队前拷贝调用方缓冲区: worker 延迟执行期间调用方可能释放/复用内存,
-        // 直接持有裸指针存在悬垂读风险. 拷贝值随 lambda (std::function) 一同
-        // 存活, 因此任务执行期间始终安全.
-        const std::string ns_name = kvnsName ? std::string(kvnsName, nameLen) : std::string();
         return async_dispatch(
-            [this, ns_name, nameLen]() {
-                // 空拷贝还原为 nullptr, 保持与 impl 判空语义一致
-                const char* ns_name_data = ns_name.empty() ? nullptr : ns_name.data();
-                return kv_agent_delete_ceph_pool_impl(const_cast<char*>(ns_name_data), nameLen);
+            [this, kvnsName, nameLen]() {
+                return kv_agent_delete_ceph_pool_impl(kvnsName, nameLen);
+            },
+            std::move(cb), user_data);
+    }
+
+    int32_t kv_agent_osd_out_async(KVAgentAsyncCallback cb, void* user_data) override
+    {
+        return async_dispatch([this]() { return kv_agent_osd_out_impl(); }, std::move(cb),
+                              user_data);
+    }
+
+    int32_t kv_agent_osd_crush_rm_async(KVAgentAsyncCallback cb, void* user_data) override
+    {
+        return async_dispatch([this]() { return kv_agent_osd_crush_rm_impl(); }, std::move(cb),
+                              user_data);
+    }
+
+    int32_t kv_agent_is_crush_root_empty_async(char* kvPoolName, uint32_t nameLen, bool* isEmpty,
+                                               KVAgentAsyncCallback cb, void* user_data) override
+    {
+        return async_dispatch(
+            [this, kvPoolName, nameLen, isEmpty]() {
+                return kv_agent_is_crush_root_empty_impl(kvPoolName, nameLen, isEmpty);
             },
             std::move(cb), user_data);
     }
@@ -1341,32 +1541,37 @@ private:
         if (error == boost::asio::error::operation_aborted || stopping || !initialized) { return; }
         if (error || !heartbeat_running) { return; }
 
-        bool need_restart = false;
+        bool need_heal = false;
         {
             std::lock_guard l(state_lock);
             if (monc && monc->is_connected()) {
                 mon_was_connected_ = true;
-            } else if (mon_was_connected_ && !ip_switch_pending_) {
-                // 曾经连上过 MON, 现在断了: 当前心跳 IP 不可达, 触发切换
-                mon_was_connected_ = false;
-                ip_switch_pending_ = true;
-                need_restart = true;
+                if (mon_disconnect_since_ != std::chrono::steady_clock::time_point{}) {
+                    const auto recovered_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - mon_disconnect_since_);
+                    AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                              "MON connection recovered, was disconnected for " +
+                                  std::to_string(recovered_elapsed.count()) + "s");
+                }
+                mon_disconnect_since_ = std::chrono::steady_clock::time_point{};
+            } else {
+                if (mon_disconnect_since_ == std::chrono::steady_clock::time_point{}) {
+                    mon_disconnect_since_ = std::chrono::steady_clock::now();
+                    AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                              "MON connection lost, starting disconnect timing");
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - mon_disconnect_since_);
+                AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                          "MON disconnected, already " + std::to_string(elapsed.count()) +
+                              "s (threshold " + std::to_string(MON_DISCONNECT_DOWN_THRESHOLD_SEC) +
+                              "s)");
+                need_heal = true;
             }
         }
 
-        if (need_restart) {
-            AGENT_LOG(logger, ::agent::LogLevel::WARNING,
-                      "MON connection lost, switching DPU IP and rebooting");
-            // 完整重建 (shutdown + re-init) 会 stop 并销毁当前 io_context
-            // (poolctx). 不能在本回调线程 (poolctx 的 io_context 线程) 内销毁
-            // 自己所在的 io_context, 因此切换到独立线程执行重启, 由重启后的
-            // start_heartbeat 重新 arm_mon_watch.
-            std::thread restart_thread([this] {
-                restart_for_ip_switch();
-                std::lock_guard l(state_lock);
-                ip_switch_pending_ = false;
-            });
-            restart_thread.detach();
+        if (need_heal) {
+            trigger_healing(false);
             return;
         }
 
@@ -1405,6 +1610,25 @@ private:
         return true;
     }
 
+    static bool config_changed(const KVAgentConfig& a, const KVAgentConfig& b)
+    {
+        return a.osd_id != b.osd_id || a.mon_host != b.mon_host || a.osd_key != b.osd_key ||
+               a.osd_uuid != b.osd_uuid ||
+               a.osd_mon_heartbeat_interval != b.osd_mon_heartbeat_interval || a.addrs != b.addrs;
+    }
+
+    int rebuild(const KVAgentConfig& cfg, bool rotate_ip, AgentLogger* lgr)
+    {
+        AGENT_LOG(lgr, ::agent::LogLevel::INFO,
+                  "rebuild: rotate_ip=" + std::to_string(rotate_ip) +
+                      ", osd_id=" + std::to_string(cfg.osd_id) + ", addrs=" + cfg.addrs +
+                      ", mon_host=" + cfg.mon_host);
+        if (rotate_ip) { reinitializing_ = true; }
+        const int r = init(cfg, lgr);
+        if (rotate_ip) { reinitializing_ = false; }
+        return r;
+    }
+
     // 销毁 messenger/monc 等通信层, 用新顺序 addrs 重新走 BOOT 流程.
     // 重新 init 时 bindv(新顺序 addrs) -> _finish_bind -> set_myaddrs(新顺序),
     // 因此出站心跳源 IP (get_myaddrs().front()) 与 client_ident 上报顺序
@@ -1413,12 +1637,21 @@ private:
     // init() 是单次尝试 (失败返回错误码), 此处循环尝试每个候选 IP 直到成功:
     // 首个候选 IP 认证超时失败后 rotate 到下一个 IP 重新 init, 所有 IP 都
     // 不可达时也按心跳间隔轮询等待, 待 MON 恢复后自动建立连接.
-    void restart_for_ip_switch()
+    void restart_for_ip_switch(bool from_init_failure)
     {
         // 保存当前 logger 引用 (shutdown 后仍有效, logger 由外部持有)
         AgentLogger* saved_logger = logger;
+        {
+            std::lock_guard l(state_lock);
+            self_healing_ = true;
+        }
+        const auto end_self_healing = [this]() {
+            std::lock_guard l(state_lock);
+            self_healing_ = false;
+        };
+        const KVAgentConfig original_cfg = saved_config_;
         // 重建配置: 仅替换 addrs 为当前顺序 (首个 IP 为候选心跳 IP)
-        KVAgentConfig cfg = saved_config_;
+        KVAgentConfig cfg = original_cfg;
 
         // 当前第一个 IP 已断链 (触发本次切换), 先 rotate 把它移到末尾,
         // 让下一个 IP 成为候选, 然后循环尝试直到成功.
@@ -1428,41 +1661,217 @@ private:
         }
 
         while (true) {
-            cfg.addrs = current_addrs_;
-
-            shutdown();
-
-            // 重新 init 时不重置 current_addrs_ (保留已 rotate 的顺序)
-            reinitializing_ = true;
-            const int r = init(cfg, saved_logger);
-            reinitializing_ = false;
-            if (r < 0) {
-                AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
-                          "re-init with addrs " + current_addrs_ + " failed: " + cpp_strerror(r) +
-                              ", rotating to next IP");
-                // 多 IP 时已 rotate 到下一个候选; 单 IP 时 rotate 返回 false, 但
-                // 仍按心跳间隔等待 MON 恢复后重试, 保证 agent 不会进入死状态.
-                rotate_addrs();
-                std::this_thread::sleep_for(std::chrono::seconds(std::max(1, heartbeat_interval)));
-                continue;
+            bool timedOutDown = false;
+            bool stopRequested = false;
+            {
+                std::lock_guard l(state_lock);
+                timedOutDown = timeout_down_fired_;
             }
-
-            // init 成功: 重新走 BOOT 流程, 不等待 boot_beacon_delay
-            boot_beacon_delay = std::chrono::seconds{0};
-            // 若曾主动停止发心跳 (stop_heartbeat), IP 切换重启后保持静默,
-            // 不自动恢复发心跳, 需外部显式 start_heartbeat() 恢复
-            if (heartbeat_manually_stopped_) {
-                AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
-                          "IP switch finished but heartbeat was manually stopped, "
-                          "staying silent until kv_agent_start_heartbeat");
+            {
+                std::lock_guard lk(heal_thread_mtx);
+                stopRequested = heal_stop;
+            }
+            if (timedOutDown || stopRequested) {
+                AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                          "self-healing aborted: agent stopped or shutdown requested");
+                end_self_healing();
                 return;
             }
-            const int hb = start_heartbeat();
-            if (hb < 0) {
-                AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
-                          "restart heartbeat after IP switch failed: " + cpp_strerror(hb));
+            cfg.addrs = current_addrs_;
+
+            bool give_up = false;
+            {
+                std::lock_guard l(state_lock);
+                if (mon_disconnect_since_ == std::chrono::steady_clock::time_point{}) {
+                    mon_disconnect_since_ = std::chrono::steady_clock::now();
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - mon_disconnect_since_);
+                AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                          "IP switch retry: MON disconnected for " +
+                              std::to_string(elapsed.count()) + "s (threshold " +
+                              std::to_string(MON_DISCONNECT_DOWN_THRESHOLD_SEC) + "s)");
+                give_up = elapsed.count() >= MON_DISCONNECT_DOWN_THRESHOLD_SEC;
             }
+            if (give_up) {
+                AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                          "IP switch disconnect exceeded " +
+                              std::to_string(MON_DISCONNECT_DOWN_THRESHOLD_SEC) +
+                              "s without reconnect, giving up and stopping heartbeat");
+                end_self_healing();
+                stop_for_timeout_down();
+                return;
+            }
+
+            {
+                std::lock_guard rb(rebuild_mutex);
+                {
+                    std::lock_guard l(state_lock);
+                    if (config_changed(original_cfg, saved_config_)) {
+                        AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                                  "config changed externally during IP switch retry, "
+                                  "abandoning IP switch");
+                        self_healing_ = false;
+                        return;
+                    }
+
+                    if (ip_switch_abort_requested_) {
+                        ip_switch_abort_requested_ = false;
+                        AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                                  "external re-config requested yield, "
+                                  "abandoning IP switch");
+                        self_healing_ = false;
+                        return;
+                    }
+                }
+
+                shutdown();
+                AGENT_LOG(
+                    saved_logger, ::agent::LogLevel::INFO,
+                    "IP switch: comm layer torn down, rebuilding with addrs " + current_addrs_);
+                const int r = rebuild(cfg, true, saved_logger);
+
+                if (r < 0) {
+                    AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
+                              "re-init with addrs " + current_addrs_ +
+                                  " failed: " + cpp_strerror(r) + ", rotating to next IP");
+                    // 多 IP 时已 rotate 到下一个候选; 单 IP 时 rotate 返回 false, 但
+                    // 仍按重试间隔等待 MON 恢复后重试, 保证 agent 不会进入死状态.
+                    rotate_addrs();
+                    const int retrySec = from_init_failure ? INIT_RETRY_INTERVAL_SEC
+                                                           : std::max(1, heartbeat_interval);
+                    for (int slept = 0; slept < retrySec; ++slept) {
+                        {
+                            std::lock_guard lk(heal_thread_mtx);
+                            if (heal_stop) {
+                                end_self_healing();
+                                return;
+                            }
+                        }
+                        std::this_thread::sleep_for(std::chrono::seconds(1));
+                    }
+                    continue;
+                }
+                // init 成功: 重新走 BOOT 流程, 不等待 boot_beacon_delay
+                boot_beacon_delay = std::chrono::seconds{0};
+                // 若曾主动停止发心跳 (stop_heartbeat), IP 切换重启后保持静默,
+                // 不自动恢复发心跳, 需外部显式 start_heartbeat() 恢复
+                if (heartbeat_manually_stopped_) {
+                    AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                              "IP switch finished but heartbeat was manually stopped, "
+                              "staying silent until kv_agent_start_heartbeat");
+                    end_self_healing();
+                    return;
+                }
+                const int hb = start_heartbeat();
+                if (hb < 0) {
+                    AGENT_LOG(saved_logger, ::agent::LogLevel::ERROR,
+                              "restart heartbeat after IP switch failed: " + cpp_strerror(hb));
+                }
+            }
+            end_self_healing();
             return;
+        }
+    }
+
+    // 统一自愈入口：MON 断连与 init 失败共用同一条重建循环；已运行时幂等返回
+    void trigger_healing(bool from_init_failure)
+    {
+        {
+            std::lock_guard l(state_lock);
+            if (timeout_down_fired_) { return; }
+            // 自愈窗口内保持对外在线，使盘框侧维持集群模式直到超阈值停机
+            self_healing_ = true;
+            externally_initialized_ = true;
+        }
+        bool expected = false;
+        if (!healing_flag->compare_exchange_strong(expected, true)) {
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "self-healing already running, ignore duplicate trigger");
+            return;
+        }
+        {
+            std::lock_guard lk(heal_thread_mtx);
+            if (heal_thread.joinable()) { heal_thread.join(); }
+            heal_stop = false;
+            const auto flag = healing_flag;
+            heal_thread = std::thread([this, from_init_failure, flag] {
+                restart_for_ip_switch(from_init_failure);
+                flag->store(false);
+            });
+        }
+        AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                  from_init_failure ? "start self-healing: init failed, retrying rebuild"
+                                    : "start self-healing: MON disconnect, switching DPU IP");
+    }
+
+    // 停止并回收自愈线程；自身调用时 detach，避免自 join
+    void stop_heal_thread()
+    {
+        const auto selfId = std::this_thread::get_id();
+        bool needJoin = false;
+        {
+            std::lock_guard lk(heal_thread_mtx);
+            heal_stop = true;
+            if (heal_thread.joinable()) {
+                if (heal_thread.get_id() == selfId) {
+                    heal_thread.detach();
+                } else {
+                    needJoin = true;
+                }
+            }
+        }
+        if (needJoin) { heal_thread.join(); }
+    }
+
+    void clear_healing_state()
+    {
+        {
+            std::lock_guard l(state_lock);
+            self_healing_ = false;
+        }
+        stop_heal_thread();
+    }
+
+    void stop_for_timeout_down()
+    {
+        AgentLogger* saved_logger = logger;
+        KVAgentTimeoutDownCb cb = nullptr;
+        AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                  "timeout down: entering, stopping heartbeat and clearing cluster config");
+        {
+            std::unique_lock<std::mutex> rebuildGuard(rebuild_mutex, std::try_to_lock);
+            if (!rebuildGuard.owns_lock()) {
+                AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                          "timeout down deferred: rebuild in progress, "
+                          "restart_for_ip_switch owns the stop decision");
+                return;
+            }
+            {
+                std::lock_guard l(state_lock);
+                self_healing_ = false;
+                timeout_down_fired_ = true;
+            }
+            shutdown();
+            {
+                std::lock_guard l(state_lock);
+                saved_config_ = KVAgentConfig{};
+                current_addrs_.clear();
+                cb = timeout_down_cb_;
+            }
+        }
+        AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                  "timeout down: agent stopped heartbeat and cleared cluster config");
+        if (cb != nullptr) {
+            AGENT_LOG(saved_logger, ::agent::LogLevel::INFO,
+                      "timeout down: invoking panel cleanup callback, agent(" +
+                          std::to_string(reinterpret_cast<unsigned long long>(this)) + ")");
+            cb();
+        } else {
+            AGENT_LOG(saved_logger, ::agent::LogLevel::WARNING,
+                      "timeout down: no panel cleanup callback registered, "
+                      "skip notifying panel to clean cluster config, agent(" +
+                          std::to_string(reinterpret_cast<unsigned long long>(this)) + ")");
         }
     }
 
@@ -1524,6 +1933,7 @@ private:
 
         monc->send_mon_message(boot);
         state = AgentState::BOOT_SENT;
+        awaiting_first_boot_ = false;
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "sent OSD boot message");
 
         if (current_retry_delay.count() == 0) {
@@ -1603,15 +2013,21 @@ private:
                     // ACTIVE + up=true -> 维持 ACTIVE, epoch 已更新
                 } else {
                     // ACTIVE + up=false -> DOWN
-                    state = AgentState::DOWN;
-                    // cancel 心跳定时器 (通过后续 send_boot->arm_boot_retry 覆盖)
-                    // 重置退避
-                    current_retry_delay = std::chrono::seconds{0};
-                    // 立即 send_boot (不等 boot_beacon_delay, KVService 已在运行)
-                    send_boot();
+                    demote_to_down();
                 }
                 break;
         }
+    }
+
+    void demote_to_down()
+    {
+        state = AgentState::DOWN;
+        awaiting_first_boot_ = false;
+        // cancel 心跳定时器 (通过后续 send_boot->arm_boot_retry 覆盖)
+        // 重置退避
+        current_retry_delay = std::chrono::seconds{0};
+        // 立即 send_boot (不等 boot_beacon_delay, KVService 已在运行)
+        send_boot();
     }
 
     void arm_heartbeat()
@@ -1653,8 +2069,11 @@ private:
     {
         AGENT_LOG(logger, ::agent::LogLevel::ERROR, std::string(message) + ": " + cpp_strerror(r));
         shutdown();
-        std::lock_guard l(state_lock);
-        starting = false;
+        {
+            std::lock_guard l(state_lock);
+            starting = false;
+        }
+        trigger_healing(true);
         return r;
     }
 
@@ -1684,16 +2103,21 @@ private:
         mon_watch_timer.reset();
         dispatcher.reset();
         messenger.reset();
-        monc.reset();
+
+        std::shared_ptr<MonClient> monc_to_destroy;
+        {
+            std::lock_guard l(state_lock);
+            monc_to_destroy = std::move(monc);
+            initialized = false;
+            heartbeat_running = false;
+            state = AgentState::DOWN;
+            awaiting_first_boot_ = false;
+            current_retry_delay = std::chrono::seconds{0};
+            osdmap_epoch = 0;
+        }
+        monc_to_destroy.reset();
         poolctx.reset();
         cct.reset();
-
-        std::lock_guard l(state_lock);
-        initialized = false;
-        heartbeat_running = false;
-        state = AgentState::DOWN;
-        current_retry_delay = std::chrono::seconds{0};
-        osdmap_epoch = 0;
         AGENT_LOG(logger, ::agent::LogLevel::INFO, "OSD agent stopped");
     }
 
@@ -1725,6 +2149,18 @@ private:
     int32_t mon_command_sync(std::vector<std::string> cmd, ceph::bufferlist* outbl,
                              std::string* outs)
     {
+        std::shared_ptr<MonClient> monc_snapshot;
+        {
+            std::lock_guard l(state_lock);
+            if (!stopping && initialized && monc != nullptr) { monc_snapshot = monc; }
+        }
+        if (monc_snapshot == nullptr) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                      "mon_command_sync: agent not ready, stopping=" + std::to_string(stopping) +
+                          ", initialized=" + std::to_string(initialized));
+            return -ESHUTDOWN;
+        }
+
         ceph::bufferlist inbl;
         std::mutex mtx;
         std::condition_variable cv;
@@ -1732,26 +2168,98 @@ private:
         int result = 0;
         std::string result_outs;
 
-        monc->start_mon_command(std::move(cmd), std::move(inbl), outbl, &result_outs,
-                                new SyncContext(mtx, cv, done, result, result_outs, outs));
+        monc_snapshot->start_mon_command(std::move(cmd), std::move(inbl), outbl, &result_outs,
+                                         new SyncContext(mtx, cv, done, result, result_outs, outs));
 
         std::unique_lock<std::mutex> lock(mtx);
         cv.wait(lock, [&done] { return done; });
         return (result < 0) ? result : 0;
     }
 
-    int32_t moveOsd(std::string rootName, int32_t* osdIdList, uint32_t listSize)
+    // 查询 crush map，解析当前已挂在目标 root 下的 OSD 集合，供 moveOsd 幂等判断
+    std::vector<int32_t> getOsdsInRoot(std::string rootName)
     {
-        if (listSize > 0 && osdIdList == nullptr) {
-            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList in moveOsd");
-            return -1;
+        std::vector<int32_t> osds_in_root;
+        ceph::bufferlist outbl;
+        std::string outs;
+        int32_t dump_ret = mon_command_sync({R"({"prefix": "osd crush dump"})"}, &outbl, &outs);
+        if (dump_ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                      "Failed to query crush dump, skip already-in-root check: " + outs);
+            return osds_in_root;
         }
 
+        std::string crush_dump_output = outbl.to_str();
+        size_t root_name_pos = crush_dump_output.find("\"" + rootName + "\"");
+        if (root_name_pos == std::string::npos) { return osds_in_root; }
+
+        size_t items_start = crush_dump_output.find("\"items\"", root_name_pos);
+        if (items_start == std::string::npos) { return osds_in_root; }
+        size_t bracket_start = crush_dump_output.find("[", items_start);
+        size_t bracket_end = crush_dump_output.find("]", bracket_start);
+        if (bracket_start == std::string::npos || bracket_end == std::string::npos) {
+            return osds_in_root;
+        }
+
+        std::string items_str =
+            crush_dump_output.substr(bracket_start + 1, bracket_end - bracket_start - 1);
+        size_t item_pos = 0;
+        while ((item_pos = items_str.find("\"id\"", item_pos)) != std::string::npos) {
+            size_t colon_pos = items_str.find(":", item_pos);
+            size_t num_start = items_str.find_first_of("0123456789-", colon_pos);
+            size_t num_end = items_str.find_first_of(",}]", num_start);
+            std::string id_str = items_str.substr(num_start, num_end - num_start);
+            try {
+                int32_t osd_id = std::stoi(id_str);
+                osds_in_root.push_back(osd_id);
+            } catch (...) {
+                // 忽略无效 ID
+            }
+            item_pos = num_end;
+        }
+        return osds_in_root;
+    }
+
+    int32_t moveOsd(std::string rootName, int32_t* osdIdList, uint32_t listSize)
+    {
         ceph::bufferlist outbl;
         std::string outs;
 
+        std::vector<int32_t> osds_in_root = getOsdsInRoot(rootName);
+
         for (uint32_t i = 0; i < listSize; ++i) {
             int32_t osd_id = osdIdList[i];
+
+            bool already_in_root = false;
+            for (size_t j = 0; j < osds_in_root.size(); ++j) {
+                if (osds_in_root[j] == osd_id) {
+                    already_in_root = true;
+                    break;
+                }
+            }
+            if (already_in_root) {
+                AGENT_LOG(
+                    logger, ::agent::LogLevel::INFO,
+                    "osd." + std::to_string(osd_id) + " already in root " + rootName + ", skip");
+                continue;
+            }
+
+            outbl.clear();
+            outs.clear();
+            std::string osd_name = "osd." + std::to_string(osd_id);
+            int32_t rm_ret = mon_command_sync(
+                {std::string("{\"prefix\": \"osd crush remove\", \"name\": \"") + osd_name + "\"}"},
+                &outbl, &outs);
+            if (rm_ret < 0) {
+                AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                          "osd." + std::to_string(osd_id) + "remove failed: " + outs);
+            } else {
+                AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                          "Remove osd." + std::to_string(osd_id) + " successfully: " + outs);
+            }
+
+            outbl.clear();
+            outs.clear();
 
             // 使用 osd crush add 添加 OSD 到 CRUSH map
             int32_t ret = mon_command_sync(
@@ -1774,7 +2282,14 @@ private:
             outbl.clear();
             outs.clear();
         }
-
+        int clear_ret = ClearRedundantCrushRoot();
+        if (clear_ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                      "Failed to clear redundant root, ret:" + std::to_string(clear_ret) +
+                          ", cleanup will be retried on next create");
+        } else {
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "Successfully clear redundant root.");
+        }
         return 0;
     }
 
@@ -1805,11 +2320,6 @@ private:
     // 确认列表中的osd是否都在集群中
     int32_t checkOsdInCluster(std::string osd_list_str, int32_t* osdIdList, uint32_t listSize)
     {
-        if (listSize > 0 && osdIdList == nullptr) {
-            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Invalid osdIdList in checkOsdInCluster");
-            return -1;
-        }
-
         std::vector<int32_t> existing_osds = getOsds(osd_list_str);
 
         // 检查请求的每个 OSD 是否存在
@@ -1831,9 +2341,323 @@ private:
         return 0;
     }
 
+    static std::vector<std::string> ExtractJsonObjects(const std::string& text)
+    {
+        std::vector<std::string> objects;
+        for (size_t i = 0; i < text.size(); ++i) {
+            if (text[i] != '{') { continue; }
+            int depth = 0;
+            bool in_str = false;
+            bool escaped = false;
+            for (size_t j = i; j < text.size(); ++j) {
+                const char c = text[j];
+                if (in_str) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (c == '\\') {
+                        escaped = true;
+                    } else if (c == '"') {
+                        in_str = false;
+                    }
+                    continue;
+                }
+                if (c == '"') {
+                    in_str = true;
+                } else if (c == '{') {
+                    ++depth;
+                } else if (c == '}') {
+                    if (depth == 1) {
+                        objects.push_back(text.substr(i, j - i + 1));
+                        break;
+                    }
+                    --depth;
+                }
+            }
+        }
+        return objects;
+    }
+
+    static bool ExtractJsonStringField(const std::string& obj, const std::string& key,
+                                       std::string* out)
+    {
+        if (out == nullptr) { return false; }
+        const std::string pattern = "\"" + key + "\"";
+        const size_t key_pos = obj.find(pattern);
+        if (key_pos == std::string::npos) { return false; }
+        const size_t colon = obj.find(':', key_pos + pattern.size());
+        if (colon == std::string::npos) { return false; }
+        const size_t quote = obj.find('"', colon + 1);
+        if (quote == std::string::npos) { return false; }
+        std::string value;
+        bool escaped = false;
+        for (size_t i = quote + 1; i < obj.size(); ++i) {
+            const char c = obj[i];
+            if (escaped) {
+                value.push_back(c);
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                *out = value;
+                return true;
+            } else {
+                value.push_back(c);
+            }
+        }
+        return false;
+    }
+
+    static bool ExtractJsonArrayField(const std::string& obj, const std::string& key,
+                                      std::string* out)
+    {
+        if (out == nullptr) { return false; }
+        const std::string pattern = "\"" + key + "\"";
+        const size_t key_pos = obj.find(pattern);
+        if (key_pos == std::string::npos) { return false; }
+        const size_t start = obj.find('[', key_pos + pattern.size());
+        if (start == std::string::npos) { return false; }
+        int depth = 0;
+        bool in_str = false;
+        bool escaped = false;
+        for (size_t i = start; i < obj.size(); ++i) {
+            const char c = obj[i];
+            if (in_str) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    in_str = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                in_str = true;
+            } else if (c == '[') {
+                ++depth;
+            } else if (c == ']') {
+                if (depth == 1) {
+                    *out = obj.substr(start + 1, i - start - 1);
+                    return true;
+                }
+                --depth;
+            }
+        }
+        return false;
+    }
+
+    static bool JsonItemNameEquals(const std::string& obj, const std::string& name)
+    {
+        const std::string pattern = "\"item_name\"";
+        size_t pos = 0;
+        while ((pos = obj.find(pattern, pos)) != std::string::npos) {
+            const size_t colon = obj.find(':', pos + pattern.size());
+            if (colon == std::string::npos) { return false; }
+            const size_t quote = obj.find('"', colon + 1);
+            if (quote == std::string::npos) { return false; }
+            const size_t end = obj.find('"', quote + 1);
+            if (end == std::string::npos) { return false; }
+            if (obj.substr(quote + 1, end - quote - 1) == name) { return true; }
+            pos = end + 1;
+        }
+        return false;
+    }
+
+    int32_t ClearRedundantCrushRoot()
+    {
+        ceph::bufferlist outbl;
+        std::string outs;
+
+        outbl.clear();
+        outs.clear();
+        int32_t ret = mon_command_sync({R"({"prefix": "osd crush dump"})"}, &outbl, &outs);
+        if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query crush dump: " + outs);
+            return ret;
+        }
+        std::string crush_dump = outbl.to_str();
+
+        std::vector<std::string> empty_roots;
+        const std::vector<std::string> buckets = ExtractJsonObjects(crush_dump);
+        for (size_t i = 0; i < buckets.size(); ++i) {
+            const std::string& bucket = buckets[i];
+            if (bucket.find("\"buckets\"") != std::string::npos) { continue; }
+            std::string type_name;
+            if (!ExtractJsonStringField(bucket, "type_name", &type_name) || type_name != "root") {
+                continue;
+            }
+            std::string root_name;
+            if (!ExtractJsonStringField(bucket, "name", &root_name) || root_name == "default") {
+                continue;
+            }
+            std::string items_str;
+            if (!ExtractJsonArrayField(bucket, "items", &items_str)) { continue; }
+            if (items_str.find_first_not_of(" \t\r\n") != std::string::npos) { continue; }
+            empty_roots.push_back(root_name);
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "Crush root " + root_name + " is empty, will be cleaned up");
+        }
+
+        if (empty_roots.empty()) {
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "No empty crush root found, nothing to clean");
+            return 0;
+        }
+
+        outbl.clear();
+        outs.clear();
+        ret = mon_command_sync({R"({"prefix": "osd crush rule dump"})"}, &outbl, &outs);
+        if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query crush rule dump: " + outs);
+            return ret;
+        }
+        std::string rule_dump = outbl.to_str();
+
+        outbl.clear();
+        outs.clear();
+        ret = mon_command_sync({R"({"prefix": "osd pool ls"})"}, &outbl, &outs);
+        if (ret < 0) {
+            AGENT_LOG(logger, ::agent::LogLevel::ERROR, "Failed to query pool list: " + outs);
+            return ret;
+        }
+        std::string pool_list_str = outbl.to_str();
+        std::vector<std::string> pool_names;
+        size_t ppos = 0;
+        while (ppos < pool_list_str.length()) {
+            size_t pnl = pool_list_str.find('\n', ppos);
+            if (pnl == std::string::npos) { pnl = pool_list_str.length(); }
+            std::string one = pool_list_str.substr(ppos, pnl - ppos);
+            size_t lead_pos = one.find_first_not_of(" \t\r\n");
+            if (lead_pos != std::string::npos) {
+                size_t tail_pos = one.find_last_not_of(" \t\r\n");
+                pool_names.push_back(one.substr(lead_pos, tail_pos - lead_pos + 1));
+            }
+            ppos = pnl + 1;
+        }
+
+        // 逐个清理空 root
+        for (size_t i = 0; i < empty_roots.size(); ++i) {
+            const std::string& root_name = empty_roots[i];
+            AGENT_LOG(logger, ::agent::LogLevel::INFO,
+                      "Cleaning up redundant crush root: " + root_name);
+
+            std::vector<std::string> bound_rules;
+            const std::vector<std::string> rules = ExtractJsonObjects(rule_dump);
+            for (size_t r = 0; r < rules.size(); ++r) {
+                if (rules[r].find("\"rules\"") != std::string::npos) { continue; }
+                std::string rule_name;
+                if (!ExtractJsonStringField(rules[r], "rule_name", &rule_name)) { continue; }
+                if (!JsonItemNameEquals(rules[r], root_name)) { continue; }
+                bound_rules.push_back(rule_name);
+            }
+
+            bool pool_delete_failed = false;
+            for (size_t r = 0; r < bound_rules.size(); ++r) {
+                const std::string& bound_rule = bound_rules[r];
+                for (size_t p = 0; p < pool_names.size(); ++p) {
+                    const std::string& pool_name = pool_names[p];
+                    outbl.clear();
+                    outs.clear();
+                    int32_t get_ret = mon_command_sync(
+                        {std::string("{\"prefix\": \"osd pool get\", \"pool\": \"") + pool_name +
+                         "\", \"var\": \"crush_rule\"}"},
+                        &outbl, &outs);
+                    if (get_ret < 0) {
+                        AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                                  "Failed to query crush rule of pool " + pool_name + ": " + outs);
+                        continue;
+                    }
+                    std::string rule_out = outbl.to_str();
+                    size_t colon_pos = rule_out.rfind(':');
+                    std::string pool_rule;
+                    if (colon_pos != std::string::npos) {
+                        pool_rule = rule_out.substr(colon_pos + 1);
+                    }
+                    size_t lead_pos2 = pool_rule.find_first_not_of(" \t\r\n");
+                    if (lead_pos2 == std::string::npos) {
+                        pool_rule.clear();
+                    } else {
+                        pool_rule = pool_rule.substr(lead_pos2);
+                        size_t tail_pos2 = pool_rule.find_last_not_of(" \t\r\n");
+                        if (tail_pos2 != std::string::npos) {
+                            pool_rule = pool_rule.substr(0, tail_pos2 + 1);
+                        }
+                    }
+                    if (pool_rule != bound_rule) { continue; }
+                    // 删除绑定的 ceph pool
+                    outbl.clear();
+                    outs.clear();
+                    int32_t del_ret = mon_command_sync(
+                        {std::string("{\"prefix\": \"osd pool delete\", \"pool\": \"") + pool_name +
+                         "\", \"pool2\": \"" + pool_name +
+                         "\", \"yes_i_really_really_mean_it\": true}"},
+                        &outbl, &outs);
+                    if (del_ret < 0) {
+                        AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                                  "Failed to delete pool " + pool_name + ": " + outs);
+                        pool_delete_failed = true;
+                    } else {
+                        AGENT_LOG(
+                            logger, ::agent::LogLevel::INFO,
+                            "Deleted ceph pool " + pool_name + " bound to rule " + bound_rule);
+                    }
+                }
+            }
+            if (pool_delete_failed) {
+                AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                          "Skip deleting crush root " + root_name +
+                              " because bound ceph pool cleanup failed");
+                continue;
+            }
+
+            bool rule_delete_failed = false;
+            for (size_t r = 0; r < bound_rules.size(); ++r) {
+                const std::string& bound_rule = bound_rules[r];
+                outbl.clear();
+                outs.clear();
+                ret = mon_command_sync(
+                    {std::string("{\"prefix\": \"osd crush rule rm\", \"name\": \"") + bound_rule +
+                     "\"}"},
+                    &outbl, &outs);
+                if (ret < 0) {
+                    AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                              "Failed to delete crush rule " + bound_rule + ": " + outs);
+                    rule_delete_failed = true;
+                    continue;
+                }
+                AGENT_LOG(logger, ::agent::LogLevel::INFO, "Deleted crush rule: " + bound_rule);
+            }
+            if (rule_delete_failed) {
+                AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                          "Skip deleting crush root " + root_name +
+                              " because bound crush rule cleanup failed");
+                continue;
+            }
+
+            // 删除 root bucket
+            outbl.clear();
+            outs.clear();
+            ret = mon_command_sync({std::string("{\"prefix\": \"osd crush remove\", \"name\": \"") +
+                                    root_name + "\"}"},
+                                   &outbl, &outs);
+            if (ret == -EBUSY) {
+                AGENT_LOG(logger, ::agent::LogLevel::WARNING,
+                          "Crush root " + root_name + " is still in use, skip cleanup: " + outs);
+                continue;
+            }
+            if (ret < 0) {
+                AGENT_LOG(logger, ::agent::LogLevel::ERROR,
+                          "Failed to delete crush root " + root_name + ": " + outs);
+                continue;
+            }
+            AGENT_LOG(logger, ::agent::LogLevel::INFO, "Deleted crush root: " + root_name);
+        }
+        return 0;
+    }
+
     boost::intrusive_ptr<CephContext> cct;
     std::unique_ptr<ceph::async::io_context_pool> poolctx;
-    std::unique_ptr<MonClient> monc;
+    std::shared_ptr<MonClient> monc;
     std::unique_ptr<Messenger> messenger;
     std::unique_ptr<KVOSDMapDispatcher> dispatcher;
     std::unique_ptr<boost::asio::steady_timer> heartbeat_timer;
@@ -1854,6 +2678,14 @@ private:
     // 恢复发心跳, 需外部显式 start_heartbeat() 恢复
     bool heartbeat_manually_stopped_ = false;
     AgentState state = AgentState::DOWN;
+    bool awaiting_first_boot_ = false;
+    bool self_healing_ = false;
+    // 被动停机已执行：让仍在自旋的重建线程退出，直接新的 init 成功
+    bool timeout_down_fired_ = false;
+    std::mutex heal_thread_mtx;
+    std::thread heal_thread;
+    bool heal_stop = false;
+    std::shared_ptr<std::atomic<bool>> healing_flag = std::make_shared<std::atomic<bool>>(false);
     std::chrono::seconds current_retry_delay{
         0};  // 0 = 哨兵值, send_boot 中初始化为 BOOT_RETRY_DELAY
     bool stopping = false;
@@ -1861,20 +2693,25 @@ private:
     bool messenger_started = false;
     bool monc_started = false;
     int heartbeat_interval = 1;
+    // 业务错误码：ceph pool 已存在但其绑定crush rule 与期望不一致
+    static constexpr int32_t ERR_POOL_RULE_MISMATCH = 1044;
     static constexpr int jitter_ms_range = 1000;  // 心跳随机抖动时间, 毫秒为单位
     std::mt19937 rng{std::random_device{}()};
     std::uniform_int_distribution<int> jitter_dist{-jitter_ms_range, jitter_ms_range};
     epoch_t osdmap_epoch = 0;
     std::chrono::seconds boot_beacon_delay{0};
     AgentLogger* logger = nullptr;
+    KVAgentTimeoutDownCb timeout_down_cb_ = nullptr;
 
     // ---- DPU IP 切换 feature 状态 ----
     KVAgentConfig saved_config_;                                 // init时保存的完整配置副本
     std::string current_addrs_;                                  // 当前 addrs 字符串 (可被 rotate)
     std::unique_ptr<boost::asio::steady_timer> mon_watch_timer;  // MON断链监控定时器
     bool mon_was_connected_ = false;                             // 上一次 monc->is_connected() 结果
-    bool ip_switch_pending_ = false;  // 是否刚完成 IP 切换 (重启后立即 boot)
-    bool reinitializing_ = false;     // 是否处于重新 init 流程 (保留 current_addrs_)
+    std::chrono::steady_clock::time_point mon_disconnect_since_{};
+    bool reinitializing_ = false;  // 是否处于重新 init 流程 (保留 current_addrs_)
+    bool ip_switch_abort_requested_ = false;
+    std::mutex rebuild_mutex;
 };
 
 }  // namespace
