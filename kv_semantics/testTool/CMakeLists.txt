@@ -1,6 +1,6 @@
 # ============================================================================
 # testTool — kv_semantics 测试工具
-# 构建（Docker 开发容器内，工作目录为 testTool/）：
+# 构建（在 testTool/ 目录下执行）：
 #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 #   cmake --build build -j
 #   ./build/testTool
