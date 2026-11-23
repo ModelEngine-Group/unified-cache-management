@@ -201,5 +201,16 @@ TEST(CpuKvOverRoceTransProviderTest, CpuProviderCanBeSelectedFromConfiguration)
     EXPECT_EQ(TransProviderType::UNSUPPORTED, ParseConfigTransProviderType("roce"));
 }
 
+// The CPU-over-RoCE provider moves its SQE and CQE slots with the CPU and the
+// NIC, so it asks the transport for plain host memory: the device alias of host
+// mapped device memory is not registerable by ibv_reg_mr. Providers that program
+// an on-device engine keep the default MemoryType::HOST_PINNED.
+TEST(CpuKvOverRoceTransProviderTest, AsksForPlainHostMemoryForItsControlBuffers)
+{
+    roce::CpuKvOverRoceTransProvider provider(MakeRoceConfig());
+
+    EXPECT_EQ(MemoryType::HOST, provider.ControlBufferMemory());
+}
+
 }  // namespace
 }  // namespace kv::test
