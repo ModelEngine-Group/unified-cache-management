@@ -768,6 +768,7 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
     """Connector metadata carrying FAWA dispatch plans for this step."""
 
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
+    # Preempted requests whose old dump notification can be retired.
     preempted_req_ids: set[str] = field(default_factory=set)
 
 
@@ -2189,7 +2190,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> UCMFAWAConnectorMetadata:
-        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        # A request cancelled after a forced preemption can already be waiting
+        # for its dump completion. Let get_finished report it after the drain.
+        preempted_req_ids = set(scheduler_output.preempted_req_ids or ()).difference(
+            scheduler_output.finished_req_ids
+        )
         # Workers drain the old dumps before this step starts. Register this
         # step's new dump plans only after retiring the preempted ones.
         self._async_dump_req_ids.difference_update(preempted_req_ids)
