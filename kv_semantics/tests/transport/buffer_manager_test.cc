@@ -440,5 +440,47 @@ TEST_F(BufferManagerTest, RegistrationDescriptionRequiresInitialization)
     ASSERT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 }
 
+TEST_F(BufferManagerTest, HostRegionKeepsASingleAddressAndIsMarkedHostMemory)
+{
+    BufferManager mgr;
+    const auto status = mgr.Init("host_buffer", MemoryType::HOST, 128, 4);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    TransProvider::RegisterMemoryDesc desc;
+    ASSERT_TRUE(mgr.GetRegisterMemoryDesc(desc).ok());
+    // One address serves the CPU and the transport, so a host NIC can register
+    // exactly the pointer the transport writes to.
+    EXPECT_EQ(desc.addr, desc.localAddr);
+    EXPECT_EQ(TransProvider::MemType::MEM_HOST, desc.memoryType);
+}
+
+TEST_F(BufferManagerTest, PlainHostRegionIsPageAlignedAndMarkedHostMemory)
+{
+    BufferManager mgr;
+    const auto status = mgr.Init("plain_buffer", MemoryType::HOST_PLAIN, 128, 4);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    TransProvider::RegisterMemoryDesc desc;
+    ASSERT_TRUE(mgr.GetRegisterMemoryDesc(desc).ok());
+    EXPECT_EQ(desc.addr, desc.localAddr);
+    EXPECT_EQ(TransProvider::MemType::MEM_HOST, desc.memoryType);
+    EXPECT_EQ(0U, desc.addr % 4096U);
+}
+
+TEST_F(BufferManagerTest, PinnedRegionIsReportedAsDeviceMemory)
+{
+    BufferManager mgr;
+    const auto status = mgr.Init("pinned_buffer", MemoryType::HOST_PINNED, 128, 4);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    TransProvider::RegisterMemoryDesc desc;
+    ASSERT_TRUE(mgr.GetRegisterMemoryDesc(desc).ok());
+    // The pin type is advertised as device memory because the transport hands the
+    // provider a device address. Whether that address equals the host address is up to
+    // the runtime (the simulated one maps the same pages, an accelerator does not), so
+    // only the label is asserted here.
+    EXPECT_EQ(TransProvider::MemType::MEM_DEVICE, desc.memoryType);
+}
+
 }  // namespace
 }  // namespace kv::test

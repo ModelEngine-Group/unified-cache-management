@@ -119,6 +119,9 @@ enum class MemoryType {
     HOST = 0,
     HOST_PINNED = 1,
     DEVICE = 2,
+    // Page aligned process memory. The transport pins it when the provider registers the
+    // region, so no accelerator runtime has to be involved.
+    HOST_PLAIN = 3,
 };
 
 struct MemoryRegion {

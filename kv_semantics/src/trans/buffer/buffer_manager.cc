@@ -51,13 +51,19 @@ bool GetSlotStride(std::size_t capacity, std::size_t& stride)
 
 Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
-    auto buffer = runtime::Device{}.MakeBuffer();
-    if (!buffer) {
-        return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
-    }
+    // The plain host type below is deliberately independent of the runtime, so the runtime
+    // buffer is created on demand instead of up front.
+    std::shared_ptr<runtime::Buffer> buffer;
+    const auto ensureBuffer = [&buffer]() -> bool {
+        if (!buffer) { buffer = runtime::Device{}.MakeBuffer(); }
+        return buffer != nullptr;
+    };
 
     switch (type) {
         case MemoryType::HOST: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             auto owner = buffer->MakeHostBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR, "failed to allocate host memory");
@@ -67,7 +73,29 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             region = {owner, owner.get(), owner.get(), TransProvider::MemType::MEM_HOST};
             return Status::OK();
         }
+        case MemoryType::HOST_PLAIN: {
+            constexpr std::size_t kPageBytes = 4096;
+            constexpr auto kMaxBytes = std::numeric_limits<std::size_t>::max();
+            if (size == 0 || size > kMaxBytes - (kPageBytes - 1)) {
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "invalid plain host buffer size");
+            }
+            const auto bytes = (size + kPageBytes - 1) / kPageBytes * kPageBytes;
+            void* host = std::aligned_alloc(kPageBytes, bytes);
+            if (host == nullptr) {
+                return Status::Error(StatusCode::INTERNAL_ERROR,
+                                     "failed to allocate plain host memory");
+            }
+            std::shared_ptr<void> owner(host, std::free);
+            // The page aligned pointer is both the address the CPU writes and the address the
+            // provider registers, which is what a host NIC can pin.
+            region = {owner, owner.get(), owner.get(), TransProvider::MemType::MEM_HOST};
+            return Status::OK();
+        }
         case MemoryType::HOST_PINNED: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             if (!buffer->SupportsHostMappedDeviceBuffer()) {
                 return Status::Error(StatusCode::UNSUPPORTED,
                                      "host-mapped device buffer not supported by runtime");
@@ -82,6 +110,9 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             return Status::OK();
         }
         case MemoryType::DEVICE: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             auto owner = buffer->MakeDeviceBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR,
