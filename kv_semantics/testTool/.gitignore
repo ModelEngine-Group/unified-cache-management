@@ -4,3 +4,5 @@ logs/
 .vscode/
 asu-fake-backend-store/
 gcc85-repos/
+build-kv/
+build-kv-unit/
