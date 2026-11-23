@@ -182,46 +182,46 @@ Status KvStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 
 Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
 {
-    if (r.buffer_addr == 0) [[unlikely]] {
+    if (r.buffer_addr == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "buffer_addr is zero in Store request");
     }
-    if (r.buffer_length == 0) [[unlikely]] {
+    if (r.buffer_length == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length is zero in Store request");
     }
-    if (r.buffer_length % kAlignmentBytes != 0) [[unlikely]] {
+    if (r.buffer_length % kAlignmentBytes != 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length(" + std::to_string(r.buffer_length) +
                                  ") must be 512B aligned in Store request");
     }
-    if (r.buffer_length > 0xFFFFFF) [[unlikely]] {
+    if (r.buffer_length > 0xFFFFFF) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length(" + std::to_string(r.buffer_length) +
                                  ") exceeds 24-bit limit in Store request");
     }
-    if (r.offset % kAlignmentBytes != 0) [[unlikely]] {
+    if (r.offset % kAlignmentBytes != 0) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "offset(" + std::to_string(r.offset) + ") must be 512B aligned in Store request");
     }
-    if (r.length == 0) [[unlikely]] {
+    if (r.length == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "length is 1-based, must be non-zero in Store request");
     }
-    if (r.length > 0xFFFFFF) [[unlikely]] {
+    if (r.length > 0xFFFFFF) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Store request");
     }
-    if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
+    if (IsCacheKeyAllZero(r.key)) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Store request");
     }
-    if (r.dtype > 0x7) [[unlikely]] {
+    if (r.dtype > 0x7) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "dtype(" + std::to_string(r.dtype) + ") exceeds 3-bit limit in Store request");
     }
-    if (r.dspec > 0x1F) [[unlikely]] {
+    if (r.dspec > 0x1F) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "dspec(" + std::to_string(r.dspec) + ") exceeds 5-bit limit in Store request");
@@ -321,39 +321,39 @@ Status KvRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 
 Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
 {
-    if (r.buffer_addr == 0) [[unlikely]] {
+    if (r.buffer_addr == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_addr is zero in Retrieve request");
     }
-    if (r.buffer_length == 0) [[unlikely]] {
+    if (r.buffer_length == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length is zero in Retrieve request");
     }
-    if (r.buffer_length % kAlignmentBytes != 0) [[unlikely]] {
+    if (r.buffer_length % kAlignmentBytes != 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length(" + std::to_string(r.buffer_length) +
                                  ") must be 512B aligned in Retrieve request");
     }
-    if (r.buffer_length > 0xFFFFFF) [[unlikely]] {
+    if (r.buffer_length > 0xFFFFFF) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "buffer_length(" + std::to_string(r.buffer_length) +
                                  ") exceeds 24-bit limit in Retrieve request");
     }
-    if (r.offset % kAlignmentBytes != 0) [[unlikely]] {
+    if (r.offset % kAlignmentBytes != 0) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "offset(" + std::to_string(r.offset) + ") must be 512B aligned in Retrieve request");
     }
-    if (r.length == 0) [[unlikely]] {
+    if (r.length == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "length is 1-based, must be non-zero in Retrieve request");
     }
-    if (r.length > 0xFFFFFF) [[unlikely]] {
+    if (r.length > 0xFFFFFF) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "length(" + std::to_string(r.length) + ") exceeds 24-bit limit in Retrieve request");
     }
-    if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
+    if (IsCacheKeyAllZero(r.key)) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Retrieve request");
     }
     return Status::OK();
@@ -464,78 +464,78 @@ Status KvBatchStoreProtocol::PackSqe(const SqeRequest& req, std::uint32_t* targe
 
 Status KvBatchStoreProtocol::ValidateRequest(const KvBatchStoreRequest& r) const
 {
-    if (r.batch_number == 0 || r.batch_number > kMaxBatchNumber) [[unlikely]] {
+    if (r.batch_number == 0 || r.batch_number > kMaxBatchNumber) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must be in range [1, 110] in BatchStore request");
     }
-    if (r.batch_number != r.entries.size()) [[unlikely]] {
+    if (r.batch_number != r.entries.size()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must equal entries.size()(" + std::to_string(r.entries.size()) +
                                  ") in BatchStore request");
     }
     if (r.rflag) {
-        if (r.response_buffer_addr == 0) [[unlikely]] {
+        if (r.response_buffer_addr == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_buffer_addr is zero in BatchStore request");
         }
-        if (r.response_mr_key == 0) [[unlikely]] {
+        if (r.response_mr_key == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_mr_key is zero in BatchStore request");
         }
     } else {
-        if (r.response_buffer_addr != 0) [[unlikely]] {
+        if (r.response_buffer_addr != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_buffer_addr must be zero when rflag is false in BatchStore request");
         }
-        if (r.response_mr_key != 0) [[unlikely]] {
+        if (r.response_mr_key != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_mr_key must be zero when rflag is false in BatchStore request");
         }
     }
-    if (r.dtype > 0x7) [[unlikely]] {
+    if (r.dtype > 0x7) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "dtype(" + std::to_string(r.dtype) + ") exceeds 3-bit limit in BatchStore request");
     }
-    if (r.dspec > 0x1F) [[unlikely]] {
+    if (r.dspec > 0x1F) {
         return Status::Error(
             StatusCode::INVALID_ARGUMENT,
             "dspec(" + std::to_string(r.dspec) + ") exceeds 5-bit limit in BatchStore request");
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
         const auto& entry = r.entries[i];
-        if (entry.offset % kAlignmentBytes != 0) [[unlikely]] {
+        if (entry.offset % kAlignmentBytes != 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] offset(" +
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchStore request");
         }
-        if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
+        if (IsCacheKeyAllZero(entry.key)) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] key is all zeros in BatchStore request");
         }
-        if (entry.buffer_addr == 0) [[unlikely]] {
+        if (entry.buffer_addr == 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] buffer_addr is zero in BatchStore request");
         }
-        if (entry.length == 0) [[unlikely]] {
+        if (entry.length == 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] length is zero in BatchStore request");
         }
-        if (entry.length % kAlignmentBytes != 0) [[unlikely]] {
+        if (entry.length % kAlignmentBytes != 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] length(" +
                                      std::to_string(entry.length) +
                                      ") must be 512B aligned in BatchStore request");
         }
-        if (entry.length > 0xFFFFFF) [[unlikely]] {
+        if (entry.length > 0xFFFFFF) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] length(" +
                                      std::to_string(entry.length) +
@@ -664,33 +664,33 @@ Status KvBatchRetrieveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* ta
 
 Status KvBatchRetrieveProtocol::ValidateRequest(const KvBatchRetrieveRequest& r) const
 {
-    if (r.batch_number == 0 || r.batch_number > kMaxBatchNumber) [[unlikely]] {
+    if (r.batch_number == 0 || r.batch_number > kMaxBatchNumber) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must be in range [1, 110] in BatchRetrieve request");
     }
-    if (r.batch_number != r.entries.size()) [[unlikely]] {
+    if (r.batch_number != r.entries.size()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must equal entries.size()(" + std::to_string(r.entries.size()) +
                                  ") in BatchRetrieve request");
     }
     if (r.rflag) {
-        if (r.response_buffer_addr == 0) [[unlikely]] {
+        if (r.response_buffer_addr == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_buffer_addr is zero in BatchRetrieve request");
         }
-        if (r.response_mr_key == 0) [[unlikely]] {
+        if (r.response_mr_key == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_mr_key is zero in BatchRetrieve request");
         }
     } else {
-        if (r.response_buffer_addr != 0) [[unlikely]] {
+        if (r.response_buffer_addr != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_buffer_addr must be zero when rflag is false in BatchRetrieve request");
         }
-        if (r.response_mr_key != 0) [[unlikely]] {
+        if (r.response_mr_key != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_mr_key must be zero when rflag is false in BatchRetrieve request");
@@ -698,34 +698,34 @@ Status KvBatchRetrieveProtocol::ValidateRequest(const KvBatchRetrieveRequest& r)
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
         const auto& entry = r.entries[i];
-        if (entry.offset % kAlignmentBytes != 0) [[unlikely]] {
+        if (entry.offset % kAlignmentBytes != 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] offset(" +
                                      std::to_string(entry.offset) +
                                      ") must be 512B aligned in BatchRetrieve request");
         }
-        if (IsCacheKeyAllZero(entry.key)) [[unlikely]] {
+        if (IsCacheKeyAllZero(entry.key)) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] key is all zeros in BatchRetrieve request");
         }
-        if (entry.buffer_addr == 0) [[unlikely]] {
+        if (entry.buffer_addr == 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] buffer_addr is zero in BatchRetrieve request");
         }
-        if (entry.length == 0) [[unlikely]] {
+        if (entry.length == 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "entry[" + std::to_string(i) + "] length is zero in BatchRetrieve request");
         }
-        if (entry.length % kAlignmentBytes != 0) [[unlikely]] {
+        if (entry.length % kAlignmentBytes != 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] length(" +
                                      std::to_string(entry.length) +
                                      ") must be 512B aligned in BatchRetrieve request");
         }
-        if (entry.length > 0xFFFFFF) [[unlikely]] {
+        if (entry.length > 0xFFFFFF) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "entry[" + std::to_string(i) + "] length(" +
                                      std::to_string(entry.length) +
@@ -853,40 +853,40 @@ Status KvDeleteProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 
 Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
 {
-    if (r.batch_number == 0 || r.batch_number > kMaxDeleteBatchNumber) [[unlikely]] {
+    if (r.batch_number == 0 || r.batch_number > kMaxDeleteBatchNumber) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must be in range [1, 254] in Delete request");
     }
-    if (r.batch_number != r.keys.size()) [[unlikely]] {
+    if (r.batch_number != r.keys.size()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must equal keys.size()(" + std::to_string(r.keys.size()) +
                                  ") in Delete request");
     }
     if (r.rflag) {
-        if (r.response_buffer_addr == 0) [[unlikely]] {
+        if (r.response_buffer_addr == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_buffer_addr is zero in Delete request");
         }
-        if (r.response_mr_key == 0) [[unlikely]] {
+        if (r.response_mr_key == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_mr_key is zero in Delete request");
         }
     } else {
-        if (r.response_buffer_addr != 0) [[unlikely]] {
+        if (r.response_buffer_addr != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_buffer_addr must be zero when rflag is false in Delete request");
         }
-        if (r.response_mr_key != 0) [[unlikely]] {
+        if (r.response_mr_key != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_mr_key must be zero when rflag is false in Delete request");
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
+        if (IsCacheKeyAllZero(r.keys[i])) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is all zeros in Delete request");
         }
@@ -1004,40 +1004,40 @@ Status KvExistProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target)
 
 Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
 {
-    if (r.batch_number == 0 || r.batch_number > kMaxExistBatchNumber) [[unlikely]] {
+    if (r.batch_number == 0 || r.batch_number > kMaxExistBatchNumber) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must be in range [1, 256] in Exist request");
     }
-    if (r.batch_number != r.keys.size()) [[unlikely]] {
+    if (r.batch_number != r.keys.size()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "batch_number(" + std::to_string(r.batch_number) +
                                  ") must equal keys.size()(" + std::to_string(r.keys.size()) +
                                  ") in Exist request");
     }
     if (r.rflag) {
-        if (r.response_buffer_addr == 0) [[unlikely]] {
+        if (r.response_buffer_addr == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_buffer_addr is zero in Exist request");
         }
-        if (r.response_mr_key == 0) [[unlikely]] {
+        if (r.response_mr_key == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_mr_key is zero in Exist request");
         }
     } else {
-        if (r.response_buffer_addr != 0) [[unlikely]] {
+        if (r.response_buffer_addr != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_buffer_addr must be zero when rflag is false in Exist request");
         }
-        if (r.response_mr_key != 0) [[unlikely]] {
+        if (r.response_mr_key != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_mr_key must be zero when rflag is false in Exist request");
         }
     }
     for (std::size_t i = 0; i < r.batch_number; ++i) {
-        if (IsCacheKeyAllZero(r.keys[i])) [[unlikely]] {
+        if (IsCacheKeyAllZero(r.keys[i])) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "key[" + std::to_string(i) + "] is all zeros in Exist request");
         }
@@ -1142,21 +1142,21 @@ Status KvKeepAliveProtocol::PackSqe(const SqeRequest& req, std::uint32_t* target
 Status KvKeepAliveProtocol::ValidateRequest(const KvKeepAliveRequest& r) const
 {
     if (r.rflag) {
-        if (r.response_buffer_addr == 0) [[unlikely]] {
+        if (r.response_buffer_addr == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_buffer_addr is zero in KeepAlive request");
         }
-        if (r.response_mr_key == 0) [[unlikely]] {
+        if (r.response_mr_key == 0) {
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  "response_mr_key is zero in KeepAlive request");
         }
     } else {
-        if (r.response_buffer_addr != 0) [[unlikely]] {
+        if (r.response_buffer_addr != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_buffer_addr must be zero when rflag is false in KeepAlive request");
         }
-        if (r.response_mr_key != 0) [[unlikely]] {
+        if (r.response_mr_key != 0) {
             return Status::Error(
                 StatusCode::INVALID_ARGUMENT,
                 "response_mr_key must be zero when rflag is false in KeepAlive request");
