@@ -208,9 +208,7 @@ inline at::Tensor CopyTensorHostToDevice(const at::Tensor& cpu_tensor)
 }
 
 inline at::Tensor CopyScalarToDevice(const c10::Scalar& cpu_scalar, at::ScalarType scalar_data_type)
-{
-    return CopyTensorHostToDevice(scalar_to_tensor(cpu_scalar).to(scalar_data_type));
-}
+{ return CopyTensorHostToDevice(scalar_to_tensor(cpu_scalar).to(scalar_data_type)); }
 
 inline aclTensor* ConvertType(const at::Tensor& at_tensor)
 {
@@ -362,17 +360,14 @@ inline aclScalar* ConvertType(const c10::optional<at::Scalar>& opt_scalar)
 }
 
 inline aclDataType ConvertType(const at::ScalarType scalarType)
-{
-    return kATenScalarTypeToAclDataTypeTable[static_cast<int64_t>(scalarType)];
-}
+{ return kATenScalarTypeToAclDataTypeTable[static_cast<int64_t>(scalarType)]; }
 
-inline const char* ConvertType(const string& str) { return str.c_str(); }
+inline const char* ConvertType(const string& str)
+{ return str.c_str(); }
 
 template <typename T>
 T ConvertType(T value)
-{
-    return value;
-}
+{ return value; }
 
 template <typename Tuple, size_t... I>
 auto ConvertToOpApiFunc(const Tuple& params, void* opApiAddr, std::index_sequence<I...>)
@@ -429,15 +424,11 @@ inline void Release(aclTensorList* p)
 
 template <typename T>
 void Release(T value)
-{
-    (void)value;
-}
+{ (void)value; }
 
 template <typename Tuple, size_t... I>
 void CallRelease(Tuple t, std::index_sequence<I...>)
-{
-    (void)std::initializer_list<int>{(Release(std::get<I>(t)), 0)...};
-}
+{ (void)std::initializer_list<int>{(Release(std::get<I>(t)), 0)...}; }
 
 template <typename Tuple>
 void ReleaseConvertTypes(Tuple& t)
@@ -448,15 +439,11 @@ void ReleaseConvertTypes(Tuple& t)
 
 template <typename... Ts>
 constexpr auto ConvertTypes(Ts&... args)
-{
-    return std::make_tuple(ConvertType(args)...);
-}
+{ return std::make_tuple(ConvertType(args)...); }
 
 template <typename Function, typename Tuple, size_t... I>
 auto call(Function f, Tuple t, std::index_sequence<I...>)
-{
-    return f(std::get<I>(t)...);
-}
+{ return f(std::get<I>(t)...); }
 
 template <typename Function, typename Tuple>
 auto call(Function f, Tuple t)
@@ -467,15 +454,11 @@ auto call(Function f, Tuple t)
 
 template <std::size_t N>
 void AddParamToBuf(const std::array<bool, N>& value)
-{
-    MEMCPY_TO_BUF(value.data(), value.size() * sizeof(bool));
-}
+{ MEMCPY_TO_BUF(value.data(), value.size() * sizeof(bool)); }
 
 template <typename T>
 void AddParamToBuf(const T& value)
-{
-    MEMCPY_TO_BUF(&value, sizeof(T));
-}
+{ MEMCPY_TO_BUF(&value, sizeof(T)); }
 
 void AddParamToBuf(const at::Tensor&);
 void AddParamToBuf(const at::Scalar&);

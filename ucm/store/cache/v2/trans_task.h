@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include "status/status.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -34,15 +35,20 @@
 namespace UC::Cache2 {
 
 struct Task {
-    enum class Type : uint8_t { LOAD, DUMP };
+    enum class Type : uint8_t { LOAD, DUMP, LOAD_ON_TOKEN };
 
     Task(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
+    Task(Type type, Detail::TaskDesc desc, std::vector<Detail::TokenFilter> filter)
+        : id{NextId()}, type{type}, desc{std::move(desc)}, filter{std::move(filter)}
+    {
+    }
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
     Task(Task&& other) noexcept
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
+          filter{std::move(other.filter)},
           failureStatus{other.failureStatus.load()}
     {
     }
@@ -50,6 +56,7 @@ struct Task {
     Detail::TaskHandle id{};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    std::vector<Detail::TokenFilter> filter;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
 
     void Fail(const Status& status)

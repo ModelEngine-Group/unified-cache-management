@@ -35,12 +35,6 @@ else
     mkdir -p "$UCM_DIR"
 fi
 
-UCM_DIR="gsa_log/GLM/KVpre"
-if [ -d "$UCM_DIR" ]; then
-    rm -rf "$UCM_DIR"/* 2>/dev/null
-else
-    mkdir -p "$UCM_DIR"
-fi
 
 # ================================
 # 🔧 基础参数配置
@@ -72,6 +66,34 @@ export HCCL_INTRA_PCIE_ENABLE=0
 export HCCL_INTRA_ROCE_ENABLE=1
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 export ENABLE_UCM_PATCH=1
+export ENABLE_GSA_PATCH=1
+export UCM_SPARSE_GSA_ENABLE=1
+
+# ---------------------------------------------------------------------------
+# GSA 自定义算子库环境（aclnnKvQuantSparseFlashAttentionGsa 等符号由
+# libcust_opapi.so 提供，进程内 dlopen 只认启动时的 LD_LIBRARY_PATH，必须
+# 在 vllm serve 启动前注入；路径前置，优先于其他 vendor 的同名 libcust_opapi.so，
+# 否则首个 decode step 报 "aclnn... not in libopapi.so"）。
+# 安装：bash ucm/sandbox/sparse/gsav2/ops/ascend/install.sh（装 GSA-custom_ops*.run
+# 到 opp/vendors/gsa 并生成 setenv.bash）。
+# ---------------------------------------------------------------------------
+GSA_VENDOR_BASE=""
+for _base in /usr/local/Ascend/ascend-toolkit/latest/opp/vendors/gsa \
+             "${HOME}/Ascend/ascend-toolkit/latest/opp/vendors/gsa"; do
+    if [ -d "${_base}/op_api/lib" ]; then GSA_VENDOR_BASE="$_base"; break; fi
+done
+if [ -n "$GSA_VENDOR_BASE" ]; then
+    if [ -f "${GSA_VENDOR_BASE}/setenv.bash" ]; then
+        source "${GSA_VENDOR_BASE}/setenv.bash"
+    else
+        export LD_LIBRARY_PATH="${GSA_VENDOR_BASE}/op_api/lib:${LD_LIBRARY_PATH}"
+    fi
+    echo "[GSA] custom ops lib: ${GSA_VENDOR_BASE}/op_api/lib"
+else
+    echo "[GSA][WARN] opp/vendors/gsa 未找到: GSA-custom_ops 未安装, C8 sparse attention 将不可用"
+    echo "[GSA][WARN] 请先执行: bash ucm/sandbox/sparse/gsav2/ops/ascend/install.sh 再重启服务"
+fi
+unset _base
 
 export PYTHONHASHSEED=0
 export ACL_OP_INIT_MODE=1
@@ -98,8 +120,8 @@ if [ ! -d "$MODEL_PATH" ]; then
     exit 1
 fi
 
-additional_config='{"pa_shape_list": [48,64,72,80], "fuse_muls_add": true, "multistream_overlap_shared_expert": true, "ascend_compilation_config": {"enable_npugraph_ex": true}, "enable_mlapo": true, "enable_sparse_sfa_c8": true, "enable_sparse_li_c8": true}'
-compilation_config='{"cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [4, 8, 16, 32, 64, 96]}'
+additional_config='{"pa_shape_list": [48,64,72,80], "fuse_muls_add": true, "multistream_overlap_shared_expert": true, "ascend_compilation_config": {"enable_npugraph_ex": true}, "enable_mlapo": true, "enable_sparse_sfa_c8": true, "enable_sparse_li_c8": true, "ascend_fusion_config": {"fusion_ops_gmmswigluquant": false}}'
+compilation_config='{"cudagraph_mode": "FULL_DECODE_ONLY", "cudagraph_capture_sizes": [4, 16, 32, 64, 96, 128]}'
 ucm_config='{"kv_connector": "MultiConnector", "kv_role": "kv_consumer", "kv_connector_extra_config": {"connectors": [
                 {
                     "kv_connector": "MooncakeConnectorV1",
@@ -114,7 +136,7 @@ ucm_config='{"kv_connector": "MultiConnector", "kv_role": "kv_consumer", "kv_con
                     "kv_connector": "UCMConnector",
                     "kv_role": "kv_both",
                     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-                    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "./ucm_config_decode.yaml"}
+                    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "./ucm/sandbox/sparse/gsav2/script/ucm_config_decode.yaml"}
                 }
             ]}}'
 
@@ -129,7 +151,7 @@ script -q -f "$LOG_FILE" -c "
         --tensor-parallel-size \"$TENSOR_PARALLEL_SIZE\" \
         --max-num-seqs 16 \
         --max-model-len \"$MAX_MODEL_LEN\" \
-        --max-num-batched-tokens 64 \
+        --max-num-batched-tokens 128 \
         --additional-config '$additional_config' \
         --port \"$SERVER_PORT\" \
         --block-size \"$BLOCK_SIZE\" \

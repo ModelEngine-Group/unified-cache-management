@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "logger.h"
 #include "parser_common.h"
 #include "status_utils.h"
 
@@ -162,6 +163,20 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
+        } else if (key == "inference.engine") {
+            if (value == "vllm_ascend") {
+                config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
+            } else if (value == "sglang") {
+                config.keyResolution.engine = InferenceEngine::SGLANG;
+            } else {
+                config.keyResolution.engine = InferenceEngine::GENERIC;
+                if (value != "generic") {
+                    KV_WARN(
+                        "Unrecognized inference.engine='{}'; using generic key handling "
+                        "without namespace field extraction",
+                        value);
+                }
+            }
         } else if (key == "client.useBatchIoForSingleKey" ||
                    key == "client.use_batch_io_for_single_key") {
             config.useBatchIoForSingleKey = ParseClientBool(value);

@@ -113,7 +113,7 @@ static Status VerifyCacheKeyEntry(const std::uint32_t* key_dwords, const std::st
     return Status::OK();
 }
 
-static bool IsCacheKeyAllZero(const CacheKey& key)
+static bool IsCacheKeyAllZero(const BinaryKey& key)
 {
     return std::all_of(key.begin(), key.end(),
                        [](std::byte value) { return value == std::byte{0}; });
@@ -894,7 +894,7 @@ Status KvDeleteProtocol::ValidateRequest(const KvDeleteRequest& r) const
     return Status::OK();
 }
 
-void KvDeleteProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
+void KvDeleteProtocol::PackEntry(const BinaryKey& key, std::uint32_t* base)
 {
     std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }
@@ -1045,7 +1045,7 @@ Status KvExistProtocol::ValidateRequest(const KvExistRequest& r) const
     return Status::OK();
 }
 
-void KvExistProtocol::PackEntry(const CacheKey& key, std::uint32_t* base)
+void KvExistProtocol::PackEntry(const BinaryKey& key, std::uint32_t* base)
 {
     std::memcpy(&base[0], key.data(), kCacheKeySizeBytes);
 }

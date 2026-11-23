@@ -78,12 +78,12 @@ TEST_F(AclRuntimeErrorTest, InitAclRuntimeThrowsOnGetCurrentContextFailure)
     EXPECT_GT(acl_stub::Stub().getCurrentContextCount.load(), 0);
 }
 
-// NOTE: InitAclRuntime's aclrtCreateStream failure path cannot be tested in
-// isolation because the TaskManager constructor also calls aclrtCreateStream
-// via ObtainStream, which throws on failure (std::runtime_error).  The error
-// logging branch is covered on real hardware.
-// The destructor's aclrtDestroyStream failure path also cannot be tested
-// because the worker thread's DestoryStream is affected by the same flag.
-// These error-logging branches are covered on real hardware.
+// NOTE: InitAclRuntime's aclrtCreateStream failure path still cannot be
+// tested in isolation because the TaskManager constructor (which runs first
+// inside the engine ctor) also calls aclrtCreateStream via ObtainStream on
+// its worker threads; since ObtainStream became a judge-and-return-code API,
+// those workers now exit with an error log instead of throwing, so the flag
+// would silently disable them before InitAclRuntime gets a chance to run.
+// Its own error-logging branch is covered on real hardware.
 
 }  // namespace

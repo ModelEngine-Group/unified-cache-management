@@ -49,7 +49,7 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::vector<kv::Key> ToRouterKeys(const std::vector<CacheKey>& keys)
+std::vector<kv::Key> ToRouterKeys(const std::vector<ResolvedCacheKey>& keys)
 {
     std::vector<kv::Key> routerKeys;
     routerKeys.reserve(keys.size());
@@ -57,13 +57,15 @@ std::vector<kv::Key> ToRouterKeys(const std::vector<CacheKey>& keys)
     return routerKeys;
 }
 
-std::vector<kv::Key> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
+std::vector<kv::Key> ExtractEntryKeys(const std::vector<ResolvedKVBuffer>& entries)
 {
     std::vector<kv::Key> keys;
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;
 }
+
+std::uint32_t GetTargetNamespaceId(NodeId nodeId, std::uint32_t gnsid) { return gnsid; }
 
 // Collects the nodes whose transport reports an unhealthy state. Transports without a
 // health probe report OK and are therefore treated as available: an unimplemented probe
@@ -347,30 +349,36 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
             unavailableNodes.size());
     }
 
+    // Failover: nodes whose transport reports unhealthy are skipped; their keys were already
+    // failed per entry above. Surviving nodes group transport tasks per namespace (gnsid)
+    // so every (node, namespace) pair gets its own transport task.
+    const bool keyOnly = keyBased;
     task->transportTasks.reserve(routes.size());
     for (const auto& [nodeId, indices] : routes) {
         if (unavailableNodes.count(nodeId) != 0) { continue; }
-        auto transportTask = std::make_shared<TransportTask>();
-        transportTask->nodeId = nodeId;
-        transportTask->transport = snapshot->transports.at(nodeId);
-        transportTask->originalIndices.reserve(indices.size());
-        if (keyBased) {
-            transportTask->keys.reserve(indices.size());
-            for (auto index : indices) {
-                transportTask->keys.push_back(std::move(task->keys[index]));
-                transportTask->originalIndices.push_back(index);
+        std::unordered_map<std::uint32_t, std::size_t> transportTaskIndexByGnsid;
+        for (auto index : indices) {
+            const auto gnsid = keyOnly ? task->keys[index].gnsid : task->entries[index].key.gnsid;
+            const auto [iter, inserted] =
+                transportTaskIndexByGnsid.try_emplace(gnsid, task->transportTasks.size());
+            if (inserted) {
+                auto transportTask = std::make_shared<TransportTask>();
+                transportTask->nodeId = nodeId;
+                transportTask->transport = snapshot->transports.at(nodeId);
+                transportTask->namespaceId = GetTargetNamespaceId(nodeId, gnsid);
+                task->transportTasks.push_back(std::move(transportTask));
             }
-        } else {
-            transportTask->entries.reserve(indices.size());
-            for (auto index : indices) {
+            auto& transportTask = task->transportTasks[iter->second];
+            transportTask->originalIndices.push_back(index);
+            if (keyOnly) {
+                transportTask->keys.push_back(std::move(task->keys[index]));
+            } else {
                 transportTask->entries.push_back(std::move(task->entries[index]));
-                transportTask->originalIndices.push_back(index);
             }
         }
-        task->transportTasks.push_back(std::move(transportTask));
     }
-    std::vector<KVBuffer>{}.swap(task->entries);
-    std::vector<CacheKey>{}.swap(task->keys);
+    std::vector<ResolvedKVBuffer>{}.swap(task->entries);
+    std::vector<ResolvedCacheKey>{}.swap(task->keys);
     task->remainingTransportTasks.store(task->transportTasks.size(), std::memory_order_release);
     task->remainingTransportSendTasks.store(task->transportTasks.size(), std::memory_order_release);
     return Status::OK();
