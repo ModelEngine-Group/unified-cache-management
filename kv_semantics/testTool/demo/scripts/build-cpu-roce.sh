@@ -57,23 +57,14 @@ fi
 
 # ---- 步骤 1/2：构建 kv client（RoCE provider 开启；build-kv 目录名为 testTool 构建
 # 脚本的既定引用路径 ../build-kv/src，不可改名；--target kv_client 只构建所需目标）----
-# 【临时降级】GCC 8.x 兼容：kv client 源码含 C++20 语句属性 [[unlikely]]（C++17 工程
-# 中的违规语法；GCC 9+ 以非标扩展静默接受，GCC 8.x 报 -Wattributes 且被工程 -Werror
-# 升级为 error 拦截）。-Wno-error=attributes 令该警告保留但不升级 error，GCC 9+ 上
-# 为 no-op 无副作用；注入 _DEBUG 变量（非 CMAKE_CXX_FLAGS）确保落在 -Werror 之后生效。
-# 待 [[unlikely]] 清理分支合入后，本参数随注释一并移除 ----
 echo "===== [1/2] 构建 kv client（BUILD_KV_CLIENT_PROVIDER_ROCE=ON）====="
 cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
-    -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Debug -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON \
-    -DCMAKE_CXX_FLAGS_DEBUG="-Wno-error=attributes"
+    -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Debug -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
 cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 
 # ---- 步骤 2/2：构建 testTool（链接 build-kv 预构建产物；首次配置需联网拉取 fmt/spdlog）。
-# 【临时降级】同步骤 1 的 GCC 8.x 兼容参数：testTool 自身源码无 [[unlikely]]，带上仅为
-# 保持"一键编通"的一致性防御（后续若合入含该语法的代码同样不中断）；移除时机同步骤 1 ----
 echo "===== [2/2] 构建 testTool ====="
-cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_CXX_FLAGS_DEBUG="-Wno-error=attributes"
+cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=Debug
 cmake --build "${TESTTOOL_ROOT}/build" -j "$(nproc)"
 
 # ---- 结果提示：产物路径与下一步运行引导 ----
