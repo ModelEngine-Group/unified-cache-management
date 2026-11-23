@@ -32,6 +32,7 @@
 #include "conn/connection_manager.h"
 #include "kv_transport.h"
 #include "logger.h"
+#include "runtime/device.h"
 #include "trans_provider.h"
 #include "utils/trans_config_utils.h"
 
@@ -95,7 +96,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
 
     connManager_.reset();
     connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
-                                                       config_.maxErrorCount);
+                                                       config_.maxErrorCount, config_.deviceId);
 
     const std::uint32_t qp_num = config_.qpNum;
     KV_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
@@ -277,6 +278,20 @@ Status AsuTransportImpl::SubmitTask(const TransportTaskPtr& task)
 
 void AsuTransportImpl::WorkerLoop()
 {
+    // Task execution calls into the provider on this thread, so bind the
+    // configured device here instead of relying on whatever device the thread
+    // inherited from its creator.
+    if (config_.deviceId >= 0) {
+        runtime::Device device;
+        const auto setupStatus = device.Setup(config_.deviceId);
+        if (!setupStatus.ok()) {
+            KV_WARN(
+                "AsuTransportImpl::WorkerLoop device binding failed: device_id={} code={} "
+                "message={}",
+                config_.deviceId, static_cast<int>(setupStatus.code), setupStatus.message);
+        }
+    }
+
     executeQueue_.ConsumerLoop(stopWorker_, producerMu_, workerCv_, [this](TransportTaskPtr task) {
         if (!task) { return; }
         if (taskExecutor_->Execute(task)) { taskManager_.NotifyCompletion(task); }
