@@ -358,6 +358,66 @@ def test_single_owner_dumps_everything():
     assert sorted(submitted["WA"][0]) == ALL_KEYS
 
 
+@pytest.mark.parametrize("owns_dump", [False, True])
+def test_fawa_preempted_request_finished_before_next_schedule(owns_dump):
+    worker_methods = {
+        "handle_preemptions",
+        "_drain_best_effort_dump_tasks",
+        "_poll_pending_fawa_loads",
+        "get_finished",
+        "get_transfer_results",
+    }
+    methods = _load_hma_methods(worker_methods | {"build_connector_meta"})
+    methods["UCMFAWAConnectorMetadata"] = lambda plans, preempted: NS(
+        request_meta=plans, preempted_req_ids=preempted
+    )
+    methods["KVConnectorTransferResults"] = NS
+    scheduler = NS(
+        requests_meta={},
+        _pending_async_load_dispatches={},
+        _async_load_req_ids=set(),
+        _async_dump_req_ids={"aborted"},
+    )
+    for name in ("request_finished", "request_finished_all_groups"):
+        method = _load_class_method(UCM_PATH, "UCMDirectConnector", name)
+        setattr(scheduler, name, types.MethodType(method, scheduler))
+
+    # A forced prefix-cache reset preempts the request, then the client aborts
+    # it before schedule() can hand that preemption to the connector.
+    assert scheduler.request_finished_all_groups(NS(request_id="aborted"), ([],)) == (
+        True,
+        None,
+    )
+    output = NS(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=NS(req_ids=[]),
+        finished_req_ids={"aborted"},
+        preempted_req_ids={"aborted"},
+    )
+    metadata = methods["build_connector_meta"](scheduler, output)
+
+    dump_task = NS(task="old dump", event_handle=1)
+    worker = NS(
+        tp_dump_tasks={("aborted",): [dump_task]} if owns_dump else {},
+        _pending_fawa_loads={},
+        _finished_async_load_req_ids=set(),
+        _failed_fawa_loads=set(),
+        _async_dump_req_ids={"aborted"},
+        _rank_consistency=Mock(),
+        device=Mock(),
+    )
+    for name in worker_methods:
+        setattr(worker, name, types.MethodType(methods[name], worker))
+
+    worker.handle_preemptions(metadata)
+    assert not worker.tp_dump_tasks
+    assert worker._rank_consistency.wait_dump.call_count == int(owns_dump)
+    result = worker.get_transfer_results(output.finished_req_ids)
+    assert result.finished_sending == {"aborted"}
+    assert not result.finished_recving
+    assert not worker.get_transfer_results(output.finished_req_ids).finished_sending
+
+
 @pytest.mark.parametrize("cancel_before_load_completes", [False, True])
 def test_preempted_fawa_dump_cannot_send_after_receive(cancel_before_load_completes):
     method_names = {
