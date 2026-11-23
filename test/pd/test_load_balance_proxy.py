@@ -36,9 +36,9 @@ def send_through_proxy(
         argv += [
             "--timing-backend",
             "ucm-async" if ucm_pd else "mooncake",
-            "--timing-p-logs",
+            "--prefiller-logs",
             "p.log",
-            "--timing-d-logs",
+            "--decoder-logs",
             "d.log",
         ]
     monkeypatch.setattr(sys, "argv", argv)
@@ -325,8 +325,9 @@ def running_backend(handler):
         thread.join()
 
 
-@pytest.mark.parametrize("sync", [False, True])
-def test_comparison_joins_engine_ids_and_rejects_incomplete_handoffs(tmp_path, sync):
+@pytest.mark.parametrize("mode", ["async", "sync", "legacy-sync"])
+def test_comparison_joins_engine_ids_and_rejects_incomplete_handoffs(tmp_path, mode):
+    sync = mode != "async"
     script = tmp_path / "ucm_pd_disaggregation_example.py"
     script.write_bytes((PD / script.name).read_bytes())
     mp, md, up, ud = (tmp_path / name for name in ("mp", "md", "up", "ud"))
@@ -352,9 +353,10 @@ def test_comparison_joins_engine_ids_and_rejects_incomplete_handoffs(tmp_path, s
         + "ucm_pd_prefill_done request_id=cmpl-retry-0-00ff00ff ts_ns=1790000000040000000\n"
     )
     if sync:
+        count = " workers=2" if mode == "sync" else ""
         ud.write_text(
             "".join(
-                f"ucm_pd_sync_load_done request_id=cmpl-{s}-0-ff112233 rank={r} ts_ns={1790000000020000000 + r * 4000000}\n"
+                f"ucm_pd_sync_load_done request_id=cmpl-{s}-0-ff112233 rank={r} ts_ns={1790000000020000000 + r * 4000000}{count}\n"
                 for s in samples
                 for r in ([0] if s == "missing" else [1, 0])
             )
@@ -382,7 +384,9 @@ def test_comparison_joins_engine_ids_and_rejects_incomplete_handoffs(tmp_path, s
         "--ucm-d",
         ud,
     ]
-    if sync:
+    if mode == "sync":
+        args.append("--ucm-sync")
+    elif mode == "legacy-sync":
         args.extend(["--ucm-sync-ranks", "0", "1"])
     result = subprocess.run(args, capture_output=True, text=True, check=True)
     rows = {r["request_id"]: r for r in csv.DictReader(result.stdout.splitlines())}
@@ -397,6 +401,32 @@ def test_comparison_joins_engine_ids_and_rejects_incomplete_handoffs(tmp_path, s
     assert rows["cmpl-failed-0"]["mooncake_status"] == "failed_or_aborted"
     for key in ("missing", "retry", "failed"):
         assert rows[f"cmpl-{key}-0"]["ucm_minus_mooncake_ms"] == ""
+
+
+def test_sync_timing_requires_every_worker_but_uses_only_actual_load_times(monkeypatch):
+    monkeypatch.syspath_prepend(str(PD))
+    import ucm_pd_disaggregation_example as proxy
+
+    def result(rank, outcome, ns, workers):
+        line = (
+            f"ucm_pd_sync_load_{outcome} request_id=r rank={rank} ts_ns={ns}{workers}"
+        )
+        return proxy.parse_handoff_event(line, proxy.UCM_RANK)[1]
+
+    start = [proxy.HandoffEvent("r", 1_000_000, None)]
+    loaded = result(4, "done", 3_000_000, " workers=2")
+    idle = result(5, "skipped", 8_000_000, " workers=2")
+    assert proxy.handoff_duration(start, [loaded]) == (None, "rank_set_mismatch")
+    assert proxy.handoff_duration(start, [idle, loaded]) == (2.0, "observed")
+    assert proxy.handoff_duration(start, [idle, idle]) == (None, "repeated_completion")
+    other_idle = result(4, "skipped", 3_000_000, " workers=2")
+    assert proxy.handoff_duration(start, [other_idle, idle]) == (
+        None,
+        "no_external_load",
+    )
+    legacy = [result(4, "done", 3_000_000, "")]
+    assert proxy.handoff_duration(start, legacy) == (None, "missing_worker_count")
+    assert proxy.handoff_duration(start, legacy, {4}) == (2.0, "observed")
 
 
 @pytest.mark.parametrize(
@@ -448,7 +478,7 @@ def test_live_proxy_joins_late_engine_logs_across_rounds(tmp_path, mode, workers
                     if mode == "ucm-sync":
                         append(
                             d_log,
-                            f"ucm_pd_sync_load_done request_id={rid}-bbbbcccc rank=0 ts_ns={p_ns + 4_000_000}",
+                            f"ucm_pd_sync_load_done request_id={rid}-bbbbcccc rank=0 ts_ns={p_ns + 4_000_000} workers=2",
                         )
                 content = b'data: {"choices":[{"delta":{"content":"X"},"token_ids":[1]}]}\n\ndata: [DONE]\n\n'
                 media_type = "text/event-stream"
@@ -478,17 +508,16 @@ def test_live_proxy_joins_late_engine_logs_across_rounds(tmp_path, mode, workers
             str(engine_port),
             "--proxy-log",
             proxy_log,
-            "--timing-backend",
-            mode,
-            "--timing-p-logs",
+            "--prefiller-logs",
             p_log,
-            "--timing-d-logs",
+            "--decoder-logs",
             d_log,
         ]
         if mode != "mooncake":
-            cmd.append("--ucm-pd")
-        if mode == "ucm-sync":
-            cmd += ["--timing-sync-ranks", "0", "1"]
+            config = tmp_path / "pd.yaml"
+            async_load = "true" if mode == "ucm-async" else "false"
+            config.write_text(f"use_request_async_load: {async_load}\n")
+            cmd += ["--ucm-config", config]
         logfile = stack.enter_context(console.open("w"))
         proc = subprocess.Popen(
             cmd, stdout=logfile, stderr=subprocess.STDOUT, start_new_session=True
@@ -526,7 +555,7 @@ def test_live_proxy_joins_late_engine_logs_across_rounds(tmp_path, mode, workers
                 if mode == "ucm-sync":
                     append(
                         d_log,
-                        f"ucm_pd_sync_load_done request_id={key} rank=1 ts_ns={p_ns + 14_000_000}",
+                        f"ucm_pd_sync_load_done request_id={key} rank=1 ts_ns={p_ns + 14_000_000} workers=2",
                     )
                 else:
                     append(

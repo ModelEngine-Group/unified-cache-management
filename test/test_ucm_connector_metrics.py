@@ -3045,6 +3045,15 @@ def test_only_sync_decode_dispatches_get_rank_timing():
     outer = object.__new__(UCMConnector)
     outer.connector = Mock()
     outer._pd_loads_this_step = set()
+    outer._vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=4,
+            pipeline_parallel_size=2,
+            prefill_context_parallel_size=2,
+            data_parallel_size=3,
+            decode_context_parallel_size=2,
+        )
+    )
     requests = {}
     for name, pd, tokens, asynchronous in [
         ("sync", True, 8, False),
@@ -3061,7 +3070,9 @@ def test_only_sync_decode_dispatches_get_rank_timing():
         )
     metadata = ucm_connector_module.UCMConnectorMetadata(requests)
     outer.connector.build_connector_meta.return_value = metadata
-    assert outer.build_connector_meta(None).pd_sync_load_req_ids == {"sync"}
+    plan = outer.build_connector_meta(None)
+    assert plan.pd_sync_load_req_ids == {"sync"}
+    assert plan.pd_sync_load_workers == 16
     outer.connector.build_connector_meta.return_value = (
         ucm_connector_module.UCMConnectorMetadata(requests)
     )
@@ -3073,14 +3084,22 @@ def test_pd_layerwise_rank_waits_for_last_local_layer(monkeypatch, layerwise_con
     log = CaptureLogger()
     monkeypatch.setattr(ucm_connector_module, "logger", log)
     metadata = ucm_connector_module.UCMConnectorMetadata(
-        {"req": RequestDispatchMeta(([b"k"], [1]), ([], []))},
-        pd_sync_load_req_ids={"req"},
+        {
+            "req": RequestDispatchMeta(([b"k"], [1]), ([], [])),
+            "empty": RequestDispatchMeta(([], []), ([], [])),
+        },
+        pd_sync_load_req_ids={"req", "empty"},
+        pd_sync_load_workers=2,
     )
     worker.bind_connector_metadata(metadata)
     worker.start_load_kv(None)
     first, last = worker.layer_name_to_id
     worker.wait_for_layer_load(first)
-    assert not log.infos
+    assert len(log.infos) == 1
+    assert re.fullmatch(
+        r"ucm_pd_sync_load_skipped request_id=empty rank=0 ts_ns=\d+ workers=2",
+        log.infos.pop(),
+    )
     worker.wait_for_layer_load(last)
     worker.wait_for_layer_load(last)
     assert len(log.infos) == 1
@@ -3093,6 +3112,7 @@ def test_pd_sync_rank_timing_waits_for_both_fawa_stores(monkeypatch, failure):
     log = CaptureLogger()
     monkeypatch.setattr(ucm_connector_module, "logger", log)
     worker._connector_metadata.pd_sync_load_req_ids.add("req")
+    worker._connector_metadata.pd_sync_load_workers = 2
 
     if failure == "submit_wa":
         worker.wa_store.load_data.side_effect = RuntimeError("WA submit failed")
@@ -3111,7 +3131,8 @@ def test_pd_sync_rank_timing_waits_for_both_fawa_stores(monkeypatch, failure):
     else:
         assert len(log.infos) == 1
         assert re.fullmatch(
-            r"ucm_pd_sync_load_done request_id=req rank=0 ts_ns=\d+", log.infos[0]
+            r"ucm_pd_sync_load_done request_id=req rank=0 ts_ns=\d+ workers=2",
+            log.infos[0],
         )
 
 
