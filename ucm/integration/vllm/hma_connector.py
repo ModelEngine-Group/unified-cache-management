@@ -1908,6 +1908,13 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # allocation's one-shot async dispatch must not suppress this attempt.
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+
+        # PD-decode 请求强制执行真实外部 lookup。否则短 prompt（闸门 1）或
+        # 命中量不足阈值（闸门 2）都会让本函数提前返回 0，上层 PD 等待逻辑
+        # 会据此认为对端 prefill 还没把 KV 写进 UCM，从而无限 defer 该请求。
+        _pd_params = getattr(request, "kv_transfer_params", None) or {}
+        is_pd_decode = bool(_pd_params.get("do_remote_prefill"))
+
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
@@ -1916,7 +1923,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         skip_external_load = request.num_tokens <= (
             wa_computed_tokens + self.load_tokens_threshold
         )
-        if skip_external_load and wa_hbm_hit_block_num <= 0:
+        if skip_external_load and wa_hbm_hit_block_num <= 0 and not is_pd_decode:
             return 0, False
 
         assert self.request_block_hasher is not None
@@ -1931,7 +1938,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         # Even when no external load is worthwhile, the local-HBM prefix is a
         # cache hit and should remain hot in both FAWA backing stores.
-        if skip_external_load:
+        if skip_external_load and not is_pd_decode:
             self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
             return 0, False
 
@@ -1981,7 +1988,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if not self.is_v41_layout and num_total_hit_tokens == request.num_tokens:
             external_hit_tokens = max(0, external_hit_tokens - 1)
 
-        if external_hit_blocks * self.hash_block_size <= self.load_tokens_threshold:
+        if (
+            not is_pd_decode
+            and external_hit_blocks * self.hash_block_size <= self.load_tokens_threshold
+        ):
             external_hit_tokens = 0
             num_total_hit_tokens = num_computed_tokens
             # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
