@@ -7,6 +7,9 @@
 #ifdef UCM_ASU_ENABLE_AIV_PROVIDER
 #include "aiv/aiv_trans_provider.h"
 #endif
+#ifdef UCM_ASU_ENABLE_HCCP_KV_OVER_ROCE_PROVIDER
+#include "hccp_kv_over_roce/hccp_kv_over_roce_trans_provider.h"
+#endif
 #include "kv_transport.h"
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
 #include "fake/fake_trans_provider.h"
@@ -61,6 +64,21 @@ Status CreateTransProvider(const TransportConfig& config,
             // link protocol, so tests keep their coverage.
             transProvider = roce::CreateCpuKvOverRoceTransProvider(config);
             return Status::OK();
+        case TransProviderType::HCCP_KV_OVER_ROCE:
+#ifdef UCM_ASU_ENABLE_HCCP_KV_OVER_ROCE_PROVIDER
+            try {
+                transProvider = std::make_shared<HccpKvOverRoceTransProvider>(config);
+                return Status::OK();
+            } catch (const std::exception& error) {
+                return Status::Error(
+                    StatusCode::INTERNAL_ERROR,
+                    "failed to create HCCP KV-over-RoCE provider: " + std::string(error.what()));
+            }
+#else
+            return Status::Error(StatusCode::UNSUPPORTED,
+                                 "HCCP KV-over-RoCE trans provider is not built; enable "
+                                 "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE");
+#endif
         case TransProviderType::UNSUPPORTED:
             return Status::Error(StatusCode::UNSUPPORTED,
                                  "ASU trans provider backend is not supported");

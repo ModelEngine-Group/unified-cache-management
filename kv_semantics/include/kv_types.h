@@ -193,7 +193,7 @@ enum class Protocol {
     TCP = 2,
 };
 
-enum class TransProviderType { AICPU, FAKE, AIV, CPU, UNSUPPORTED };
+enum class TransProviderType { AICPU, FAKE, AIV, CPU, HCCP_KV_OVER_ROCE, UNSUPPORTED };
 
 struct NodeEndpoint {
     std::string ip;

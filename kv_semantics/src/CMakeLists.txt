@@ -15,6 +15,7 @@ file(GLOB KV_TRANSPORT_SOURCES CONFIGURE_DEPENDS
     trans_provider/aiv/*.cc
     trans_provider/fake/*.cc
     trans_provider/roce/roce_wire.cc
+    trans_provider/hccp_kv_over_roce/*.cc
     common/logger/*.cc
 )
 list(APPEND KV_TRANSPORT_SOURCES ${KV_COMMON_SOURCES})
@@ -144,6 +145,60 @@ if(BUILD_KV_CLIENT_PROVIDER_AIV)
     message(STATUS "KV AIV provider lib: ${ASU_AIV_PROVIDER_LIB}")
     target_link_libraries(kv_transport PRIVATE ${ASU_AIV_PROVIDER_LIB} ${CMAKE_DL_LIBS})
     target_compile_definitions(kv_transport PRIVATE UCM_ASU_ENABLE_AIV_PROVIDER=1)
+endif()
+
+if(BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE)
+    if(NOT "${RUNTIME_ENVIRONMENT}" STREQUAL "ascend")
+        message(FATAL_ERROR
+            "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE requires RUNTIME_ENVIRONMENT=ascend")
+    endif()
+
+    if(NOT DEFINED KV_CLIENT_CANN_ROOT)
+        if(DEFINED ENV{ASCEND_HOME_PATH})
+            set(KV_CLIENT_CANN_ROOT "$ENV{ASCEND_HOME_PATH}" CACHE PATH "Install prefix of CANN")
+        elseif(DEFINED ENV{ASCEND_ROOT})
+            set(KV_CLIENT_CANN_ROOT "$ENV{ASCEND_ROOT}" CACHE PATH "Install prefix of CANN")
+        elseif(DEFINED ASCEND_ROOT AND NOT "${ASCEND_ROOT}" STREQUAL "")
+            set(KV_CLIENT_CANN_ROOT "${ASCEND_ROOT}" CACHE PATH "Install prefix of CANN")
+        else()
+            set(KV_CLIENT_CANN_ROOT "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH
+                "Install prefix of CANN")
+        endif()
+    endif()
+
+    find_path(KV_CLIENT_CANN_INCLUDE_DIR
+        NAMES acl/acl.h
+        HINTS
+            ${KV_CLIENT_CANN_ROOT}/include
+            ${KV_CLIENT_CANN_ROOT}/aarch64-linux/include
+        NO_DEFAULT_PATH
+    )
+    if(NOT KV_CLIENT_CANN_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "Cannot find acl/acl.h under KV_CLIENT_CANN_ROOT=${KV_CLIENT_CANN_ROOT}")
+    endif()
+
+    find_library(KV_CLIENT_CANN_ASCENDCL_LIB
+        NAMES ascendcl
+        HINTS
+            ${KV_CLIENT_CANN_ROOT}/lib64
+            ${KV_CLIENT_CANN_ROOT}/lib
+            ${KV_CLIENT_CANN_ROOT}/runtime/lib64
+            ${KV_CLIENT_CANN_ROOT}/runtime/lib
+            ${KV_CLIENT_CANN_ROOT}/aarch64-linux/lib64
+            ${KV_CLIENT_CANN_ROOT}/aarch64-linux/lib
+        NO_DEFAULT_PATH
+    )
+    if(NOT KV_CLIENT_CANN_ASCENDCL_LIB)
+        message(FATAL_ERROR
+            "Cannot find libascendcl under KV_CLIENT_CANN_ROOT=${KV_CLIENT_CANN_ROOT}")
+    endif()
+
+    message(STATUS "KV HCCP KV-over-RoCE provider CANN include: ${KV_CLIENT_CANN_INCLUDE_DIR}")
+    message(STATUS "KV HCCP KV-over-RoCE provider ascendcl: ${KV_CLIENT_CANN_ASCENDCL_LIB}")
+    target_include_directories(kv_transport PRIVATE ${KV_CLIENT_CANN_INCLUDE_DIR})
+    target_link_libraries(kv_transport PRIVATE ${KV_CLIENT_CANN_ASCENDCL_LIB} ${CMAKE_DL_LIBS})
+    target_compile_definitions(kv_transport PRIVATE UCM_ASU_ENABLE_HCCP_KV_OVER_ROCE_PROVIDER=1)
 endif()
 
 file(GLOB_RECURSE KV_CLIENT_SOURCES CONFIGURE_DEPENDS client/*.cc)
