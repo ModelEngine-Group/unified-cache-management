@@ -1,7 +1,8 @@
 # ============================================================================
 # testTool — kv_semantics 测试工具
-# 构建（在 testTool/ 目录下执行）：
-#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+# 构建（在 testTool/ 目录下执行；缺省 Release——产物随时可用于性能测试，
+# 调试构建需显式 -DCMAKE_BUILD_TYPE=Debug）：
+#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build -j
 #   ./build/testTool
 # ============================================================================
@@ -85,7 +86,7 @@ endif()
 
 # ---------- kv client 依赖：头文件取自 ../include，库取自 kv client 顶层预构建产物 ----------
 # 前提：先独立构建 kv client 库（FAKE provider 默认编入，产物为 libkv_client.so / libkv_transport.so）：
-#   cmake -S .. -B ../build-kv -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Debug
+#   cmake -S .. -B ../build-kv -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Release
 #   cmake --build ../build-kv --target kv_client -j
 # KV_CLIENT_LIB_DIR 可在配置时 -D 覆盖，指向其他预构建目录——例如低版本编译器（GCC 8）
 # 验证环境中链接与本机 libstdc++/glibc ABI 一致的 kv client 库；缺省取 ../build-kv/src

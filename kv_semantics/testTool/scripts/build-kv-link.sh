@@ -3,25 +3,30 @@
 # build-kv-link.sh — 建链断链测试统一编译脚本（CPU / NPU 双模式）
 #
 # 用途：按 --mode 编译对应链路的全部组件（kv client + testTool），两模式共用
-# 本脚本，差异只在编译参数处（运行时环境 / provider 宏 / CANN 路径 / 构建类型）：
+# 本脚本，差异只在编译参数处（运行时环境 / provider 宏 / CANN 路径）：
 #   cpu（缺省）CPU-over-RoCE 链路：
 #     1) kv client：BUILD_KV_CLIENT_PROVIDER_ROCE=ON（RoCE provider 编入
-#        libkv_transport.so，需要 libibverbs），RUNTIME_ENVIRONMENT=simu，Debug
-#     2) testTool：链接上一步 build-kv 目录下的预构建 kv client 库，Debug
+#        libkv_transport.so，需要 libibverbs），RUNTIME_ENVIRONMENT=simu
+#     2) testTool：链接上一步 build-kv 目录下的预构建 kv client 库
 #   npu：HCCP KV-over-RoCE 链路（NPU 数据面，详细 ABI 契约与算子库要求见
 #       kv_semantics/docs/guide/hccp-kv-over-roce-provider.md）：
 #     1) kv client：BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，
-#        RUNTIME_ENVIRONMENT=ascend，KV_CLIENT_CANN_ROOT=$ASCEND_HOME_PATH，Release
+#        RUNTIME_ENVIRONMENT=ascend，KV_CLIENT_CANN_ROOT=$ASCEND_HOME_PATH
 #     2) testTool：经 CMAKE_CXX_FLAGS 注入 TESTTOOL_ENABLE_ASCEND 与 CANN 头文件
-#        路径（真 NPU 内存分配——HCCP 的 RegisterMemory 只收设备内存），Release
+#        路径（真 NPU 内存分配——HCCP 的 RegisterMemory 只收设备内存）
+#
+# 构建类型：--build-type release（缺省）/ --build-type debug。缺省 Release 使
+# 产物随时可直接用于性能测试；需要调试（断点 / 单步）时显式声明 debug。
+# 两模式的 kv client 与 testTool 均按该值传 CMAKE_BUILD_TYPE（testTool 侧不传
+# BUILD_TYPE 时 CMakeLists 同样走 Release 选项，两种入口行为一致）。
 #
 # 适用代码：含对应 provider 构建开关的分支（脚本前置检测，不含即报错退出，
 # 防止在不含该代码的分支上误跑而静默编出无对应 provider 的产物）。
 #
 # 用法（在 testTool 目录下执行；从任意目录发起亦可，路径以脚本自身位置推算）：
-#   bash scripts/build-kv-link.sh                # 等价 --mode cpu
-#   bash scripts/build-kv-link.sh --mode cpu     # CPU-over-RoCE 链路
-#   bash scripts/build-kv-link.sh --mode npu     # HCCP KV-over-RoCE 链路（NPU 机器 + CANN）
+#   bash scripts/build-kv-link.sh                                # CPU 链路 + Release（缺省）
+#   bash scripts/build-kv-link.sh --mode npu                     # HCCP KV-over-RoCE 链路 + Release
+#   bash scripts/build-kv-link.sh --mode cpu --build-type debug  # CPU 链路 + Debug（调试构建）
 #
 # 前置依赖（缺失时脚本前置检测报错退出，按提示安装/准备后重跑）：
 #   共同：cmake(>=3.18) / g++(C++17) / python3（metrics 代码生成）
@@ -48,9 +53,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTTOOL_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"             # kv_semantics/testTool
 KV_SEMANTICS_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"      # kv_semantics
 
-# ---- 模式解析：--mode cpu（缺省）/ --mode npu，支持 "--mode xxx" 与 "--mode=xxx"
-# 两种写法；非法取值即报错退出 ----
+# ---- 参数解析：--mode cpu（缺省）/ --mode npu；--build-type release（缺省）/ debug。
+# 两个参数均支持 "--opt xxx" 与 "--opt=xxx" 两种写法；非法取值即报错退出 ----
 MODE="cpu"
+BUILD_TYPE="release"
 while [ $# -gt 0 ]; do
     case "$1" in
         --mode)
@@ -65,16 +71,38 @@ while [ $# -gt 0 ]; do
             MODE="${1#--mode=}"
             shift
             ;;
+        --build-type)
+            if [ $# -lt 2 ]; then
+                echo "[FAIL] --build-type 缺少取值（release / debug）"
+                exit 1
+            fi
+            BUILD_TYPE="$2"
+            shift 2
+            ;;
+        --build-type=*)
+            BUILD_TYPE="${1#--build-type=}"
+            shift
+            ;;
         *)
-            echo "[FAIL] 无法识别的参数：$1（仅支持 --mode cpu|npu）"
+            echo "[FAIL] 无法识别的参数：$1（仅支持 --mode cpu|npu 与 --build-type release|debug）"
             exit 1
             ;;
     esac
 done
+# 取值归一化小写后校验（大小写混传同样接受，如 RELEASE / Debug）
+MODE="$(printf '%s' "${MODE}" | tr '[:upper:]' '[:lower:]')"
+BUILD_TYPE="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 case "${MODE}" in
     cpu|npu) ;;
     *)
         echo "[FAIL] 无效模式：${MODE}（仅支持 cpu / npu）"
+        exit 1
+        ;;
+esac
+case "${BUILD_TYPE}" in
+    release|debug) ;;
+    *)
+        echo "[FAIL] 无效构建类型：${BUILD_TYPE}（仅支持 release / debug）"
         exit 1
         ;;
 esac
@@ -133,16 +161,17 @@ fi
 
 # ---- 步骤 1/2：构建 kv client（build-kv 目录名为 testTool 构建脚本的既定引用路径
 # ../build-kv/src，不可改名；--target kv_client 只构建所需目标——两种 provider 的
-# 源文件均已编入 libkv_transport.so 的源列表，随 kv_client 目标的依赖一并构建）----
+# 源文件均已编入 libkv_transport.so 的源列表，随 kv_client 目标的依赖一并构建；
+# 构建类型取 --build-type 解析值，缺省 release）----
 if [ "${MODE}" = "cpu" ]; then
-    echo "===== [1/2] 构建 kv client（CPU-over-RoCE：RUNTIME_ENVIRONMENT=simu，BUILD_KV_CLIENT_PROVIDER_ROCE=ON）====="
+    echo "===== [1/2] 构建 kv client（CPU-over-RoCE：RUNTIME_ENVIRONMENT=simu，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，build-type=${BUILD_TYPE}）====="
     cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
-        -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Debug -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
+        -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 else
-    echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON）====="
+    echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，build-type=${BUILD_TYPE}）====="
     cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
-        -DRUNTIME_ENVIRONMENT=ascend -DCMAKE_BUILD_TYPE=Release \
+        -DRUNTIME_ENVIRONMENT=ascend -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
         -DBUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON \
         -DKV_CLIENT_CANN_ROOT="${ASCEND_HOME_PATH}"
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
@@ -153,18 +182,18 @@ fi
 # testTool 的 CMakeLists 目前无该宏的正式开关入口（待后续补 option），沿用注入方式；
 # 真 NPU 内存分配为 HCCP 链路建链验证的必备条件（RegisterMemory 只收设备内存）----
 if [ "${MODE}" = "cpu" ]; then
-    echo "===== [2/2] 构建 testTool ====="
-    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=Debug
+    echo "===== [2/2] 构建 testTool（build-type=${BUILD_TYPE}）====="
+    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
     cmake --build "${TESTTOOL_ROOT}/build" -j "$(nproc)"
 else
-    echo "===== [2/2] 构建 testTool（TESTTOOL_ENABLE_ASCEND：真 NPU 内存分配）====="
-    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=Release \
+    echo "===== [2/2] 构建 testTool（TESTTOOL_ENABLE_ASCEND：真 NPU 内存分配，build-type=${BUILD_TYPE}）====="
+    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
         -DCMAKE_CXX_FLAGS="-DTESTTOOL_ENABLE_ASCEND -I${CANN_INC_DIR}"
     cmake --build "${TESTTOOL_ROOT}/build" -j "$(nproc)"
 fi
 
 # ---- 结果提示：产物路径与下一步运行引导 ----
-echo "===== 构建完成（mode=${MODE}）====="
+echo "===== 构建完成（mode=${MODE}，build-type=${BUILD_TYPE}）====="
 echo "kv client 库：${KV_SEMANTICS_ROOT}/build-kv/src/libkv_client.so（及 libkv_transport.so）"
 echo "testTool    ：${TESTTOOL_ROOT}/build/testTool"
 echo

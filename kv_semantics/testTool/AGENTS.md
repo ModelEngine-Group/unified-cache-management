@@ -11,7 +11,7 @@ kv_semantics 测试工具（C++17）子树的 agent 约定。仓库根 `AGENTS.m
 在 testTool 目录下编译（Linux 环境，工具链与主工程一致）：
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug # 首次配置（不指定 BUILD_TYPE 时走 Release 选项）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release # 缺省 Release（产物随时可用于性能测试）；调试构建显式改 -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j                        # 增量编译
 ./build/testTool
 ```

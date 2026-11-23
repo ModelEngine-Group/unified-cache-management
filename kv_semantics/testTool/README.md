@@ -13,7 +13,7 @@ kv_semantics 测试工具（C++17），开发中。
 ## 构建
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release   # 缺省 Release：产物随时可用于性能测试；调试构建显式改 -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
 ./build/testTool <test config path> <kv client config path> [input file path, default input.txt]
 # 执行模式（onlyconnect=off）：input 可缺省，缺省取启动目录下 input.txt（相对当前工作目录查找）；例：./build/testTool conf/test_config.conf conf/kv_client.conf input/input.txt
