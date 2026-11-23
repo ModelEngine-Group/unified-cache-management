@@ -102,7 +102,7 @@ public:
     // The SQE and CQE slots are written by this process and read by the NIC, so plain host memory
     // is what an RDMA device can register. On an accelerator runtime the host mapped device memory
     // the transport uses by default would hand us its device alias, which ibv_reg_mr rejects.
-    MemoryType ControlBufferMemory() const override { return MemoryType::HOST; }
+    MemoryType ControlBufferMemory() const override { return MemoryType::HOST_PLAIN; }
 
     // Diagnostics used by the tests and by config dumps.
     const char* Name() const noexcept;

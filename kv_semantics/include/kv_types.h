@@ -116,6 +116,9 @@ struct QueryResult {
 };
 
 enum class MemoryType {
+    // Page aligned process memory. The transport pins it when the provider registers the
+    // region, so no accelerator runtime has to be involved.
+    HOST_PLAIN = 3,
     HOST = 0,
     HOST_PINNED = 1,
     DEVICE = 2,

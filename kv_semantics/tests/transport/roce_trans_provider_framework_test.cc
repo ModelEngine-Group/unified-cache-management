@@ -209,7 +209,9 @@ TEST(CpuKvOverRoceTransProviderTest, AsksForPlainHostMemoryForItsControlBuffers)
 {
     roce::CpuKvOverRoceTransProvider provider(MakeRoceConfig());
 
-    EXPECT_EQ(MemoryType::HOST, provider.ControlBufferMemory());
+    // Plain process memory: the provider pins it itself, so nothing depends on the
+    // accelerator runtime being initialised.
+    EXPECT_EQ(MemoryType::HOST_PLAIN, provider.ControlBufferMemory());
 }
 
 }  // namespace

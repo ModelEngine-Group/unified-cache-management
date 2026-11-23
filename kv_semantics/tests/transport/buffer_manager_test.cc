@@ -454,6 +454,19 @@ TEST_F(BufferManagerTest, HostRegionKeepsASingleAddressAndIsMarkedHostMemory)
     EXPECT_EQ(TransProvider::MemType::MEM_HOST, desc.memoryType);
 }
 
+TEST_F(BufferManagerTest, PlainHostRegionIsPageAlignedAndMarkedHostMemory)
+{
+    BufferManager mgr;
+    const auto status = mgr.Init("plain_buffer", MemoryType::HOST_PLAIN, 128, 4);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    TransProvider::RegisterMemoryDesc desc;
+    ASSERT_TRUE(mgr.GetRegisterMemoryDesc(desc).ok());
+    EXPECT_EQ(desc.addr, desc.localAddr);
+    EXPECT_EQ(TransProvider::MemType::MEM_HOST, desc.memoryType);
+    EXPECT_EQ(0U, desc.addr % 4096U);
+}
+
 TEST_F(BufferManagerTest, PinnedRegionIsReportedAsDeviceMemory)
 {
     BufferManager mgr;

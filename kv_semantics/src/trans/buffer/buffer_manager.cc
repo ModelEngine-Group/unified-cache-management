@@ -67,6 +67,25 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             region = {owner, owner.get(), owner.get(), TransProvider::MemType::MEM_HOST};
             return Status::OK();
         }
+        case MemoryType::HOST_PLAIN: {
+            constexpr std::size_t kPageBytes = 4096;
+            constexpr auto kMaxBytes = std::numeric_limits<std::size_t>::max();
+            if (size == 0 || size > kMaxBytes - (kPageBytes - 1)) {
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "invalid plain host buffer size");
+            }
+            const auto bytes = (size + kPageBytes - 1) / kPageBytes * kPageBytes;
+            void* host = std::aligned_alloc(kPageBytes, bytes);
+            if (host == nullptr) {
+                return Status::Error(StatusCode::INTERNAL_ERROR,
+                                     "failed to allocate plain host memory");
+            }
+            std::shared_ptr<void> owner(host, std::free);
+            // The page aligned pointer is both the address the CPU writes and the address the
+            // provider registers, which is what a host NIC can pin.
+            region = {owner, owner.get(), owner.get(), TransProvider::MemType::MEM_HOST};
+            return Status::OK();
+        }
         case MemoryType::HOST_PINNED: {
             if (!buffer->SupportsHostMappedDeviceBuffer()) {
                 return Status::Error(StatusCode::UNSUPPORTED,
