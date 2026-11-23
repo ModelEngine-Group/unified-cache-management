@@ -1,12 +1,11 @@
 /**
  * Copyright (c) 2025 Huawei Technologies Co., Ltd.
- * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
- * CANN Open Software License Agreement Version 2.0 (the "License").
- * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the License.
- */
+ * This program is free software, you can redistribute it and/or modify it under the terms and
+conditions of  * CANN Open Software License Agreement Version 2.0 (the "License").  * Please refer
+to the License for details. You may not use this file except in compliance with the License.  * THIS
+SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR
+PURPOSE.  * See LICENSE in the root of the software repository for the full text of the License.  */
 
 /*!
  * \file kv_quant_sparse_flash_attention_infershape.cpp
@@ -32,8 +31,9 @@ constexpr uint32_t DIM_NUM_4 = 4;
 
 ge::graphStatus InferShapeKvQuantSparseFlashAttentionGsa(gert::InferShapeContext *context)
 {
-    OP_CHECK_IF(context == nullptr, OP_LOGE("KvQuantSparseFlashAttentionGsa", "InferShapeContext is nullptr"),
- 	                return ge::GRAPH_FAILED);
+    OP_CHECK_IF(context == nullptr,
+                OP_LOGE("KvQuantSparseFlashAttentionGsa", "InferShapeContext is nullptr"),
+                return ge::GRAPH_FAILED);
     const gert::Shape *queryShape = context->GetInputShape(QUERY_INPUT_INDEX);
     OP_CHECK_NULL_WITH_CONTEXT(context, queryShape);
     gert::Shape *attentionOutShape = context->GetOutputShape(0);
@@ -50,16 +50,18 @@ ge::graphStatus InferShapeKvQuantSparseFlashAttentionGsa(gert::InferShapeContext
         attentionOutShape->SetDimNum(DIM_NUM_4);
         attentionOutShape->SetDim(DIM_INDEX_0, queryShape->GetDim(DIM_INDEX_0));
         attentionOutShape->SetDim(DIM_INDEX_1, queryShape->GetDim(DIM_INDEX_1));
-        attentionOutShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_2)); // 2:dim2
-        if(queryShape->GetDim(DIM_INDEX_3) != -1){
-            attentionOutShape->SetDim(DIM_INDEX_3, queryShape->GetDim(DIM_INDEX_3) - ropeHeadDim); // 3:dim3
+        attentionOutShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_2));  // 2:dim2
+        if (queryShape->GetDim(DIM_INDEX_3) != -1) {
+            attentionOutShape->SetDim(DIM_INDEX_3,
+                                      queryShape->GetDim(DIM_INDEX_3) - ropeHeadDim);  // 3:dim3
         }
-    } else { // TND
+    } else {  // TND
         attentionOutShape->SetDimNum(DIM_NUM_3);
         attentionOutShape->SetDim(DIM_INDEX_0, queryShape->GetDim(DIM_INDEX_0));
         attentionOutShape->SetDim(DIM_INDEX_1, queryShape->GetDim(DIM_INDEX_1));
-        if(queryShape->GetDim(DIM_INDEX_2) != -1){
-            attentionOutShape->SetDim(DIM_INDEX_2, queryShape->GetDim(DIM_INDEX_2) - ropeHeadDim); // 2:dim2
+        if (queryShape->GetDim(DIM_INDEX_2) != -1) {
+            attentionOutShape->SetDim(DIM_INDEX_2,
+                                      queryShape->GetDim(DIM_INDEX_2) - ropeHeadDim);  // 2:dim2
         }
     }
     return GRAPH_SUCCESS;
@@ -67,16 +69,16 @@ ge::graphStatus InferShapeKvQuantSparseFlashAttentionGsa(gert::InferShapeContext
 
 ge::graphStatus InferDataTypeKvQuantSparseFlashAttentionGsa(gert::InferDataTypeContext *context)
 {
-    OP_CHECK_IF(context == nullptr, OP_LOGE("KvQuantSparseFlashAttentionGsa", "InferShapeContext is nullptr"),
- 	                return ge::GRAPH_FAILED);
+    OP_CHECK_IF(context == nullptr,
+                OP_LOGE("KvQuantSparseFlashAttentionGsa", "InferShapeContext is nullptr"),
+                return ge::GRAPH_FAILED);
     const auto inputDataType = context->GetInputDataType(QUERY_INPUT_INDEX);
     context->SetOutputDataType(0, inputDataType);
     return ge::GRAPH_SUCCESS;
 }
 
-# DISABLED: use gsa_proto.cpp instead to avoid duplicate registration
+#DISABLED : use gsa_proto.cpp instead to avoid duplicate registration
 // IMPL_OP_INFERSHAPE(KvQuantSparseFlashAttentionGsa)
 //     .InferShape(InferShapeKvQuantSparseFlashAttentionGsa)
 //     .InferDataType(InferDataTypeKvQuantSparseFlashAttentionGsa);;
-} // namespace ops
-  
+}  // namespace ops
