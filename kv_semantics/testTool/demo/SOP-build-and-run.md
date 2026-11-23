@@ -26,7 +26,7 @@
 
 testTool 链接 kv client 预构建库（头文件取 `kv_semantics/include`，库取 `kv_semantics/build-kv/src`），且 build-kv 是本机构建产物**不入 git**，新机器必须重新构建。
 
-> CPU 建链断链测试（CPU-over-RoCE 链路）：可直接用一键脚本 `bash demo/scripts/build-cpu-roce.sh` 完成本节与第 3 节的全部构建（前置依赖检测 + RoCE provider 开关均内置于脚本；要求当前分支含 RoCE provider 代码，先参考 cpu-kv-over-roce-provider 分支，联调分支就绪后同样适用）。
+> 建链断链测试（CPU-over-RoCE / HCCP KV-over-RoCE 链路）：可直接用统一一键脚本 `bash scripts/build-kv-link.sh`（缺省 CPU 模式；NPU 链路加 `--mode npu`）完成本节与第 3 节的全部构建（前置依赖检测 + provider 开关均内置于脚本；要求当前分支含对应 provider 代码，不含时代码会给出明确报错）。
 
 以下命令均在**仓库根**（unified-cache-management）执行：
 
