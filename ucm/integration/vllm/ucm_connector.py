@@ -4083,7 +4083,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
         if params.get("do_remote_prefill"):
-            logger.info("********** Decode ***********")
             matched_tokens = num_computed_tokens + external_hit_tokens
             remaining_tokens = request.num_prompt_tokens - matched_tokens
 
