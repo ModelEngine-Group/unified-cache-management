@@ -4071,17 +4071,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
         params = getattr(request, "kv_transfer_params", None) or {}
-
-        logger.info(
-            "[PD-PARAMS] req=%s params=%r keys=%s prompt=%s computed=%s hit=%s",
-            request.request_id,
-            params,
-            sorted(params.keys()) if isinstance(params, dict) else None,
-            request.num_prompt_tokens,
-            num_computed_tokens,
-            external_hit_tokens,
-        )
-
         if params.get("do_remote_prefill"):
             matched_tokens = num_computed_tokens + external_hit_tokens
             remaining_tokens = request.num_prompt_tokens - matched_tokens
