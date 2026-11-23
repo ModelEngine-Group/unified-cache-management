@@ -62,6 +62,10 @@ TransportTaskExecutor::~TransportTaskExecutor()
 
 Status TransportTaskExecutor::Init()
 {
+    if (!transProvider_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
+    }
+
     (void)metrics::RegisterMetricLabels(asuSendMetric_.Name(), asuSendMetric_.Labels());
     (void)metrics::RegisterMetricLabels(asuCompletionMetric_.Name(), asuCompletionMetric_.Labels());
     // The provider decides whether its control buffers need the device address space or plain host

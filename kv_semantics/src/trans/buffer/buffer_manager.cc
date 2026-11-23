@@ -51,13 +51,19 @@ bool GetSlotStride(std::size_t capacity, std::size_t& stride)
 
 Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
-    auto buffer = runtime::Device{}.MakeBuffer();
-    if (!buffer) {
-        return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
-    }
+    // The plain host type below is deliberately independent of the runtime, so the runtime
+    // buffer is created on demand instead of up front.
+    std::shared_ptr<runtime::Buffer> buffer;
+    const auto ensureBuffer = [&buffer]() -> bool {
+        if (!buffer) { buffer = runtime::Device{}.MakeBuffer(); }
+        return buffer != nullptr;
+    };
 
     switch (type) {
         case MemoryType::HOST: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             auto owner = buffer->MakeHostBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR, "failed to allocate host memory");
@@ -87,6 +93,9 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             return Status::OK();
         }
         case MemoryType::HOST_PINNED: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             if (!buffer->SupportsHostMappedDeviceBuffer()) {
                 return Status::Error(StatusCode::UNSUPPORTED,
                                      "host-mapped device buffer not supported by runtime");
@@ -101,6 +110,9 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             return Status::OK();
         }
         case MemoryType::DEVICE: {
+            if (!ensureBuffer()) {
+                return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+            }
             auto owner = buffer->MakeDeviceBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR,

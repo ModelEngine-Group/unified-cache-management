@@ -476,10 +476,10 @@ TEST_F(BufferManagerTest, PinnedRegionIsReportedAsDeviceMemory)
     TransProvider::RegisterMemoryDesc desc;
     ASSERT_TRUE(mgr.GetRegisterMemoryDesc(desc).ok());
     // The pin type is advertised as device memory because the transport hands the
-    // provider a device address; the simulated runtime maps the two addresses onto
-    // the same pages, an accelerator runtime does not.
+    // provider a device address. Whether that address equals the host address is up to
+    // the runtime (the simulated one maps the same pages, an accelerator does not), so
+    // only the label is asserted here.
     EXPECT_EQ(TransProvider::MemType::MEM_DEVICE, desc.memoryType);
-    EXPECT_EQ(desc.addr, desc.localAddr);
 }
 
 }  // namespace

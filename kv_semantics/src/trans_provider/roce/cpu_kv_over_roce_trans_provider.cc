@@ -992,8 +992,9 @@ Status CpuKvOverRoceTransProvider::RegisterMemory(
                     hint = desc.localAddr != 0 && desc.localAddr != desc.addr
                                ? "; this region is host mapped device memory, whose device alias "
                                  "cannot be registered; allocate plain host memory for it"
-                               : "; registration pins addr as a host address, so a region that "
-                                 "lives in device memory needs peer-memory support on the HCA "
+                               : "; registration pins addr as a host address, so host mapped "
+                                 "device memory has to be registered through its host address "
+                                 "and plain device memory needs peer-memory support on the HCA "
                                  "(nvidia-peermem or the dmabuf support of the driver)";
                 }
                 std::string ignored;
