@@ -159,7 +159,7 @@ TEST_F(Cache2BufferTest, LayerwisePreallocAndHitsRetainDistinctSlots)
     std::vector<size_t> slots;
     for (size_t layer = 0; layer < kLayers; ++layer) {
         buffer_.Prealloc(block, layer);
-        ASSERT_TRUE(buffer_.Exist(block, layer));
+        EXPECT_FALSE(buffer_.Exist(block, layer));
         EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, layer), 0);
         auto handle = buffer_.Get(block, layer);
         EXPECT_TRUE(handle.Owner());
@@ -287,12 +287,36 @@ TEST_F(Cache2BufferTest, ExistDoesNotStealPreallocatedOwner)
 {
     auto block = MakeBlockId(2);
     buffer_.Prealloc(block, 0);
-    ASSERT_TRUE(buffer_.Exist(block, 0));
+    EXPECT_FALSE(buffer_.Exist(block, 0));
     EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
 
     auto owner = buffer_.Get(block, 0);
     EXPECT_TRUE(owner.Owner());
     owner.MarkReady();
+}
+
+TEST_F(Cache2BufferTest, InvalidatedPrefixMissesUntilRefilled)
+{
+    const auto block = MakeBlockId(2);
+    using State = CtrlLayout::SlotMeta::State;
+    {
+        auto owner = buffer_.Get(block, 0);
+        owner.MarkReady();
+        EXPECT_TRUE(buffer_.Exist(block, 0));
+
+        buffer_.InvalidateReady(block, 0);
+        EXPECT_EQ(owner.GetState(), State::Failed);
+        EXPECT_FALSE(buffer_.Exist(block, 0));
+        EXPECT_FALSE(buffer_.Get(block, 0).Owner());
+    }
+    {
+        auto refill = buffer_.Get(block, 0);
+        ASSERT_TRUE(refill.Owner());
+        EXPECT_EQ(refill.GetState(), State::Loading);
+        EXPECT_FALSE(buffer_.Exist(block, 0));
+        refill.MarkReady();
+    }
+    EXPECT_TRUE(buffer_.Exist(block, 0));
 }
 
 TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
