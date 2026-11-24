@@ -13,6 +13,18 @@ _POST_IMPORT_HOOKS = defaultdict(list)
 _POST_IMPORT_PENDING = set()
 
 
+def _module_still_loading(mod):
+    """Whether a module's body is still executing.
+
+    CPython keeps the flag on the spec; older interpreters set
+    ``mod.__initializing__`` directly.
+    """
+    if getattr(mod, "__initializing__", False):
+        return True
+    spec = getattr(mod, "__spec__", None)
+    return bool(spec is not None and getattr(spec, "_initializing", False))
+
+
 class HookingFinder(importlib.abc.MetaPathFinder):
     """
     A custom Finder that intercepts the import process to wrap the Loader.
@@ -75,7 +87,7 @@ class HookingFinder(importlib.abc.MetaPathFinder):
                 # The module's import failed and it was removed.
                 _POST_IMPORT_PENDING.discard(name)
                 continue
-            if getattr(mod, "__initializing__", False):
+            if _module_still_loading(mod):
                 continue
             _POST_IMPORT_PENDING.discard(name)
             if getattr(mod, "_ucm_patched", False):
@@ -126,12 +138,9 @@ def when_imported(module_name):
 
         if module_name in sys.modules:
             mod = sys.modules[module_name]
-            if getattr(mod, "__initializing__", False):
-                # The module body is still executing (e.g. its own imports
-                # triggered this registration): its classes are not defined
-                # yet and this import was not intercepted by HookingFinder.
-                # Do not claim the _ucm_patched flag here - retry via
-                # _drain_pending once the module finishes loading.
+            if _module_still_loading(mod):
+                # Module body still executing: defer to _drain_pending
+                # instead of claiming the patch flag against a partial module.
                 _POST_IMPORT_PENDING.add(module_name)
             elif not getattr(mod, "_ucm_patched", False):
                 setattr(mod, "_ucm_patched", True)
