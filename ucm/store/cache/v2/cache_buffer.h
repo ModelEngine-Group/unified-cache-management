@@ -107,7 +107,11 @@ public:
         // CPU access.
         void* HostMappedData() { return buf_->data_.HostMappedDeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
-        bool MarkReady() { return Owner() && buf_->MarkReady(slotIdx_); }
+        bool MarkReady()
+        {
+            if (Owner()) { return buf_->MarkReady(slotIdx_); }
+            return false;
+        }
         void MarkFailed()
         {
             if (Owner()) { buf_->MarkFailed(slotIdx_); }
