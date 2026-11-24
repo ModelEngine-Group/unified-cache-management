@@ -104,11 +104,15 @@ public:
         // alias, so it mirrors the CPU address.
         void* HostMappedData() { return Data(); }
         SlotState GetState() const { return buf_->SlotStateOf(slotIdx_); }
-        void MarkReady()
+        bool MarkReady()
         {
-            if (!owner_) { return; }
-            buf_->SetSlotStateByIdx(slotIdx_, SlotState::Ready);
+            if (!owner_) { return false; }
+            auto expected = SlotState::Loading;
+            if (!buf_->slotStates_[slotIdx_].compare_exchange_strong(expected, SlotState::Ready)) {
+                return false;
+            }
             buf_->markedReady_.fetch_add(1, std::memory_order_relaxed);
+            return true;
         }
         void MarkFailed()
         {
@@ -166,14 +170,11 @@ public:
     {
         preallocCalls_.push_back(PreallocCall{blockId, offset, allowReserved, preferredRank});
     }
-    void InvalidateReady(const UC::Detail::BlockId& block, size_t offset)
+    void Invalidate(const UC::Detail::BlockId& block, size_t offset)
     {
         std::lock_guard lock(mutex_);
         auto it = slots_.find(std::make_pair(block, offset));
-        if (it != slots_.end()) {
-            auto expected = SlotState::Ready;
-            slotStates_[it->second].compare_exchange_strong(expected, SlotState::Failed);
-        }
+        if (it != slots_.end()) { SetSlotStateByIdx(it->second, SlotState::Failed); }
     }
     void SetHostAccessible(bool accessible) { defaultHostAccessible_ = accessible; }
     void SetHostAccessible(const UC::Detail::BlockId& block, bool accessible, size_t offset = 0)
@@ -665,6 +666,42 @@ TEST_F(UCCache2LoadQueueTest, BreakerRejectionWaitsForAcceptedBackendRead)
     EXPECT_EQ(buffer_.MarkedFailed(), 1);
     EXPECT_TRUE(FakeStream::scatters.empty());
     EXPECT_EQ(buffer_.LiveHandles(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, LaterShardFailureInvalidatesInFlightPrefixLoad)
+{
+    UC::Latch readStarted;
+    UC::Latch releaseRead;
+    readStarted.Up();
+    releaseRead.Up();
+    EXPECT_CALL(backend_, Load)
+        .WillOnce(testing::Invoke(
+            [] { return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle()); }))
+        .WillOnce(testing::Invoke(
+            [] { return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy()); }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&](UC::Detail::TaskHandle) {
+        readStarted.Done();
+        EXPECT_TRUE(releaseRead.WaitFor(kWaitMs));
+        return UC::Status::OK();
+    }));
+
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    auto [prefixTask, prefixWaiter] = SubmitOne(MakeDesc(block));
+    EXPECT_TRUE(readStarted.WaitFor(kWaitMs));
+
+    auto desc = MakeDesc(block);
+    desc[0].index = 1;
+    auto [laterTask, laterWaiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(laterWaiter->WaitFor(kWaitMs));
+    EXPECT_EQ(laterTask->FailureStatus(), UC::Status::StoreUnhealthy());
+    EXPECT_FALSE(prefixWaiter->Check());
+
+    releaseRead.Done();
+    ASSERT_TRUE(prefixWaiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(prefixTask->id));
+    EXPECT_EQ(buffer_.Get(block, 0).GetState(), SlotState::Failed);
+    EXPECT_EQ(buffer_.MarkedReady(), 0);
+    EXPECT_TRUE(FakeStream::scatters.empty());
 }
 
 TEST_F(UCCache2LoadQueueTest, PeerFailureInterruptsDispatchWaitingForUnpublishedSlot)

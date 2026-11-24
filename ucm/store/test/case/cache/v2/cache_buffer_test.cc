@@ -304,7 +304,7 @@ TEST_F(Cache2BufferTest, InvalidatedPrefixMissesUntilRefilled)
         owner.MarkReady();
         EXPECT_TRUE(buffer_.Exist(block, 0));
 
-        buffer_.InvalidateReady(block, 0);
+        buffer_.Invalidate(block, 0);
         EXPECT_EQ(owner.GetState(), State::Failed);
         EXPECT_FALSE(buffer_.Exist(block, 0));
         EXPECT_FALSE(buffer_.Get(block, 0).Owner());
@@ -316,6 +316,28 @@ TEST_F(Cache2BufferTest, InvalidatedPrefixMissesUntilRefilled)
         EXPECT_FALSE(buffer_.Exist(block, 0));
         refill.MarkReady();
     }
+    EXPECT_TRUE(buffer_.Exist(block, 0));
+}
+
+TEST_F(Cache2BufferTest, InvalidatedInFlightFillCannotPublishReady)
+{
+    const auto block = MakeBlockId(2);
+    using State = CtrlLayout::SlotMeta::State;
+    {
+        auto inFlight = buffer_.Get(block, 0);
+        ASSERT_TRUE(inFlight.Owner());
+        ASSERT_EQ(inFlight.GetState(), State::Loading);
+
+        buffer_.Invalidate(block, 0);
+        EXPECT_EQ(inFlight.GetState(), State::Failed);
+        EXPECT_FALSE(inFlight.MarkReady());
+        EXPECT_EQ(inFlight.GetState(), State::Failed);
+        EXPECT_FALSE(buffer_.Exist(block, 0));
+        EXPECT_FALSE(buffer_.Get(block, 0).Owner());
+    }
+    auto refill = buffer_.Get(block, 0);
+    ASSERT_TRUE(refill.Owner());
+    ASSERT_TRUE(refill.MarkReady());
     EXPECT_TRUE(buffer_.Exist(block, 0));
 }
 

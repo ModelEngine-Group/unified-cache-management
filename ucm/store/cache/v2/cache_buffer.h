@@ -107,10 +107,7 @@ public:
         // CPU access.
         void* HostMappedData() { return buf_->data_.HostMappedDeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
-        void MarkReady()
-        {
-            if (Owner()) { buf_->MarkReady(slotIdx_); }
-        }
+        bool MarkReady() { return Owner() && buf_->MarkReady(slotIdx_); }
         void MarkFailed()
         {
             if (Owner()) { buf_->MarkFailed(slotIdx_); }
@@ -252,20 +249,16 @@ public:
         return ready;
     }
 
-    // A later shard failed. Invalidate the existing prefix probe without acquiring a slot
-    // for writing. Pinned readers keep their references; refill can claim it after release.
-    void InvalidateReady(const Detail::BlockId& blockId, size_t offset)
+    // A later shard failed. Invalidate the prefix probe even if its fill is still in flight.
+    // Pinned handles keep their references until the underlying copy or read finishes.
+    void Invalidate(const Detail::BlockId& blockId, size_t offset)
     {
         const auto bucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto* lock = layout.LockOf(bucket);
         lock->Lock();
         const auto slot = Lookup(layout, bucket, blockId, offset);
-        if (slot != kInvalid) {
-            auto expected = State::Ready;
-            layout.SlotMetaArr()[slot].state.compare_exchange_strong(expected, State::Failed,
-                                                                     std::memory_order_acq_rel);
-        }
+        if (slot != kInvalid) { MarkFailed(slot); }
         lock->Unlock();
     }
 
@@ -542,9 +535,12 @@ private:
         return ctrl_.Layout().SlotMetaArr()[slotIdx].state.load(std::memory_order_acquire);
     }
 
-    void MarkReady(size_t slotIdx)
+    bool MarkReady(size_t slotIdx)
     {
-        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Ready, std::memory_order_release);
+        // A fill that started before invalidation cannot publish the slot as Ready.
+        auto expected = State::Loading;
+        return ctrl_.Layout().SlotMetaArr()[slotIdx].state.compare_exchange_strong(
+            expected, State::Ready, std::memory_order_acq_rel);
     }
 
     void MarkFailed(size_t slotIdx)

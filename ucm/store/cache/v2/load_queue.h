@@ -297,7 +297,7 @@ private:
     }
     void InvalidatePrefix(const Detail::Shard& shard)
     {
-        if (shard.index != 0) { buffer_->InvalidateReady(shard.owner, 0); }
+        if (shard.index != 0) { buffer_->Invalidate(shard.owner, 0); }
     }
     void FailSlot(const Detail::Shard& shard, Handle& handle)
     {
@@ -523,7 +523,9 @@ private:
                 FailSlot(*task.shard, *task.bufferHandle);
                 return s;
             }
-            task.bufferHandle->MarkReady();
+            if (!task.bufferHandle->MarkReady()) {
+                return Status::Error("cache slot invalidated during backend load");
+            }
             return SlotWaitStatus(task.task);
         }
         for (;;) {
