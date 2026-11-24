@@ -206,7 +206,6 @@ private:
             auto acquired = AcquireShardSlot(task, shard, preferredRank);
             if (!acquired) {
                 status = acquired.Error();
-                if (status == Status::Timeout()) { InvalidatePrefix(shard); }
                 break;
             }
             ++acquiredShardCount;

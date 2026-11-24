@@ -749,6 +749,7 @@ TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionTimesOutAndDispatchRecovers)
 {
     const auto missing = TypesHelper::MakeBlockIdRandomly();
     const auto ready = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(missing);  // Offset 0 is already Ready.
     buffer_.SetExisting(ready);
     buffer_.canAcquire = [&](const UC::Detail::BlockId& block) { return block != missing; };
     EXPECT_CALL(backend_, Load).Times(0);
@@ -763,6 +764,7 @@ TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionTimesOutAndDispatchRecovers)
     ASSERT_TRUE(peerQueue.Setup(config, &peerFailures, &buffer_).Success());
 
     auto desc = MakeDesc(missing);
+    desc[0].index = 1;
     desc.distributeBackendLoad = true;
     auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
     auto waiter = std::make_shared<UC::Latch>();
@@ -770,6 +772,7 @@ TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionTimesOutAndDispatchRecovers)
     ASSERT_TRUE(waiter->WaitFor(kWaitMs));
     EXPECT_TRUE(peerFailures.Contains(task->id));
     EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    EXPECT_EQ(buffer_.Get(missing, 0).GetState(), SlotState::Ready);
 
     auto next = std::make_shared<Task>(Task::Type::LOAD, MakeDesc(ready));
     auto nextWaiter = std::make_shared<UC::Latch>();
