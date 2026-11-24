@@ -1071,6 +1071,105 @@ vllm:request_prompt_tokens_bucket{model_name="qwen",le="+Inf"} 3
         )
         self.assertIn("Request Prompt Length: 16", {row.metric for row in vllm_rows})
 
+    def test_store_avg_breakdown_uses_rate_interval_and_handles_cache_only(self):
+        store_config = load_config("store")
+        breakdown_metrics = [
+            metric
+            for metric in store_config["metrics"]
+            if "Avg Breakdown" in metric["name"]
+        ]
+        self.assertTrue(breakdown_metrics)
+        for metric in breakdown_metrics:
+            self.assertNotIn("[40s]", metric["expr"], metric["name"])
+            self.assertIn("[$__rate_interval]", metric["expr"], metric["name"])
+
+        cache_only_samples = parse_prometheus_text(
+            """
+ucm:cache_load_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 100.0
+ucm:cache_load_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_h2d_sync_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 20.0
+ucm:cache_h2d_sync_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_load_queue_wait_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10.0
+ucm:cache_load_queue_wait_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_load_backend_submit_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 5.0
+ucm:cache_load_backend_submit_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_task_total_backend_wait_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 0.0
+ucm:cache_task_total_backend_wait_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_task_total_ready_wait_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 15.0
+ucm:cache_task_total_ready_wait_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_dump_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 50.0
+ucm:cache_dump_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_dump_queue_wait_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 5.0
+ucm:cache_dump_queue_wait_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_dump_mkbuf_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10.0
+ucm:cache_dump_mkbuf_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_d2h_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 25.0
+ucm:cache_d2h_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+"""
+        )
+        rows = {
+            row.metric: row.values["value"]
+            for row in SnapshotQueryEngine(cache_only_samples).query_config(
+                {"metrics": breakdown_metrics}
+            )
+        }
+        self.assertAlmostEqual(rows["Cache Load Avg Breakdown: H2D sync"], 2.0)
+        self.assertAlmostEqual(
+            rows["Cache Load Avg Breakdown: waiting queue wait"], 1.0
+        )
+        self.assertAlmostEqual(rows["Cache Load Avg Breakdown: backend submit"], 0.5)
+        self.assertAlmostEqual(rows["Cache Load Avg Breakdown: backend wait"], 0.0)
+        self.assertAlmostEqual(rows["Cache Load Avg Breakdown: cache ready wait"], 1.5)
+        self.assertAlmostEqual(
+            rows["Cache Load Avg Breakdown: running queue wait & other"], 5.0
+        )
+        self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: queue wait"], 0.5)
+        self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: mkbuf"], 1.0)
+        self.assertAlmostEqual(
+            rows["Cache Dump Avg Breakdown: D2H sync (include wait compute)"], 2.5
+        )
+        self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: backend submit"], 0.0)
+        self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: other"], 1.0)
+
+        idle_samples = parse_prometheus_text(
+            """
+ucm:cache_load_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 0.0
+ucm:cache_load_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 0
+ucm:cache_dump_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 0.0
+ucm:cache_dump_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 0
+"""
+        )
+        self.assertEqual(
+            SnapshotQueryEngine(idle_samples).query_config(
+                {"metrics": breakdown_metrics}
+            ),
+            [],
+        )
+
+        dedup_dump_samples = parse_prometheus_text(
+            """
+ucm:cache_dump_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 20.0
+ucm:cache_dump_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_dump_queue_wait_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 5.0
+ucm:cache_dump_queue_wait_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_dump_mkbuf_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10.0
+ucm:cache_dump_mkbuf_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+"""
+        )
+        dedup_rows = {
+            row.metric: row.values["value"]
+            for row in SnapshotQueryEngine(dedup_dump_samples).query_config(
+                {"metrics": breakdown_metrics}
+            )
+        }
+        self.assertAlmostEqual(
+            dedup_rows["Cache Dump Avg Breakdown: D2H sync (include wait compute)"], 0.0
+        )
+        self.assertAlmostEqual(
+            dedup_rows["Cache Dump Avg Breakdown: backend submit"], 0.0
+        )
+        self.assertAlmostEqual(dedup_rows["Cache Dump Avg Breakdown: other"], 0.5)
+
     def test_metrics_lite_preset_does_not_require_tp_size(self):
         self.assertNotIn("params", load_config("metrics_lite"))
 
