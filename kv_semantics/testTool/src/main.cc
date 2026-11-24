@@ -26,6 +26,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <pthread.h>
 #include <string>
@@ -43,13 +45,23 @@ static void OnSigint(int) { gInterrupted.store(true); }
 
 /**
  * 统一收尾：按初始化逆序回收各组件，main 的全部退出路径（正常、各失败分支与异常兜底）
- * 统一经此出口，不逐点散落 Shutdown 调用；未初始化的组件在其 Shutdown 内安全跳过，可重复调用
+ * 统一经此出口，不逐点散落 Shutdown 调用；未初始化的组件在其 Shutdown 内安全跳过，可重复调用。
+ * kv client 库线程存在退出期不终止的既有缺陷（FAKE WorkerPool 等线程无停止路径，且其
+ * spdlog 日志资源与全局 registry/线程池生命周期纠缠），调 spdlog::shutdown 优雅收尾会
+ * 永久阻塞——收尾改为：日志 flush 落盘后以 _Exit 直接终止进程（跳过静态析构，资源由
+ * 操作系统回收）。库侧修复后可恢复优雅退出路径。
  * @param scheduler 调度器（生命周期由 main 栈保证）
+ * @param exitCode 进程退出码（正常退出 0，各失败分支 1）
  */
-static void CloseAll(Scheduler &scheduler)
+static void CloseAll(Scheduler &scheduler, int exitCode)
 {
     scheduler.Shutdown();
-    LoggerManager::Shutdown();
+    LoggerManager::ShutdownForExit();
+    // _Exit 不执行静态析构与 C 流 flush，先把 stdout/stderr 缓冲刷净（console 日志
+    // 走 C 流缓冲，重定向场景下未 flush 会丢尾部输出）
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(exitCode);
 }
 
 /**
@@ -108,7 +120,7 @@ int main(int argc, char *argv[])
         //      内存类型按 buffertype：cpu 主机内存 / gpu CUDA 显存 / npu ACL NPU 内存）----
         if (!scheduler.initializeAndRegister(kvClientConfPath, config, err)) {
             LOG_ERROR("scheduler init failed: {}", err);
-            CloseAll(scheduler);
+            CloseAll(scheduler, 1);
             return 1;
         }
 
@@ -153,7 +165,7 @@ int main(int argc, char *argv[])
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             if (disconnected) { LOG_INFO("onlyconnect=on: Ctrl+C received, exiting"); }
-            CloseAll(scheduler);
+            CloseAll(scheduler, 0);
             return 0;
         }
 
@@ -172,7 +184,7 @@ int main(int argc, char *argv[])
         const int testmode = config.GetTestMode();
         if (testmode != 1 && testmode != 2) {
             std::cerr << "[FAIL] invalid testmode " << testmode << ", expect 1 or 2" << std::endl;
-            CloseAll(scheduler);
+            CloseAll(scheduler, 1);
             return 1;
         }
 
@@ -180,7 +192,7 @@ int main(int argc, char *argv[])
         RequestManager requestManager;
         if (!requestManager.Load(inputPath, err)) {
             LOG_ERROR("input load failed: {}", err);
-            CloseAll(scheduler);
+            CloseAll(scheduler, 1);
             return 1;
         }
 
@@ -193,12 +205,12 @@ int main(int argc, char *argv[])
         if (runOk) { LOG_WARN("======Test Completed Successfully======="); }
 
         // ---- 统一收尾：回收调度器（注销 region、关闭 kv client）与全部日志资源 ----
-        CloseAll(scheduler);
+        CloseAll(scheduler, runOk ? 0 : 1);
         return runOk ? 0 : 1;
     } catch (const std::exception &e) {
         // 配置 getter 安全访问抛出的缺 key / 坏值等异常统一在此兜底：报错退出前对已初始化组件收尾
         std::cerr << "[FAIL] " << e.what() << std::endl;
-        CloseAll(scheduler);
+        CloseAll(scheduler, 1);
         return 1;
     }
 }

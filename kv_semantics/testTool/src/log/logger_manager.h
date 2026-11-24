@@ -48,6 +48,14 @@ public:
     static bool Init(const ConfigUtil &config, std::string &err);
     /** 冲刷并释放全部日志资源；队列残留消息全部落盘后线程池才退出，可重复调用 */
     static void Shutdown();
+    /**
+     * 进程退出专用收尾：flush 日志并停自有线程池（drain 队列保证消息落盘），
+     * 不调 spdlog::shutdown()——kv client 库线程存在退出期不终止的既有缺陷
+     * （FAKE WorkerPool 无停止路径、库侧 spdlog 全局池/flusher 生命周期纠缠），
+     * 优雅关闭会永久阻塞挂死。调用方随后以 std::_Exit 终止进程跳过静态析构；
+     * 库侧修复后本方法可恢复为转调 Shutdown()
+     */
+    static void ShutdownForExit();
     /** 获取全局 logger；未初始化或已关闭时返回 nullptr */
     static std::shared_ptr<spdlog::logger> GetLogger();
     /** 获取请求明细日志 logger；未初始化（perf=on）或已关闭时返回 nullptr */

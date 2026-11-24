@@ -154,6 +154,18 @@ void LoggerManager::Shutdown()
     reqLogger_.reset();
 }
 
+void LoggerManager::ShutdownForExit()
+{
+    // 进程退出专用（见头文件注释）：只回收自有资源、不碰 spdlog 全局状态——
+    // spdlog::shutdown 会 join 库侧不退出的线程导致挂死。自有池析构时投递
+    // terminate 并等 worker 排空队列，此前 flush 入队的消息全部真实落盘
+    if (logger_ != nullptr) { logger_->flush(); }
+    if (reqLogger_ != nullptr) { reqLogger_->flush(); }
+    threadPool_.reset();
+    logger_.reset();
+    reqLogger_.reset();
+}
+
 std::shared_ptr<spdlog::logger> LoggerManager::GetLogger() { return logger_; }
 
 std::shared_ptr<spdlog::logger> LoggerManager::GetReqLogger() { return reqLogger_; }
