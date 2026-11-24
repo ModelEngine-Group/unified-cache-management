@@ -173,6 +173,16 @@ class Runtime:
     def submit_get(self, job_id, payloads, token, context):
         return self.worker.submit_get(job_id, payloads, token, context)
 
+    @property
+    def supports_get_arrays(self):
+        return hasattr(self.worker, "submit_get_arrays")
+
+    def submit_get_arrays(self, job_id, arrays, token, context):
+        pointers, sizes, offsets = arrays
+        return self.worker.submit_get_arrays(
+            job_id, pointers, sizes, offsets, token, context
+        )
+
     def submit_put(self, job_id, payloads, token, context):
         return self.worker.submit_put(job_id, payloads, token, context)
 

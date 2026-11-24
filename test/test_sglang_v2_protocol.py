@@ -145,6 +145,16 @@ class RuntimeTest(unittest.TestCase):
             self.runtime.wait(1)
         self.assertIs(caught.exception, error)
 
+    def test_array_submission_preserves_buffers_and_old_worker_detection(self):
+        self.runtime.worker = types.SimpleNamespace()
+        self.assertFalse(self.runtime.supports_get_arrays)
+        submit = Mock()
+        self.runtime.worker.submit_get_arrays = submit
+        self.assertTrue(self.runtime.supports_get_arrays)
+        pointers, sizes, offsets, token, context = (object() for _ in range(5))
+        self.runtime.submit_get_arrays(7, (pointers, sizes, offsets), token, context)
+        submit.assert_called_once_with(7, pointers, sizes, offsets, token, context)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -304,8 +304,8 @@ class PreparedPages:
     # Retain source tensors until the job ends, including a sliced index view.
     transfers: tuple
 
-    def payloads(self, layer=None, timings=None):
-        """Build only this layer on load; dump combines every layer in one job."""
+    def payload_arrays(self, layer=None, timings=None):
+        """Build addresses and shared geometry without per-page Python objects."""
         addr_start = perf_counter() if timings is not None else 0.0
         layouts = self.layout.layers if layer is None else (self.layout.layers[layer],)
         matrices, sizes, offsets = [], [], []
@@ -318,11 +318,20 @@ class PreparedPages:
         if not matrices:
             if timings is not None:
                 timings["addr_ms"] += (perf_counter() - addr_start) * 1e3
-            return []
+            return None
         pointers = matrices[0] if len(matrices) == 1 else np.concatenate(matrices, axis=1)
+        pointers = np.ascontiguousarray(pointers, dtype=np.uint64)
         if timings is not None:
-            tolist_start = perf_counter()
-            timings["addr_ms"] += (tolist_start - addr_start) * 1e3
+            timings["addr_ms"] += (perf_counter() - addr_start) * 1e3
+        return pointers, sizes, offsets
+
+    def payloads(self, layer=None, timings=None):
+        """Compatibility path for stores without the array submission binding."""
+        arrays = self.payload_arrays(layer, timings)
+        if arrays is None:
+            return []
+        pointers, sizes, offsets = arrays
+        tolist_start = perf_counter() if timings is not None else 0.0
         # Convert the whole matrix in NumPy, avoiding a Python ndarray view and
         # a tolist call per page. The existing binding still needs one payload
         # per page; resolve its class only once for the batch.

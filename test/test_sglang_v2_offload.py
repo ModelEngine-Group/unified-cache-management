@@ -315,6 +315,34 @@ class OffloadTest(unittest.TestCase):
         self.assertAlmostEqual(result.load_metrics["job_latency_sum_ms"], 25.0)
         self.assertFalse(result.done())
 
+    def test_load_arrays_bypass_objects_and_wait_for_completion(self):
+        metrics = dict(payload_ms=0.0, payload_cpu_ms=0.0,
+                       addr_ms=0.0, tolist_ms=0.0, pack_ms=0.0,
+                       io_queue_ms=0.0, submit_ms=0.0,
+                       job_latency_sum_ms=0.0, publish_lag_ms=0.0,
+                       bytes=0, segments=0, jobs=0)
+        arrays = ([[100, 200], [300, 400]], [16, 32], [0, 64])
+        pages = types.SimpleNamespace(
+            payload_arrays=Mock(return_value=arrays),
+            payloads=Mock(side_effect=AssertionError("object path used")),
+        )
+        self.store.supports_get_arrays = True
+        self.store.submit_get_arrays = Mock(side_effect=self.store.submit_get)
+        token, context = object(), object()
+        self.linker.layer_done_counter.complete = Mock()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            loading = executor.submit(self.linker._load_layers, 0,
+                                      [(pages, token)], context, metrics)
+            job_id, _ = self.next_job("get")
+            self.linker.layer_done_counter.complete.assert_not_called()
+            self.store.finish(job_id)
+            self.assertIsNone(loading.result(timeout=2))
+        self.store.submit_get_arrays.assert_called_once_with(job_id, arrays, token, context)
+        pages.payloads.assert_not_called()
+        self.linker.layer_done_counter.complete.assert_called_once_with(0, 0)
+        self.assertEqual(metrics["bytes"], 96)
+        self.assertEqual(metrics["segments"], 4)
+
     def test_mamba_pool_uses_the_linkers_layer_counter(self):
         self.params.req_to_token_pool.register_layer_transfer_counter.assert_not_called()
         module = load_linker(mamba=True)

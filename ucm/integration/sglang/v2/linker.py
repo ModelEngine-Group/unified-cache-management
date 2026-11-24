@@ -533,7 +533,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     "addr_ms=%.3f tolist_ms=%.3f pack_ms=%.3f "
                     "io_queue_ms=%.3f submit_ms=%.3f "
                     "job_latency_sum_ms=%.3f publish_lag_ms=%.3f "
-                    "bytes=%d segments=%d jobs=%d",
+                    "bytes=%d segments=%d jobs=%d payload_mode=%s",
                     index,
                     len(pending),
                     total_ms,
@@ -554,6 +554,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     metrics["bytes"],
                     metrics["segments"],
                     metrics["jobs"],
+                    "arrays" if getattr(self.runtime, "supports_get_arrays", False) else "objects",
                 )
         return True
 
@@ -571,6 +572,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
     def _load_layers(self, index, prepared, context, metrics):
         layer_jobs = []
         next_complete = 0
+        use_arrays = getattr(self.runtime, "supports_get_arrays", False)
         try:
             for layer in range(self.layout.num_layers):
                 payload_timings = metrics if self._log_performance else None
@@ -578,10 +580,13 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 cpu_start = thread_time() if payload_timings is not None else 0.0
                 submissions = []
                 for pages, token in prepared:
+                    build_payloads = (
+                        pages.payload_arrays if use_arrays else pages.payloads
+                    )
                     payloads = (
-                        pages.payloads(layer, timings=payload_timings)
+                        build_payloads(layer, timings=payload_timings)
                         if payload_timings is not None
-                        else pages.payloads(layer)
+                        else build_payloads(layer)
                     )
                     if payloads:
                         submissions.append((payloads, token))
@@ -591,8 +596,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 # All pages of a section/layer share the same fragment geometry.
                 # Count once per submission rather than traversing every page again.
                 for payloads, _ in submissions:
-                    metrics["bytes"] += len(payloads) * sum(payloads[0].sizes)
-                    metrics["segments"] += len(payloads) * len(payloads[0].sizes)
+                    count = len(payloads[0]) if use_arrays else len(payloads)
+                    sizes = payloads[1] if use_arrays else payloads[0].sizes
+                    metrics["bytes"] += count * sum(sizes)
+                    metrics["segments"] += count * len(sizes)
                 jobs = []
                 layer_jobs.append(jobs)
                 # Wait only for submission. Store I/O continues on the backend.
@@ -603,6 +610,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     jobs,
                     metrics,
                     perf_counter(),
+                    use_arrays,
                 ).result()
                 while next_complete <= layer and all(
                     job.done() for job in layer_jobs[next_complete]
@@ -619,14 +627,21 @@ class UcmDirectLinker(UnifiedCacheLinker):
                 for job in jobs:
                     job.result()
 
-    def _submit_load_layer(self, submissions, context, jobs, metrics, queued_at):
+    def _submit_load_layer(
+        self, submissions, context, jobs, metrics, queued_at, use_arrays=False
+    ):
         metrics["io_queue_ms"] += (perf_counter() - queued_at) * 1e3
         for payloads, token in submissions:
             result = _OffloadResult()
             result.load_metrics = metrics
             result.submitted_at = perf_counter()
             try:
-                self._submit_job(self.runtime.submit_get, result, payloads, token, context)
+                submit = (
+                    self.runtime.submit_get_arrays
+                    if use_arrays
+                    else self.runtime.submit_get
+                )
+                self._submit_job(submit, result, payloads, token, context)
             finally:
                 metrics["submit_ms"] += (perf_counter() - result.submitted_at) * 1e3
             metrics["jobs"] += 1
