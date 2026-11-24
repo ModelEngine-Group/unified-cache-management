@@ -1097,6 +1097,8 @@ ucm:cache_task_total_backend_wait_ms_sum{model_name="qwen",job="vllm",engine="0"
 ucm:cache_task_total_backend_wait_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
 ucm:cache_task_total_ready_wait_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 15.0
 ucm:cache_task_total_ready_wait_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
+ucm:cache_task_total_h2d_submit_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10.0
+ucm:cache_task_total_h2d_submit_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
 ucm:cache_dump_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 50.0
 ucm:cache_dump_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 10
 ucm:cache_dump_queue_wait_duration_ms_sum{model_name="qwen",job="vllm",engine="0",worker_rank="0"} 5.0
@@ -1120,8 +1122,9 @@ ucm:cache_d2h_duration_ms_count{model_name="qwen",job="vllm",engine="0",worker_r
         self.assertAlmostEqual(rows["Cache Load Avg Breakdown: backend submit"], 0.5)
         self.assertAlmostEqual(rows["Cache Load Avg Breakdown: backend wait"], 0.0)
         self.assertAlmostEqual(rows["Cache Load Avg Breakdown: cache ready wait"], 1.5)
+        self.assertAlmostEqual(rows["Cache Load Avg Breakdown: H2D submit"], 1.0)
         self.assertAlmostEqual(
-            rows["Cache Load Avg Breakdown: running queue wait & other"], 5.0
+            rows["Cache Load Avg Breakdown: running queue wait"], 4.0
         )
         self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: queue wait"], 0.5)
         self.assertAlmostEqual(rows["Cache Dump Avg Breakdown: mkbuf"], 1.0)

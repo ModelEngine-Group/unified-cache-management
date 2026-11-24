@@ -3566,14 +3566,16 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
         "backend submit",
         "backend wait",
         "cache ready wait",
-        "running queue wait & other",
+        "H2D submit",
+        "running queue wait",
     }
     assert "cache_h2d_sync_ms" in targets["H2D sync"]["expr"]
     assert "cache_load_queue_wait_duration_ms" in targets["waiting queue wait"]["expr"]
     assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
     assert "cache_task_total_backend_wait_ms" in targets["backend wait"]["expr"]
     assert "cache_task_total_ready_wait_ms" in targets["cache ready wait"]["expr"]
-    residual = targets["running queue wait & other"]["expr"]
+    assert "cache_task_total_h2d_submit_ms" in targets["H2D submit"]["expr"]
+    residual = targets["running queue wait"]["expr"]
     for metric in (
         "cache_load_duration_ms",
         "cache_h2d_sync_ms",
@@ -3581,6 +3583,7 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
         "cache_load_backend_submit_duration_ms",
         "cache_task_total_backend_wait_ms",
         "cache_task_total_ready_wait_ms",
+        "cache_task_total_h2d_submit_ms",
     ):
         assert metric in residual
     assert "cache_shard_running_queue_wait_ms" not in residual
@@ -3600,10 +3603,11 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     assert (
         "`cache ready wait`：指标 `ucm:cache_task_total_ready_wait_ms`；" in description
     )
+    assert "`H2D submit`：指标 `ucm:cache_task_total_h2d_submit_ms`；" in description
     assert "`H2D sync`：指标 `ucm:cache_h2d_sync_ms`；" in description
     assert (
-        "`running queue wait & other`：计算方式 `ucm:cache_load_duration_ms` "
-        "减去上面五段的平均耗时" in description
+        "`running queue wait`：计算方式 `ucm:cache_load_duration_ms` "
+        "减去上面六段的平均耗时" in description
     )
 
 
