@@ -101,6 +101,17 @@ def make_layer(runtime, trace, layer_name="layer.attn"):
             trace.append(("attention", self.layer_name))
             return query
 
+        if runtime.backend == "ascend":
+
+            def _run_fused_sparse_attention(self, qkv, *, index_key):
+                # The Triton fusion inserts K/V/Indexer itself; it never calls
+                # back into the eager method.
+                trace.append(("fused_update_kv", qkv))
+                self.indexer_cache.append(index_key)
+                trace.append(("fused_update_indexer", index_key))
+                trace.append(("fused_attention", self.layer_name))
+                return qkv
+
         def forward(self, query, *, index_key):
             result = self._run_sparse_attention(query, index_key=index_key)
             trace.append(("o_proj", self.layer_name))
@@ -142,6 +153,73 @@ def test_sparse_hooks_wrap_both_cache_updates_and_preserve_arguments(runtime):
     assert [event[0] for event in trace] == expected + ["save"]
     runtime.connector.wait_for_layer_load.assert_called_once_with("layer.attn")
     runtime.connector.save_kv_layer.assert_called_once()
+
+
+def test_fused_triton_path_gets_the_same_bracket(runtime):
+    if runtime.backend != "ascend":
+        pytest.skip("the fused sparse path only exists on Ascend")
+    trace = []
+    module, layer = make_layer(runtime, trace)
+    fused = type(layer)._run_fused_sparse_attention
+    assert fused._ucm_kv_hooks_patched
+    runtime.connector.wait_for_layer_load.side_effect = lambda name: trace.append(
+        ("wait", name)
+    )
+    runtime.connector.save_kv_layer.side_effect = (
+        lambda name, cache, metadata: trace.append(("save", name))
+    )
+
+    assert layer._run_fused_sparse_attention("qkv", index_key="index") == "qkv"
+    assert [event[0] for event in trace] == [
+        "wait",
+        "fused_update_kv",
+        "fused_update_indexer",
+        "fused_attention",
+        "save",
+    ]
+    runtime.connector.wait_for_layer_load.assert_called_once_with("layer.attn")
+    runtime.connector.save_kv_layer.assert_called_once()
+
+
+def test_release_without_the_fused_method_keeps_the_eager_hook(runtime):
+    if runtime.backend != "ascend":
+        pytest.skip("eager-only is an Ascend release shape")
+
+    class SparseAttention:
+        layer_name = "layer.attn"
+        kv_cache = (object(), object())
+
+        def _run_sparse_attention(self):
+            return "eager"
+
+    module = SimpleNamespace(MiniMaxM3SparseAttention=SparseAttention)
+    runtime.patch.patch_minimax_m3_kv_hooks(module)
+    assert SparseAttention._run_sparse_attention._ucm_kv_hooks_patched
+
+
+def test_partially_patched_class_still_gets_the_fused_hook(runtime):
+    if runtime.backend != "ascend":
+        pytest.skip("only the Ascend patch has two entry points")
+
+    def eager_only(self):
+        return "eager"
+
+    # Another patch (or an earlier UCM revision) already took the eager method:
+    # the fused entry point must still be wrapped instead of being skipped.
+    eager_only._ucm_kv_hooks_patched = True
+
+    class SparseAttention:
+        layer_name = "layer.attn"
+        kv_cache = (object(), object())
+        _run_sparse_attention = eager_only
+
+        def _run_fused_sparse_attention(self):
+            return "fused"
+
+    module = SimpleNamespace(MiniMaxM3SparseAttention=SparseAttention)
+    runtime.patch.patch_minimax_m3_kv_hooks(module)
+    assert SparseAttention._run_sparse_attention is eager_only
+    assert SparseAttention._run_fused_sparse_attention._ucm_kv_hooks_patched
 
 
 @pytest.mark.parametrize(
