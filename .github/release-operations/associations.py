@@ -1,10 +1,64 @@
-"""Read explicit GitHub Development relationships and synchronize their metadata."""
+"""Manage GitHub Development relationships and synchronize their metadata."""
 
 from ownership import milestone_number
-from syntax import OperationError, parse_release, patch_pull_requests
+from syntax import OperationError
 
 
 class PullRequestAssociations:
+    def link_requested_pull_requests(self, entries):
+        targets = {
+            entry["number"]: entry["requested_prs"]
+            for entry in entries
+            if entry["requested_prs"]
+        }
+        if not targets:
+            return
+        numbers = {pr for prs in targets.values() for pr in prs}
+        prs = self.pull_requests(numbers)
+        # The preflight PR records can predate both the links and Issue Milestones.
+        for number in numbers:
+            self._pull_requests.pop(number, None)
+            self._pr_issues.pop(number, None)
+        native = self.native_references(targets)
+        for issue, requested in targets.items():
+            missing = [pr for pr in requested if issue not in native.get(pr, set())]
+            if not missing:
+                continue
+            issue_id = self.issue(issue)["node_id"]
+            self._native_issue_snapshot.pop(issue, None)
+            try:
+                self.api.call(
+                    "graphql",
+                    "POST",
+                    {
+                        "query": "mutation($input:AddCloseIssueReferencesInput!){addCloseIssueReferences(input:$input){issue{id}}}",
+                        "variables": {
+                            "input": {
+                                "issueId": issue_id,
+                                "pullRequestIds": [
+                                    prs[pr]["node_id"] for pr in missing
+                                ],
+                            }
+                        },
+                    },
+                )
+            except OperationError as error:
+                refs = ", ".join(f"#{pr}" for pr in missing)
+                raise OperationError(
+                    f"Could not link {refs} to Issue #{issue}: {error}"
+                ) from error
+        native = self.native_references(targets)
+        self.pull_requests(numbers)
+        for issue, requested in targets.items():
+            for pr in requested:
+                if (
+                    issue not in native.get(pr, set())
+                    or issue not in self._pr_issues[pr]
+                ):
+                    raise OperationError(
+                        f"Development link for PR #{pr} and Issue #{issue} is not visible yet; retry the command"
+                    )
+
     def native_references(self, numbers):
         owner, name = self.repository.split("/")
         cache = getattr(self, "_native_issue_snapshot", None)
@@ -129,147 +183,120 @@ class PullRequestAssociations:
         return {n: self._pull_requests[n] for n in numbers}
 
     def memberships(self, item):
-        cache = getattr(self, "_project_memberships", None)
-        if cache is None:
-            cache = self._project_memberships = {}
-            self._project_status = {}
-        if item["node_id"] in cache:
-            return cache[item["node_id"]]
-        result, cursor = {}, None
-        while True:
-            page = self.api.graphql(
-                """query($id:ID!,$after:String){node(id:$id){
-                ... on Issue{projectItems(first:100,after:$after){nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage endCursor}}}
-                ... on PullRequest{projectItems(first:100,after:$after){nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}} pageInfo{hasNextPage endCursor}}}
-                }}""",
-                id=item["node_id"],
-                after=cursor,
-            )["node"]["projectItems"]
-            result.update({n["project"]["id"]: n["id"] for n in page["nodes"]})
-            for node in page["nodes"]:
-                self._project_status[node["id"]] = (
-                    node.get("fieldValueByName") or {}
-                ).get("name")
-            if not page["pageInfo"]["hasNextPage"]:
-                cache[item["node_id"]] = result
-                return result
-            cursor = page["pageInfo"]["endCursor"]
+        self.prefetch_memberships([item])
+        return self._project_memberships[item["node_id"]]
 
-    def sync_pr_projects(self, release, state, pr, record, desired):
-        managed = record.setdefault("projects", {})
-        if not desired and not managed:
+    def prefetch_memberships(self, items):
+        if self._project_memberships is None:
+            self._project_memberships, self._project_status = {}, {}
+        missing = sorted(
+            {item["node_id"] for item in items} - self._project_memberships.keys()
+        )
+        selection = """projectItems(first:100,after:$after){
+            nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}
+            pageInfo{hasNextPage endCursor}}"""
+        fields = "... on Issue{" + selection + "} ... on PullRequest{" + selection + "}"
+        for offset in range(0, len(missing), 20):
+            batch = missing[offset : offset + 20]
+            nodes = self.api.graphql(
+                "query($ids:[ID!]!,$after:String){nodes(ids:$ids){id " + fields + "}}",
+                ids=batch,
+                after=None,
+            )["nodes"]
+            if any(node is None for node in nodes):
+                raise OperationError(
+                    "Project token cannot access all linked GitHub items"
+                )
+            for node in nodes:
+                item_id = node["id"]
+                page = node["projectItems"]
+                memberships = {}
+                while True:
+                    for row in page["nodes"]:
+                        memberships[row["project"]["id"]] = row["id"]
+                        self._project_status[row["id"]] = (
+                            row.get("fieldValueByName") or {}
+                        ).get("name")
+                    if not page["pageInfo"]["hasNextPage"]:
+                        break
+                    page = self.api.graphql(
+                        "query($id:ID!,$after:String){node(id:$id){" + fields + "}}",
+                        id=item_id,
+                        after=page["pageInfo"]["endCursor"],
+                    )["node"]["projectItems"]
+                self._project_memberships[item_id] = memberships
+
+    def sync_pr_projects(self, pr, desired):
+        if not desired:
             return
         current = self.memberships(pr)
-        for project in desired | set(managed):
-            existing = managed.get(project)
-            if project not in desired:
-                if existing and existing["mode"] == "auto" and project in current:
-                    self.api.graphql(
-                        """mutation($project:ID!,$item:ID!){deleteProjectV2Item(input:{projectId:$project,itemId:$item}){deletedItemId}}""",
-                        project=project,
-                        item=current[project],
-                    )
-                    current.pop(project, None)
-                managed.pop(project, None)
-                continue
-            if existing is None:
-                existing = managed[project] = {
-                    "mode": "manual" if project in current else "auto",
-                    "item": current.get(project),
-                }
-            if (
-                existing["mode"] == "auto"
-                and existing.get("item")
-                and project not in current
-            ):
-                existing["mode"] = "manual_removed"
-            if existing["mode"] == "auto" and project in current:
-                existing["item"] = current[project]
-            if existing["mode"] == "auto" and project not in current:
-                # Save ownership before an API request whose response can be lost.
-                self.save(release, state, f"Synchronizing PR #{pr['number']} Projects")
-                item = self.api.graphql(
-                    """mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}""",
-                    project=project,
-                    content=pr["node_id"],
-                )["addProjectV2ItemById"]["item"]
-                existing["item"] = item["id"]
-                current[project] = item["id"]
+        for project in sorted(desired - current.keys()):
+            item = self.api.graphql(
+                """mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}""",
+                project=project,
+                content=pr["node_id"],
+            )["addProjectV2ItemById"]["item"]
+            current[project] = item["id"]
 
-    def sync_pull_requests(self, release, state, event=None):
-        requirements = {e["number"] for e in state["scope"].values()}
-        bugs = {int(n) for n in state["bugs"]} | {
-            i["number"] for i in self._target_bugs.get(release, [])
-        }
-        native = self.native_references(requirements | bugs)
-        cleanup = {int(n) for n, p in state["prs"].items() if p.get("projects")}
-        self.pull_requests(set(native) | cleanup)
-        directory = self.directory()
-        managed = (
-            {i for row in directory.rows().values() for i in row["issues"]}
-            | requirements
-            | bugs
-        )
-        rows, problems = {}, []
-        records = {}
-        for number in sorted(set(native) | cleanup):
-            pr = self._pull_requests[number]
-            links = [
-                self._bug_items.get(n, i)
-                for n, i in self._pr_issues[number].items()
-                if n in managed or "bug" in {label["name"] for label in i["labels"]}
-            ]
-            targets = {milestone_number(i) for i in links}
+    def sync_pull_requests(self, state, issues):
+        bugs = {int(number) for number in state["bugs"]}
+        native = self.native_references(issues)
+        prs = self.pull_requests(native)
+        rows, managed_links = {}, {}
+        for number, related in sorted(native.items()):
+            pr = prs[number]
+            links = []
+            for item in self._pr_issues[number].values():
+                milestone = milestone_number(item)
+                labels = {label["name"] for label in item["labels"]}
+                if (
+                    item["number"] in issues
+                    or labels & {"bug", "requirement"}
+                    or (milestone is not None and self.checklists(milestone))
+                ):
+                    links.append(item)
+            targets = {milestone_number(item) for item in links}
             complete = None not in targets
             targets.discard(None)
             current = milestone_number(pr)
-            first = directory.claim_prs({number}) if number in native else set()
-            if number in first and current is None and complete and len(targets) == 1:
+            if current is None and complete and len(targets) == 1:
+                current = next(iter(targets))
                 pr["milestone"] = self.api.rest(
-                    f"issues/{number}", "PATCH", {"milestone": next(iter(targets))}
-                ).get("milestone")
-                current = milestone_number(pr)
-            related = native.get(number, set())
-            record = state["prs"].get(str(number), {})
-            record.update(
-                requirements=sorted(related & requirements),
-                bugs=sorted(related & bugs),
-                merged=bool(pr["merged_at"]),
-                state=pr["state"],
-                draft=pr["draft"],
-                last=current,
-                target_title=(pr.get("milestone") or {}).get("title"),
-                conflict=len(targets) > 1 and current is None,
-            )
-            state["prs"][str(number)] = record
-            if record["conflict"]:
-                problems.append(
-                    f"PR #{number}: linked Issues have conflicting Milestones; set the PR Milestone manually"
-                )
-            projects = set()
-            if links:
-                for issue in links:
-                    if "bug" in {label["name"] for label in issue["labels"]}:
-                        projects.add(self.config["projects"]["Bugfix"]["id"])
-                    else:
-                        projects.update(self.memberships(issue))
-            self.sync_pr_projects(release, state, pr, record, projects)
-            if related or record.get("projects"):
-                records[str(number)] = record
-            for issue in related & requirements:
+                    f"issues/{number}", "PATCH", {"milestone": current}
+                )["milestone"]
+            state["prs"][str(number)] = {
+                "number": number,
+                "requirements": sorted(related - bugs),
+                "bugs": sorted(related & bugs),
+                "merged": bool(pr["merged_at"]),
+                "state": pr["state"],
+                "draft": pr["draft"],
+                "conflict": len(targets) > 1 and current is None,
+            }
+            managed_links[number] = links
+            for issue in related:
                 rows.setdefault(issue, []).append(pr)
-        state["prs"] = records
-        source = self.issue(release)
-        try:
-            parse_release(source["body"], self.repository)
-        except OperationError as error:
-            problems.append("Release body requires attention: " + str(error))
-            return problems
-        patched = patch_pull_requests(source["body"], rows, self.repository)
-        if patched != source["body"]:
-            if self.issue(release)["body"] != source["body"]:
-                raise OperationError(
-                    "Release body changed during synchronization; retry /update"
-                )
-            self.api.rest(f"issues/{release}", "PATCH", {"body": patched})
-        return problems
+
+        bugfix = self.config["projects"].get("Bugfix")
+        project_sources = {
+            item["number"]: item
+            for links in managed_links.values()
+            for item in links
+            if item["number"] not in bugs
+            and not any(label["name"] == "bug" for label in item["labels"])
+        }
+        self.prefetch_memberships(project_sources.values())
+        projects = {}
+        for number, links in managed_links.items():
+            desired = set()
+            for item in links:
+                if item["number"] in project_sources:
+                    desired.update(self.memberships(item))
+                elif bugfix:
+                    desired.add(bugfix["id"])
+            if desired:
+                projects[number] = desired
+        self.prefetch_memberships([prs[number] for number in projects])
+        for number, desired in projects.items():
+            self.sync_pr_projects(prs[number], desired)
+        return rows

@@ -3,7 +3,7 @@
   "owner": "ModelEngine-Group",
   "owner_type": "Organization",
   "sync": {
-    "max_api_calls": 200
+    "max_api_calls": 300
   },
   "reference_project": "https://github.com/orgs/vllm-project/projects/31",
   "projects": {

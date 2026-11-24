@@ -65,24 +65,18 @@ def test_tag_version_gate_blocks_only_v_tags_and_preserves_other_routes() -> Non
     )
 
 
-def test_release_reruns_are_reported_from_lifecycle_events_and_direct_result_job() -> (
-    None
-):
-    status = _load("release-delivery-status.yml")
-    assert status["on"]["workflow_run"]["types"] == ["in_progress", "completed"]
-    assert (
-        status["jobs"]["report"]["steps"][0]["with"]["ref"]
-        == "${{ github.event.repository.default_branch }}"
-    )
-    assert "head_branch, 'v'" in status["jobs"]["report"]["if"]
+def test_only_successful_version_delivery_can_close_the_milestone() -> None:
+    assert not (WORKFLOWS / "release-delivery-status.yml").exists()
     result = _load("release-tag.yml")["jobs"]["delivery-result"]
-    assert "always()" in result["if"]
+    assert "!cancelled()" in result["if"]
+    assert "needs.version-check.result == 'success'" in result["if"]
+    assert "needs.release.result == 'success'" in result["if"]
     assert "refs/tags/v" in result["if"]
     assert result["needs"] == ["classify-tag", "version-check", "release"]
     env = result["steps"][-1]["env"]
     assert env["RELEASE_RESULT"] == "${{ needs.release.result }}"
-    assert result["concurrency"] == status["concurrency"]
-    assert _load("release-operations.yml")["concurrency"] == status["concurrency"]
+    assert env["RELEASE_VERSION"] == "${{ needs.classify-tag.outputs.version }}"
+    assert result["concurrency"] == _load("release-operations.yml")["concurrency"]
 
 
 def test_delivery_acceptance_identifies_its_manual_rerun_attempt() -> None:

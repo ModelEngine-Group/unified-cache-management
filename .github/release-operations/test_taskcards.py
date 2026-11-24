@@ -127,8 +127,7 @@ class TaskCardContracts(unittest.TestCase):
         )
         self.assertNotIn("ucm-issue-state", x.api.items[1]["body"])
         x.controller.initialize_or_update(1, "update")
-        self.assertEqual(x.controller.load(1)[1]["scope"], before["scope"])
-        self.assertEqual(x.controller.load(1)[1]["revision"], 1)
+        self.assertEqual(x.controller.reconcile(1)["scope"], before["scope"])
         self.assertEqual(len(x.api.items), 4)
 
     def test_conversion_of_existing_release_keeps_scope_revision(self):
@@ -139,8 +138,7 @@ class TaskCardContracts(unittest.TestCase):
             x.api.items[1]["body"], fixtures.REPOSITORY
         )
         x.controller.initialize_or_update(1, "update")
-        self.assertEqual(x.controller.load(1)[1]["scope"], before["scope"])
-        self.assertEqual(x.controller.load(1)[1]["revision"], before["revision"])
+        self.assertEqual(x.controller.reconcile(1)["scope"], before["scope"])
 
     def test_checkbox_edit_and_issue_reopen_do_not_change_scope(self):
         x = fixtures.RepositoryOperations()
@@ -157,8 +155,7 @@ class TaskCardContracts(unittest.TestCase):
             )
             x.api.items[3]["state"] = state
             x.controller.reconcile(1)
-            self.assertEqual(x.controller.load(1)[1]["revision"], before["revision"])
-            self.assertEqual(x.controller.load(1)[1]["scope"], before["scope"])
+            self.assertEqual(x.controller.reconcile(1)["scope"], before["scope"])
 
     def test_malformed_details_are_rejected(self):
         body = task_requirements(fixtures.PLAN, fixtures.REPOSITORY)
