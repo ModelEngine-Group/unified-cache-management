@@ -151,14 +151,20 @@ else
     fi
 fi
 
-# ---- NPU 专属前置检测：CANN 环境就绪（$ASCEND_HOME_PATH 有值，且其下按 kv client
-# CMake 同样的候选布局能找到 acl 头文件；libascendcl 的六种库布局探测交给 CMake
-# 配置期做，其报错读法见 2 号 SOP §6。此处同时确定头文件目录，供步骤 2 的
-# -I 注入使用——两种布局取实际命中者）----
+# ---- NPU 专属前置检测（编译前预检查）：CANN 环境就绪（$ASCEND_HOME_PATH 有值，且其下
+# 按 kv client CMake 同样的候选布局能找到 acl 头文件；libascendcl 的六种库布局探测
+# 交给 CMake 配置期做，其报错读法见 2 号 SOP §6。检测结果 echo 到控制台供确认，
+# 缺失时报错提示给出可直接复制的设置步骤——source CANN 官方脚本优先，手动 export
+# 为应急方式。此处同时确定头文件目录，供步骤 2 的 -I 注入使用——两种布局取实际命中者）----
 if [ "${MODE}" = "npu" ]; then
     if [ -z "${ASCEND_HOME_PATH:-}" ]; then
         echo "[FAIL] 未检测到 CANN 环境（\$ASCEND_HOME_PATH 为空）"
-        echo "       请先安装 ascend-toolkit 并执行 source <CANN>/set_env.sh 后重跑"
+        echo "       请先安装 ascend-toolkit，再在当前终端会话中设置环境变量后重跑（二选一）："
+        echo "         1) source CANN 官方脚本（推荐——同时设置 LD_LIBRARY_PATH 等全套变量）："
+        echo "              source /usr/local/Ascend/ascend-toolkit/set_env.sh"
+        echo "         2) 手动 export（应急方式，仅设置本变量——运行期会因缺 LD_LIBRARY_PATH"
+        echo "            找不到 libascendcl.so，优先用方式 1）："
+        echo "              export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest"
         exit 1
     fi
     CANN_INC_DIR="${ASCEND_HOME_PATH}/include"
@@ -171,6 +177,7 @@ if [ "${MODE}" = "npu" ]; then
             exit 1
         fi
     fi
+    echo "[预检查] CANN 环境就绪：ASCEND_HOME_PATH=${ASCEND_HOME_PATH}，头文件目录：${CANN_INC_DIR}"
 fi
 
 # ---- 步骤 1/2：构建 kv client（build-kv 目录名为 testTool 构建脚本的既定引用路径
