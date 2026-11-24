@@ -241,9 +241,6 @@ private:
             RecordFailedShards(nShard - i);
             task->Fail(status);
             failureSet_->Insert(task->id);
-            if (task->desc.distributeBackendLoad && !stop_.load(std::memory_order_relaxed)) {
-                PublishFailedSlots(task, indexes, i + 1);
-            }
             if (i == 0) {
                 waiter->Done();
                 return;
@@ -278,20 +275,6 @@ private:
             std::this_thread::yield();
             handle = buffer_->TryGet(shard.owner, shard.index, true, preferredRank);
             if (handle) { return std::move(*handle); }
-        }
-    }
-    void PublishFailedSlots(const TaskPtr& task, const std::vector<size_t>& indexes, size_t start)
-    {
-        // Local shards come first. Visit the remaining local slots once; any that cannot be
-        // acquired have the peer's timed acquisition as a fallback.
-        const auto localRank = static_cast<size_t>(deviceId_) % localRankSize_;
-        for (size_t i = start; i < indexes.size(); ++i) {
-            const auto originalIndex = indexes[i];
-            const auto preferredRank = originalIndex % localRankSize_;
-            if (preferredRank != localRank) { break; }
-            const auto& shard = task->desc[originalIndex];
-            auto handle = buffer_->TryGet(shard.owner, shard.index, true, preferredRank);
-            if (handle && handle->Owner()) { FailSlot(shard, *handle); }
         }
     }
     void InvalidatePrefix(const Detail::Shard& shard)

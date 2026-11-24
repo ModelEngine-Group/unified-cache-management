@@ -782,41 +782,6 @@ TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionTimesOutAndDispatchRecovers)
     EXPECT_EQ(FakeStream::scatters.size(), 1);
 }
 
-TEST_F(UCCache2LoadQueueTest, BreakerRejectionPublishesRemainingLocalSlots)
-{
-    const auto failed = TypesHelper::MakeBlockIdRandomly();
-    const auto peer = TypesHelper::MakeBlockIdRandomly();
-    const auto pending = TypesHelper::MakeBlockIdRandomly();
-    const auto ready = TypesHelper::MakeBlockIdRandomly();
-    buffer_.SetExisting(ready);
-    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([] {
-        return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy());
-    }));
-    EXPECT_CALL(backend_, Wait).Times(0);
-
-    TestedQueue rankQueue;
-    auto config = config_;
-    config.localRankSize = 2;
-    config.deviceId = 2;  // The same local cache rank as device 0.
-    ASSERT_TRUE(rankQueue.Setup(config, &failureSet_, &buffer_).Success());
-    auto desc = MakeDesc(failed);
-    desc.push_back({peer, 0, {reinterpret_cast<void*>(0x2000)}});
-    desc.push_back({pending, 0, {reinterpret_cast<void*>(0x3000)}});
-    desc.push_back({peer, 0, {reinterpret_cast<void*>(0x4000)}});
-    desc.push_back({ready, 0, {reinterpret_cast<void*>(0x5000)}});
-    desc.distributeBackendLoad = true;
-    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
-    auto waiter = std::make_shared<UC::Latch>();
-    rankQueue.Submit(task, waiter);
-    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_EQ(task->FailureStatus(), UC::Status::StoreUnhealthy());
-    ASSERT_EQ(buffer_.GetCalls().size(), 3);
-    EXPECT_EQ(buffer_.GetCalls()[1].block, pending);
-    EXPECT_EQ(buffer_.GetCalls()[2].block, ready);
-    EXPECT_EQ(buffer_.Get(pending, 0).GetState(), SlotState::Failed);
-    EXPECT_EQ(buffer_.Get(ready, 0).GetState(), SlotState::Ready);
-}
-
 TEST_F(UCCache2LoadQueueTest, BreakerRejectionWaitsForSubmittedCopy)
 {
     UC::Latch copySubmitted;
