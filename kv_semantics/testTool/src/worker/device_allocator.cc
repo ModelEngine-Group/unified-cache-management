@@ -34,8 +34,8 @@
 #include <cuda_runtime.h>
 #endif
 #ifdef TESTTOOL_ENABLE_ASCEND
-#include <acl_base.h>
-#include <acl_rt.h>
+#include <acl/acl_base.h>
+#include <acl/acl_rt.h>
 #endif
 
 namespace {
