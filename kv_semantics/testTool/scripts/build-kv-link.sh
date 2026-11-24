@@ -5,8 +5,10 @@
 # 用途：按 --mode 编译对应链路的全部组件（kv client + testTool），两模式共用
 # 本脚本，差异只在编译参数处（运行时环境 / provider 宏 / CANN 路径）：
 #   cpu（缺省）CPU-over-RoCE 链路：
-#     1) kv client：BUILD_KV_CLIENT_PROVIDER_ROCE=ON（RoCE provider 编入
-#        libkv_transport.so，需要 libibverbs），RUNTIME_ENVIRONMENT=simu
+#     1) kv client：BUILD_KV_CLIENT_PROVIDER_ROCE=ON 与 BUILD_KV_CLIENT_PROVIDER_FAKE=ON
+#        双 provider 编入 libkv_transport.so（RoCE 需要依赖 libibverbs；FAKE 为 CMake
+#        默认 ON，此处显式声明），RUNTIME_ENVIRONMENT=simu——FAKE 模拟与 RoCE 真实
+#        建链共用一份产物，testTool 侧改 conf 的 provider_type 即切换，无需重编
 #     2) testTool：链接上一步 build-kv 目录下的预构建 kv client 库
 #   npu：HCCP KV-over-RoCE 链路（NPU 数据面，详细 ABI 契约与算子库要求见
 #       kv_semantics/docs/guide/hccp-kv-over-roce-provider.md）：
@@ -164,9 +166,10 @@ fi
 # 源文件均已编入 libkv_transport.so 的源列表，随 kv_client 目标的依赖一并构建；
 # 构建类型取 --build-type 解析值，缺省 release）----
 if [ "${MODE}" = "cpu" ]; then
-    echo "===== [1/2] 构建 kv client（CPU-over-RoCE：RUNTIME_ENVIRONMENT=simu，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，build-type=${BUILD_TYPE}）====="
+    echo "===== [1/2] 构建 kv client（CPU-over-RoCE + FAKE 双 provider：RUNTIME_ENVIRONMENT=simu，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_FAKE=ON，build-type=${BUILD_TYPE}）====="
     cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
-        -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
+        -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+        -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 else
     echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，build-type=${BUILD_TYPE}）====="
@@ -198,7 +201,7 @@ echo "kv client 库：${KV_SEMANTICS_ROOT}/build-kv/src/libkv_client.so（及 li
 echo "testTool    ：${TESTTOOL_ROOT}/build/testTool"
 echo
 if [ "${MODE}" = "cpu" ]; then
-    echo "下一步（CPU 建链断链验证）："
+    echo "下一步（CPU 建链断链验证；FAKE 模拟与 RoCE 真链路均已编入，conf 改 provider_type 即切换）："
     echo "  1. 复制 conf/kv_client.conf 与 conf/kv_client_view.conf 为副本：transport.provider_type 改 CPU；"
     echo "     RoCE 旋钮键名 transport.roce_*（模板段已内置，取消注释按环境改值即可，"
     echo "     必填 roce_gid_index；对端 KV store 侧同名键前缀为 asu_roce_*），"
