@@ -315,11 +315,16 @@ class PreparedPages:
             offsets.extend(layout.offsets)
         if not matrices:
             return []
-        pointers = np.concatenate(matrices, axis=1)
+        pointers = matrices[0] if len(matrices) == 1 else np.concatenate(matrices, axis=1)
+        # Convert the whole matrix in NumPy, avoiding a Python ndarray view and
+        # a tolist call per page. The existing binding still needs one payload
+        # per page; resolve its class only once for the batch.
+        pointer_rows = pointers.tolist()
+        payload_type = proxy().BlockPayload
         result = []
-        for row in pointers:
-            payload = proxy().BlockPayload()
-            payload.pointers = row.tolist()
+        for row in pointer_rows:
+            payload = payload_type()
+            payload.pointers = row
             payload.sizes = sizes
             payload.offsets = offsets
             result.append(payload)
