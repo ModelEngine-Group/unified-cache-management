@@ -420,9 +420,11 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
     for (std::size_t index = 0; index < task.entries.size(); ++index) {
         const RequestOrc &orc = task.entries[index];
 
-        // key 低 64 位填 CacheKey
-        kv::CacheKey key{};
-        std::memcpy(key.data(), &orc.keyLow64, sizeof(orc.keyLow64));
+        // key 低 64 位填 CacheKey（CacheKey 已从 8 字节定长数组别名演进为可持有
+        // 二进制/字符串两种形态的类，二进制 key 经 FromBytes 构造）
+        kv::BinaryKey keyBytes{};
+        std::memcpy(keyBytes.data(), &orc.keyLow64, sizeof(orc.keyLow64));
+        kv::CacheKey key = kv::CacheKey::FromBytes(keyBytes);
 
         // 生成 value 前缀（只写前缀不补齐，尺寸 ≤ orc.length），写入本任务领用的第 index 块
         // 独占缓冲的起始段（device 语义经分配器 H2D 拷贝）；前缀之后的缓冲内容保持启动
