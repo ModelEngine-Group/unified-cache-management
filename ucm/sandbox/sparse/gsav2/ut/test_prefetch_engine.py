@@ -87,12 +87,6 @@ class TestGSAPrefetchBaseAPI:
     def _pe(self):
         return pe_mod.GSAPrefetchBase(fakes.FakeVllmConfig(), 2, False, None, [0, 1])
 
-    def test_update_topk_index(self):
-        pe = self._pe()
-        pe.prefetch_engine_c.topk_indices_result = [1, 2, 3]
-        assert pe.update_topk_index(1, "req-1") == [1, 2, 3]
-        assert pe.prefetch_engine_c.called("get_topk_indices")
-
     def test_del_finish_meta_calls_del_blocks_map(self):
         pe = self._pe()
         pe.del_finish_meta("req-1")
@@ -101,10 +95,4 @@ class TestGSAPrefetchBaseAPI:
     def test_del_finish_meta_flag_false_skips(self):
         pe = self._pe()
         pe.del_finish_meta("req-1", flag=False)
-        assert not pe.prefetch_engine_c.called("del_blocks_map")
-
-    def test_del_finish_meta_ptopk_disabled_skips(self, monkeypatch):
-        monkeypatch.setattr(pe_mod, "PTOPK_PREFETCH_ENABLE", False)
-        pe = self._pe()
-        pe.del_finish_meta("req-1")  # flag 默认 True，但开关关闭
         assert not pe.prefetch_engine_c.called("del_blocks_map")

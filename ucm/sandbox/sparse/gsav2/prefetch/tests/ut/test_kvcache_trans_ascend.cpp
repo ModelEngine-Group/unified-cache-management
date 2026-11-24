@@ -7,7 +7,6 @@
  */
 #include <cstring>
 #include <gtest/gtest.h>
-#include <stdexcept>
 #include <torch/torch.h>
 #include <vector>
 #include "kvcache_log.h"
@@ -17,10 +16,12 @@
 namespace {
 Logger kLog{};  // disabled
 
+// ObtainStream is a judge-and-return-code API: failures return -1 (with a
+// stderr log) instead of throwing.
 template <typename F>
-void ExpectThrow(F&& f)
+void ExpectFail(F&& f)
 {
-    EXPECT_THROW(f(), std::runtime_error);
+    EXPECT_EQ(f(), -1);
 }
 
 }  // namespace
@@ -118,7 +119,7 @@ TEST_F(AscendTransTest, ObtainStreamCreatesContextAndStreams)
 {
     void* stream = nullptr;
     void* context = nullptr;
-    EXPECT_NO_THROW(ObtainStream(&stream, &context, /*deviceID=*/0, /*mStreamNum=*/2));
+    EXPECT_EQ(ObtainStream(&stream, &context, /*deviceID=*/0, /*mStreamNum=*/2), 0);
     EXPECT_NE(stream, nullptr);
     EXPECT_NE(context, nullptr);
     EXPECT_EQ(acl_stub::Stub().setDeviceCount.load(), 1);
@@ -128,29 +129,29 @@ TEST_F(AscendTransTest, ObtainStreamCreatesContextAndStreams)
     EXPECT_EQ(acl_stub::Stub().destroyStreamCount.load(), 2);
 }
 
-TEST_F(AscendTransTest, ObtainStreamThrowsOnSetDeviceFailure)
+TEST_F(AscendTransTest, ObtainStreamFailsOnSetDeviceFailure)
 {
     acl_stub::Stub().setDeviceFails = true;
     void* stream = nullptr;
     void* context = nullptr;
-    ExpectThrow([&] { ObtainStream(&stream, &context, 0, 1); });
+    ExpectFail([&] { return ObtainStream(&stream, &context, 0, 1); });
 }
 
-TEST_F(AscendTransTest, ObtainStreamThrowsOnCreateContextFailure)
+TEST_F(AscendTransTest, ObtainStreamFailsOnCreateContextFailure)
 {
     acl_stub::Stub().createContextFails = true;
     void* stream = nullptr;
     void* context = nullptr;
-    ExpectThrow([&] { ObtainStream(&stream, &context, 0, 1); });
+    ExpectFail([&] { return ObtainStream(&stream, &context, 0, 1); });
     /* BUG-FOCUS: context memory is leaked on this path. See README. */
 }
 
-TEST_F(AscendTransTest, ObtainStreamThrowsOnCreateStreamFailure)
+TEST_F(AscendTransTest, ObtainStreamFailsOnCreateStreamFailure)
 {
     acl_stub::Stub().createStreamFails = true;
     void* stream = nullptr;
     void* context = nullptr;
-    ExpectThrow([&] { ObtainStream(&stream, &context, 0, 2); });
+    ExpectFail([&] { return ObtainStream(&stream, &context, 0, 2); });
     /* BUG-FOCUS: context + partial streams leaked on this path. See README. */
 }
 

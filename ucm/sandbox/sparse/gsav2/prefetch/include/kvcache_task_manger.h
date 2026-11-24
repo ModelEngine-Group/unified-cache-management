@@ -23,7 +23,7 @@
 #include "../ascend/kvcache_trans_ascend.h"
 
 // Task Status Enumeration
-enum class TaskStatus { PENDING, RUNNING, COMPLETED, FAILED, CANCELLED };
+enum class TaskStatus { PENDING, RUNNING, COMPLETED, FAILED };
 
 // Task structure
 struct TaskInfo {
@@ -120,11 +120,9 @@ private:
 
     // Control variable
     std::atomic<bool> should_stop_{false};
-    std::atomic<int> next_task_id_{1};
 
     std::atomic<int> running_tasks_count_{0};
 
-    void workerThread(size_t thread_index);
     std::hash<std::thread::id> hasher;
 };
 

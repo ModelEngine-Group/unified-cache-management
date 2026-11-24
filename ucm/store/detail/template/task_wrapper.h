@@ -24,8 +24,11 @@
 #ifndef UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 #define UNIFIEDCACHE_STORE_DETAIL_TEMPLATE_TASK_WRAPPER_H
 
+#include <cctype>
+#include <cstdlib>
 #include <memory>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include "logger/logger.h"
 #include "status/status.h"
@@ -46,6 +49,14 @@ protected:
     TaskIdSet failureSet_;
     TaskSet tasks_{};
     std::shared_mutex mutex_{};
+    /* ENABLE_GSA_PATCH all evaluate to false*/
+    bool gsaPatchEnabled_{[] {
+        const char* v = std::getenv("ENABLE_GSA_PATCH");
+        if (v == nullptr) { return false; }
+        std::string s{v};
+        for (char& c : s) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+        return s == "1" || s == "true";
+    }()};
     virtual void Dispatch(TaskPtr t, WaiterPtr w) = 0;
     virtual void Cancel(TaskPtr t) {}
     virtual bool IsAio() const { return false; }
@@ -63,10 +74,11 @@ public:
             std::unique_lock<std::shared_mutex> lock(mutex_);
             auto inserted = tasks_.emplace(handle, TaskPair{t, w}).second;
             if (!inserted) [[unlikely]] { return Status::DuplicateKey(); }
+            if (gsaPatchEnabled_) { Dispatch(t, w); }
         } catch (const std::exception& e) {
             return Status::Error(e.what());
         }
-        Dispatch(t, w);
+        if (!gsaPatchEnabled_) { Dispatch(t, w); }
         return handle;
     }
     Expected<bool> Check(TaskHandle taskId)

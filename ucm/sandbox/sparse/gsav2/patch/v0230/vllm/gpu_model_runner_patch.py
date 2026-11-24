@@ -15,7 +15,7 @@ def __init__(
     vllm_config: VllmConfig,
     device: torch.device,
 ):
-    from ucm.sparse.utils import IS_INDEXER_OFFLOAD, IS_OPEN_GSA, PTOPK_PREFETCH_ENABLE
+    from ucm.sparse.utils import IS_INDEXER_OFFLOAD, IS_OPEN_GSA
 
     self.vllm_config = vllm_config
     self.model_config = vllm_config.model_config
@@ -349,7 +349,7 @@ def __init__(
     self.num_accepted_tokens = self._make_buffer(self.max_num_reqs, dtype=torch.int32)
 
     ######[GSA] add attention metadata info
-    if PTOPK_PREFETCH_ENABLE and IS_OPEN_GSA:
+    if IS_OPEN_GSA:
         self.dsa_block_table = None
         self.dsa_seq_len = None
         self.dsa_slot_mapping = None
@@ -360,6 +360,7 @@ def __init__(
         self.gsa_swap_topk = None
         self.gsa_warmup_index = None
         self.gsa_warmup_topk = None
+        self.actual_sparse_lengths = None
         self.gsa_prefill_query = None
         self.gsa_topk_win_tmp = None
 
@@ -1503,7 +1504,8 @@ def execute_model(
             **model_kwargs,
         )
 
-        self.maybe_execute_ucm_sparse_finished()
+        # GSAV2 may rewrite logits_indices (e.g. re-indexing); keep the returned one.
+        logits_indices = self.maybe_execute_ucm_sparse_finished(logits_indices)
 
     with record_function_or_nullcontext("gpu_model_runner: postprocess"):
         if self.use_aux_hidden_state_outputs:
@@ -1604,13 +1606,13 @@ def maybe_execute_ucm_sparse_begin(
     ucm_sparse.execute_begin(scheduler_output, attn_metadata)
 
 
-def maybe_execute_ucm_sparse_finished(self, rec_result=None):
+def maybe_execute_ucm_sparse_finished(self, logits_indices=None, rec_result=None):
     from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
 
     if not has_ucm_sparse():
-        return
+        return logits_indices
     ucm_sparse = get_ucm_sparse()
-    ucm_sparse.execute_finished(rec_result)
+    return ucm_sparse.execute_finished(logits_indices, rec_result)
 
 
 def ucm_sparse_request_finished_in_worker(self, request_id: str | int):

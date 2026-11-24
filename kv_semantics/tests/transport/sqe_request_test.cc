@@ -82,12 +82,12 @@ TEST(TransportConfigParserTest, LoadsCompletionPollSpinLimit)
     EXPECT_EQ(config.completionPollSpinLimit, std::size_t{23});
 }
 
-CacheKey MakeCacheKey(std::string_view text)
+ResolvedCacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     const auto size = std::min(text.size(), key.size());
     if (size > 0) { std::memcpy(key.data(), text.data(), size); }
-    return key;
+    return {key, 0};
 }
 
 class StubTransProvider : public TransProvider {
@@ -153,9 +153,9 @@ std::unordered_map<std::string, std::string> DefaultAttrs()
     };
 }
 
-std::vector<KVBuffer> MakeEntries(std::size_t count)
+std::vector<ResolvedKVBuffer> MakeEntries(std::size_t count)
 {
-    std::vector<KVBuffer> entries(count);
+    std::vector<ResolvedKVBuffer> entries(count);
     for (std::size_t index = 0; index < count; ++index) {
         entries[index].key = MakeCacheKey("key_" + std::to_string(index));
         entries[index].buffer.region.addr = 0x100000 + index * 0x1000;
@@ -165,7 +165,7 @@ std::vector<KVBuffer> MakeEntries(std::size_t count)
     return entries;
 }
 
-void SetMrKeys(std::vector<KVBuffer>& entries, std::uint32_t tokenBase)
+void SetMrKeys(std::vector<ResolvedKVBuffer>& entries, std::uint32_t tokenBase)
 {
     for (std::size_t index = 0; index < entries.size(); ++index) {
         entries[index].mrKey = tokenBase + static_cast<std::uint32_t>(index);
@@ -208,6 +208,33 @@ protected:
     std::unique_ptr<AsuTransportImpl> transport_;
 };
 
+TEST_F(SqeRequestTest, TaskNamespaceIsEncodedInEachRequestType)
+{
+    for (auto op : {AsuOpType::STORE, AsuOpType::LOAD, AsuOpType::BATCH_STORE,
+                    AsuOpType::BATCH_LOAD, AsuOpType::QUERY, AsuOpType::DELETE}) {
+        TransportTask task;
+        task.opType = op;
+        task.namespaceId = 0x550d7456U;
+        task.entries = MakeEntries(1);
+        task.entries[0].key.gnsid = 0x550d7456U;
+        SetMrKeys(task.entries, 1);
+        task.keys = {task.entries[0].key};
+        std::vector<TransportSubBatchContext> batches;
+        ASSERT_TRUE(transport_->taskExecutor_->PrepareTaskSubBatches(task, batches).ok());
+        ASSERT_EQ(batches.size(), 1U);
+        const auto* sqe = reinterpret_cast<const std::uint32_t*>(batches[0].sendSge.local_addr);
+        EXPECT_EQ(sqe[1], task.namespaceId);
+        const auto keyDword = op == AsuOpType::STORE || op == AsuOpType::LOAD ? 12U
+                              : op == AsuOpType::BATCH_STORE || op == AsuOpType::BATCH_LOAD
+                                  ? kSqeDwordCount + 1
+                                  : kSqeDwordCount;
+        EXPECT_EQ(
+            std::memcmp(&sqe[keyDword], task.entries[0].key.keyBytes.data(), kCacheKeySizeBytes),
+            0);
+        transport_->taskExecutor_->ReleaseAllSubBatchResources(batches);
+    }
+}
+
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
 {
     EXPECT_TRUE(ValidateSqeRequestAttrs(DefaultAttrs()).ok());
@@ -237,7 +264,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     entries[2].offset = kAlignmentBytes * 3;
     SetMrKeys(entries, 0xABCD0000);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     transport_->taskExecutor_->nextRequestCid_.store(41, std::memory_order_relaxed);
@@ -277,7 +304,7 @@ TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
     entries[0].offset = kAlignmentBytes;
     SetMrKeys(entries, 0xABCD0000);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
@@ -301,7 +328,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     entries[1].offset = kAlignmentBytes * 5;
     SetMrKeys(entries, 0x76540000);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     transport_->taskExecutor_->nextRequestCid_.store(9, std::memory_order_relaxed);
@@ -327,7 +354,7 @@ TEST_F(SqeRequestTest, SubmitLoadUsesRetrieveOpcodeAndRequest)
     entries[0].offset = kAlignmentBytes * 4;
     SetMrKeys(entries, 0x76540000);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
@@ -345,7 +372,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
 {
     auto entries = MakeEntries(1);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
@@ -362,11 +389,12 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 {
-    std::vector<CacheKey> keys = {MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
-                                  MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
-                                  MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
+    std::vector<ResolvedCacheKey> keys = {
+        MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
+        MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
+        MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
     IoScheduler::ScheduledKeyBatch subBatch{
-        BatchView<CacheKey>{keys.data(), keys.size()}
+        BatchView<ResolvedCacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
     transport_->taskExecutor_->nextRequestCid_.store(55, std::memory_order_relaxed);
@@ -387,11 +415,12 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
 
 TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
 {
-    std::vector<CacheKey> keys = {MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
-                                  MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
-                                  MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
+    std::vector<ResolvedCacheKey> keys = {
+        MakeCacheKey("k0"), MakeCacheKey("k1"), MakeCacheKey("k2"),
+        MakeCacheKey("k3"), MakeCacheKey("k4"), MakeCacheKey("k5"),
+        MakeCacheKey("k6"), MakeCacheKey("k7"), MakeCacheKey("k8")};
     IoScheduler::ScheduledKeyBatch subBatch{
-        BatchView<CacheKey>{keys.data(), keys.size()}
+        BatchView<ResolvedCacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
     transport_->taskExecutor_->nextRequestCid_.store(13, std::memory_order_relaxed);
@@ -415,9 +444,9 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
     transport_->config_.attrs = attrs;
     transport_->taskExecutor_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
-    std::vector<CacheKey> keys = {MakeCacheKey("k0")};
+    std::vector<ResolvedCacheKey> keys = {MakeCacheKey("k0")};
     IoScheduler::ScheduledKeyBatch subBatch{
-        BatchView<CacheKey>{keys.data(), keys.size()}
+        BatchView<ResolvedCacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
 
@@ -433,7 +462,7 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
     auto entries = MakeEntries(2);
     SetMrKeys(entries, 0x45670000);
     IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
     AsuTransportImpl uninitializedFlagTransport;

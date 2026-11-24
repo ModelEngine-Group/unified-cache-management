@@ -36,6 +36,13 @@ public:
         return Status::Error(StatusCode::UNSUPPORTED, "server capability query is not supported");
     }
 
+    // Memory the transport has to allocate for the SQE and CQE slots it hands to this provider.
+    // Those slots are written by the CPU and read by the transport's DMA engine, so the requirement
+    // is "accessible to both". Host mapped device memory meets it on an accelerator runtime that
+    // maps pinned host pages into the device address space; a host NIC instead needs plain host
+    // memory, because the device alias of that memory cannot be registered with an RDMA device.
+    virtual MemoryType ControlBufferMemory() const { return MemoryType::HOST_PINNED; }
+
     struct SendIoBatch {
         ConnectionHandle connectionHandle;
         void* sendBuffer;
