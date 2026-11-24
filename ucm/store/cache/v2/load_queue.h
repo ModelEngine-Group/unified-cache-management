@@ -125,12 +125,11 @@ public:
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
         running_.Setup(config.runningQueueDepth);
+        dispatcher_ = std::thread{&LoadQ::DispatchStage, this};
         std::promise<Status> started;
         auto fut = started.get_future();
         transfer_ = std::thread{&LoadQ::TransferStage, this, std::ref(started)};
-        auto status = fut.get();
-        if (status.Success()) { dispatcher_ = std::thread{&LoadQ::DispatchStage, this}; }
-        return status;
+        return fut.get();
     }
     void Submit(TaskPtr task, WaiterPtr waiter)
     {
@@ -150,6 +149,7 @@ public:
         DrainWaiting();
         transferStop_.store(true, std::memory_order_release);
         if (transfer_.joinable()) { transfer_.join(); }
+        DrainRunning();
     }
 
 private:
@@ -371,7 +371,6 @@ private:
         BindCpuAffinity();
         running_.ConsumerLoop(transferStop_, &LoadQ::TransferOneTask, this, stream);
         ReleaseHolder(stream);
-        DrainRunning();
     }
     Status ValidateTokenFilter(const TaskPtr& task) const
     {

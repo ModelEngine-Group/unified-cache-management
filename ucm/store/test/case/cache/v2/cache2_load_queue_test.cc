@@ -1160,6 +1160,7 @@ TEST_F(UCCache2LoadQueueTest, CloseFailsPendingTasksWhenStreamSetupFailed)
     EXPECT_CALL(backend_, Load).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
         return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
     }));
+    EXPECT_CALL(backend_, Wait).WillRepeatedly(testing::Return(UC::Status::OK()));
 
     std::vector<std::pair<TaskPtr, WaiterPtr>> tasks;
     for (size_t i = 0; i < 2; ++i) {
