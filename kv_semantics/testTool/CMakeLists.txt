@@ -104,3 +104,53 @@ target_link_libraries(testTool
     PRIVATE
         kv_client
 )
+
+# ---------- NPU 支持开关：TESTTOOL_ENABLE_ASCEND（缺省 OFF——CPU 构建零感知，设备能力经接口抽象隔离） ----------
+# ON 时三联动：编译宏 TESTTOOL_ENABLE_ASCEND + CANN 头文件路径 + libascendcl 显式链接。
+# 链接必须显式给出：device_allocator.cc 直接引用 aclrt* 符号，仅靠 libkv_transport.so 的
+# 间接依赖无法解析（现代 ld 对直接引用要求命令行显式带库，报 DSO missing from command line）。
+option(TESTTOOL_ENABLE_ASCEND "真 NPU 内存分配（ACL 设备内存路径，需 CANN 环境）；OFF 时 npu 类型回退主机内存模拟" OFF)
+if(TESTTOOL_ENABLE_ASCEND)
+    # ---- CANN 根目录：-DTESTTOOL_ASCEND_ROOT 显式传参优先，其次环境变量
+    # ASCEND_HOME_PATH → ASCEND_ROOT（与 kv client 顶层 CMake 的探测顺序一致）----
+    if(NOT DEFINED TESTTOOL_ASCEND_ROOT)
+        if(DEFINED ENV{ASCEND_HOME_PATH})
+            set(TESTTOOL_ASCEND_ROOT "$ENV{ASCEND_HOME_PATH}")
+        elseif(DEFINED ENV{ASCEND_ROOT})
+            set(TESTTOOL_ASCEND_ROOT "$ENV{ASCEND_ROOT}")
+        else()
+            message(FATAL_ERROR
+                "TESTTOOL_ENABLE_ASCEND=ON 需要 CANN 根目录：配置时 -DTESTTOOL_ASCEND_ROOT=<CANN 目录>，"
+                "或设置环境变量 ASCEND_HOME_PATH / ASCEND_ROOT（CANN 官方 set_env.sh 会设置前者）")
+        endif()
+    endif()
+    # ---- 头文件目录：include / aarch64-linux/include 两种布局取实际命中者（与 build-kv-link.sh 预检查同逻辑）----
+    set(TESTTOOL_CANN_INC_DIR "${TESTTOOL_ASCEND_ROOT}/include")
+    if(NOT EXISTS "${TESTTOOL_CANN_INC_DIR}/acl/acl.h")
+        if(EXISTS "${TESTTOOL_ASCEND_ROOT}/aarch64-linux/include/acl/acl.h")
+            set(TESTTOOL_CANN_INC_DIR "${TESTTOOL_ASCEND_ROOT}/aarch64-linux/include")
+        else()
+            message(FATAL_ERROR
+                "CANN 根目录下未找到 acl/acl.h（include 与 aarch64-linux/include 两种布局均未命中）：${TESTTOOL_ASCEND_ROOT}")
+        endif()
+    endif()
+    # ---- libascendcl 探测：候选布局对齐 kv client 顶层 CMake 的六种库布局，不做系统默认路径搜索 ----
+    find_library(TESTTOOL_ASCENDCL_LIB
+        NAMES ascendcl
+        HINTS
+            ${TESTTOOL_ASCEND_ROOT}/lib64
+            ${TESTTOOL_ASCEND_ROOT}/lib
+            ${TESTTOOL_ASCEND_ROOT}/runtime/lib64
+            ${TESTTOOL_ASCEND_ROOT}/runtime/lib
+            ${TESTTOOL_ASCEND_ROOT}/aarch64-linux/lib64
+            ${TESTTOOL_ASCEND_ROOT}/aarch64-linux/lib
+        NO_DEFAULT_PATH
+    )
+    if(NOT TESTTOOL_ASCENDCL_LIB)
+        message(FATAL_ERROR
+            "CANN 根目录下未找到 libascendcl（lib64 / lib / runtime / aarch64-linux 布局均未命中）：${TESTTOOL_ASCEND_ROOT}")
+    endif()
+    target_compile_definitions(testTool PRIVATE TESTTOOL_ENABLE_ASCEND)
+    target_include_directories(testTool PRIVATE ${TESTTOOL_CANN_INC_DIR})
+    target_link_libraries(testTool PRIVATE ${TESTTOOL_ASCENDCL_LIB})
+endif()

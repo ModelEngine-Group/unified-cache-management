@@ -17,8 +17,9 @@
 #        一并编入（三种 provider 共存一份产物，conf 改 transport.provider_type
 #        即在 FAKE 模拟 / CPU-over-RoCE / HCCP 三种链路间切换，无需重编），
 #        RUNTIME_ENVIRONMENT=ascend，KV_CLIENT_CANN_ROOT=$ASCEND_HOME_PATH
-#     2) testTool：经 CMAKE_CXX_FLAGS 注入 TESTTOOL_ENABLE_ASCEND 与 CANN 头文件
-#        路径（真 NPU 内存分配——HCCP 的 RegisterMemory 只收设备内存）
+#     2) testTool：TESTTOOL_ENABLE_ASCEND=ON（CMakeLists 正式开关——编译宏、CANN
+#        头文件路径、libascendcl 显式链接三联动；真 NPU 内存分配——HCCP 的
+#        RegisterMemory 只收设备内存）
 #
 # 构建类型：--build-type release（缺省）/ --build-type debug。缺省 Release 使
 # 产物随时可直接用于性能测试；需要调试（断点 / 单步）时显式声明 debug。
@@ -36,11 +37,13 @@
 # 前置依赖（缺失时脚本前置检测报错退出，按提示安装/准备后重跑）：
 #   共同：cmake(>=3.18) / g++(C++17) / python3（metrics 代码生成）
 #   cpu 额外：libibverbs-dev（RoCE）
-#   npu 额外：CANN（ascend-toolkit）已安装并 source set_env.sh（$ASCEND_HOME_PATH 有值）；
+#   npu 额外：CANN toolkit 已安装并 source set_env.sh（$ASCEND_HOME_PATH 有值）；
 #             libibverbs-dev（三 provider 共存产物编入 RoCE）
 #
-# 两模式共用 build-kv 与 testTool build 目录（CMake 检测到参数变化自动重新配置）；
-# 切换模式后如遇缓存导致的配置异常，执行 bash scripts/clean-build.sh 清理后重跑即可。
+# 两模式共用 build-kv 与 testTool build 目录，且各自显式声明全部构建开关（provider 与
+# TESTTOOL_ENABLE_ASCEND 均含关闭项）——CMake 缓存变量"不传即沿用旧值"，显式声明使两模式
+# 来回切换幂等无残留，无需清理；若因 FetchContent 依赖源损坏等其他缓存问题报错，
+# 执行 bash scripts/clean-build.sh 清理后重跑即可。
 # ============================================================================
 
 # ---- 解释器检测（须在 set 之前：Ubuntu 的 sh 是 dash，不支持 -o pipefail 与
@@ -159,12 +162,15 @@ fi
 if [ "${MODE}" = "npu" ]; then
     if [ -z "${ASCEND_HOME_PATH:-}" ]; then
         echo "[FAIL] 未检测到 CANN 环境（\$ASCEND_HOME_PATH 为空）"
-        echo "       请先安装 ascend-toolkit，再在当前终端会话中设置环境变量后重跑（二选一）："
-        echo "         1) source CANN 官方脚本（推荐——同时设置 LD_LIBRARY_PATH 等全套变量）："
-        echo "              source /usr/local/Ascend/ascend-toolkit/set_env.sh"
+        echo "       请先安装 CANN toolkit，再在当前终端会话中设置环境变量后重跑（二选一）："
+        echo "         1) source CANN 官方脚本（推荐——同时设置 LD_LIBRARY_PATH 等全套变量；"
+        echo "            路径随 CANN 版本布局不同，两代均列出，取实际存在者）："
+        echo "              CANN 8.x 及更早：source /usr/local/Ascend/ascend-toolkit/set_env.sh"
+        echo "              CANN 9.0 及更新：source /usr/local/Ascend/cann/set_env.sh"
         echo "         2) 手动 export（应急方式，仅设置本变量——运行期会因缺 LD_LIBRARY_PATH"
         echo "            找不到 libascendcl.so，优先用方式 1）："
-        echo "              export ASCEND_HOME_PATH=/usr/local/Ascend/ascend-toolkit/latest"
+        echo "              export ASCEND_HOME_PATH=<CANN 安装目录>"
+        echo "              （如 CANN 9.0.0：/usr/local/Ascend/cann-9.0.0；8.x：/usr/local/Ascend/ascend-toolkit/latest）"
         exit 1
     fi
     CANN_INC_DIR="${ASCEND_HOME_PATH}/include"
@@ -183,12 +189,16 @@ fi
 # ---- 步骤 1/2：构建 kv client（build-kv 目录名为 testTool 构建脚本的既定引用路径
 # ../build-kv/src，不可改名；--target kv_client 只构建所需目标——两种 provider 的
 # 源文件均已编入 libkv_transport.so 的源列表，随 kv_client 目标的依赖一并构建；
-# 构建类型取 --build-type 解析值，缺省 release）----
+# 构建类型取 --build-type 解析值，缺省 release；
+# 两模式各自显式声明全部 provider 开关（含关闭项）——CMake 缓存变量"不传即沿用
+# 旧值"，不显式关闭则上次另一模式留下的 ON 残留到本次配置引发矛盾报错
+# （如 HCCP=ON 残留 + simu → FATAL_ERROR），显式开关使两模式切换幂等无残留）----
 if [ "${MODE}" = "cpu" ]; then
     echo "===== [1/2] 构建 kv client（CPU-over-RoCE + FAKE 双 provider：RUNTIME_ENVIRONMENT=simu，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_FAKE=ON，build-type=${BUILD_TYPE}）====="
     cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
         -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-        -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
+        -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON \
+        -DBUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=OFF
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 else
     echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE + RoCE + FAKE 三 provider：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_FAKE=ON，build-type=${BUILD_TYPE}）====="
@@ -201,17 +211,19 @@ else
 fi
 
 # ---- 步骤 2/2：构建 testTool（链接 build-kv 预构建产物；首次配置需联网拉取 fmt/spdlog）。
-# npu 模式经 CMAKE_CXX_FLAGS 注入 TESTTOOL_ENABLE_ASCEND 与 CANN 头文件路径——
-# testTool 的 CMakeLists 目前无该宏的正式开关入口（待后续补 option），沿用注入方式；
-# 真 NPU 内存分配为 HCCP 链路建链验证的必备条件（RegisterMemory 只收设备内存）----
+# npu 模式走 CMakeLists 正式开关 TESTTOOL_ENABLE_ASCEND=ON（编译宏、CANN 头文件路径、
+# libascendcl 显式链接三联动，根目录经 TESTTOOL_ASCEND_ROOT 显式传入——不依赖
+# 环境变量穿透 CMake 缓存，配置显式可追溯）；真 NPU 内存分配为 HCCP 链路建链
+# 验证的必备条件（RegisterMemory 只收设备内存）----
 if [ "${MODE}" = "cpu" ]; then
     echo "===== [2/2] 构建 testTool（build-type=${BUILD_TYPE}）====="
-    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
+    cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+        -DTESTTOOL_ENABLE_ASCEND=OFF
     cmake --build "${TESTTOOL_ROOT}/build" -j "$(nproc)"
 else
     echo "===== [2/2] 构建 testTool（TESTTOOL_ENABLE_ASCEND：真 NPU 内存分配，build-type=${BUILD_TYPE}）====="
     cmake -S "${TESTTOOL_ROOT}" -B "${TESTTOOL_ROOT}/build" -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
-        -DCMAKE_CXX_FLAGS="-DTESTTOOL_ENABLE_ASCEND -I${CANN_INC_DIR}"
+        -DTESTTOOL_ENABLE_ASCEND=ON -DTESTTOOL_ASCEND_ROOT="${ASCEND_HOME_PATH}"
     cmake --build "${TESTTOOL_ROOT}/build" -j "$(nproc)"
 fi
 
