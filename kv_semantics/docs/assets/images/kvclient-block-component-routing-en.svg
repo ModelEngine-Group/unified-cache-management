@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="658" viewBox="0 0 1240 658">
+<rect width="100%" height="100%" fill="#fff"/>
+<text x="36" y="57.0" font-family="Microsoft YaHei, sans-serif" font-size="32" fill="#182737" text-anchor="start">Routing KV and index components of the same block</text>
+<text x="36" y="93.0" font-family="Microsoft YaHei, sans-serif" font-size="18" fill="#465a70" text-anchor="start">SGLang direct-linker example. H is the shared block key prefix. CP and PP are both 0.</text>
+<rect x="36" y="122" width="555" height="442" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<rect x="54" y="172" width="250" height="72" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="179.0" y="205.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">KV</text>
+<text x="179.0" y="234.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">H_cp0_pp0_k</text>
+<rect x="323" y="172" width="250" height="72" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<text x="448.0" y="205.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">index</text>
+<text x="448.0" y="234.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">H_cp0_pp0_indexer</text>
+<path d="M179 244L179 276 M174.47113714620932 267.0843171180467L179 276L183.52886285379068 267.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M179 366L179 397 M174.47113714620932 388.0843171180467L179 397L183.52886285379068 388.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M448 244L448 276 M443.47113714620934 267.0843171180467L448 276L452.52886285379066 267.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M448 366L448 397 M443.47113714620934 388.0843171180467L448 397L452.52886285379066 388.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="649" y="122" width="555" height="442" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<rect x="667" y="172" width="250" height="72" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="792.0" y="205.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">KV</text>
+<text x="792.0" y="234.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">H_cp0_pp0_k</text>
+<rect x="936" y="172" width="250" height="72" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<text x="1061.0" y="205.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">index</text>
+<text x="1061.0" y="234.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">H_cp0_pp0_indexer</text>
+<path d="M792 244L792 276 M787.4711371462093 267.0843171180467L792 276L796.5288628537907 267.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M792 366L792 397 M787.4711371462093 388.0843171180467L792 397L796.5288628537907 388.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M1061 244L1061 276 M1056.4711371462092 267.0843171180467L1061 276L1065.5288628537908 267.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M1061 366L1061 397 M1056.4711371462092 388.0843171180467L1061 397L1065.5288628537908 388.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<text x="313.5" y="159.0" font-family="Microsoft YaHei, sans-serif" font-size="23" fill="#182737" text-anchor="middle">Routing on the full key</text>
+<text x="926.5" y="159.0" font-family="Microsoft YaHei, sans-serif" font-size="23" fill="#182737" text-anchor="middle">KVClient routing on the normalized key</text>
+<rect x="54" y="276" width="519" height="90" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<text x="313.5" y="309.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">Full key → XXH64 → ASU routing</text>
+<text x="313.5" y="338.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Component suffixes may route to different ASUs.</text>
+<rect x="667" y="276" width="519" height="90" fill="#edf8f3" stroke="#51967d" stroke-width="2"/>
+<text x="926.5" y="309.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">KeyResolver → XXH64 → ASU routing</text>
+<text x="926.5" y="338.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Remove PP and pool. Both keys hash H_cp0.</text>
+<rect x="54" y="397" width="250" height="108" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<rect x="71" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="148" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="76" y="414" width="74" height="73" fill="#dbe5ec" stroke="#34495e" stroke-width="2"/>
+<rect x="81" y="420" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="87" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="91" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="95" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="105" y="427" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="135" y="427" width="4" height="4" fill="#5485af" stroke="#5485af" stroke-width="2"/>
+<rect x="81" y="441" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="87" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="91" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="95" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="105" y="448" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="135" y="448" width="4" height="4" fill="#5485af" stroke="#5485af" stroke-width="2"/>
+<rect x="81" y="462" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="87" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="91" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="95" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="105" y="469" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="135" y="469" width="4" height="4" fill="#5485af" stroke="#5485af" stroke-width="2"/>
+<text x="228.5" y="440.0" font-family="Microsoft YaHei, sans-serif" font-size="22" fill="#182737" text-anchor="middle">ASU 1</text>
+<text x="228.5" y="469.0" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#465a70" text-anchor="middle">KV · Key K1</text>
+<rect x="323" y="397" width="250" height="108" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<rect x="340" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="417" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="345" y="414" width="74" height="73" fill="#dbe5ec" stroke="#34495e" stroke-width="2"/>
+<rect x="350" y="420" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="356" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="360" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="364" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="374" y="427" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="404" y="427" width="4" height="4" fill="#c87824" stroke="#c87824" stroke-width="2"/>
+<rect x="350" y="441" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="356" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="360" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="364" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="374" y="448" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="404" y="448" width="4" height="4" fill="#c87824" stroke="#c87824" stroke-width="2"/>
+<rect x="350" y="462" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="356" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="360" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="364" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="374" y="469" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="404" y="469" width="4" height="4" fill="#c87824" stroke="#c87824" stroke-width="2"/>
+<text x="497.5" y="440.0" font-family="Microsoft YaHei, sans-serif" font-size="22" fill="#182737" text-anchor="middle">ASU 2</text>
+<text x="497.5" y="469.0" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#465a70" text-anchor="middle">Index · Key K2</text>
+<rect x="667" y="397" width="519" height="108" fill="#edf8f3" stroke="#51967d" stroke-width="2"/>
+<rect x="685" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="762" y="421" width="7" height="59" fill="#607487" stroke="#34495e" stroke-width="2"/>
+<rect x="690" y="414" width="74" height="73" fill="#dbe5ec" stroke="#34495e" stroke-width="2"/>
+<rect x="695" y="420" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="701" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="705" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="709" y="425" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="719" y="427" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="749" y="427" width="4" height="4" fill="#51967d" stroke="#51967d" stroke-width="2"/>
+<rect x="695" y="441" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="701" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="705" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="709" y="446" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="719" y="448" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="749" y="448" width="4" height="4" fill="#51967d" stroke="#51967d" stroke-width="2"/>
+<rect x="695" y="462" width="64" height="17" fill="#edf3f7" stroke="#40566b" stroke-width="2"/>
+<rect x="701" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="705" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="709" y="467" width="1" height="7" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="719" y="469" width="23" height="3" fill="#5c7082" stroke="#5c7082" stroke-width="2"/>
+<rect x="749" y="469" width="4" height="4" fill="#51967d" stroke="#51967d" stroke-width="2"/>
+<text x="975.5" y="426.0" font-family="Microsoft YaHei, sans-serif" font-size="20" fill="#182737" text-anchor="middle">ASU 1 · Shared routing key K</text>
+<rect x="799" y="437" width="352" height="25" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="975.0" y="456.0" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#182737" text-anchor="middle">tenant_k_pp0</text>
+<rect x="799" y="468" width="352" height="25" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<text x="975.0" y="487.0" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#182737" text-anchor="middle">tenant_indexer_pp0</text>
+<text x="313.5" y="538.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Reads may span two ASUs</text>
+<text x="926.5" y="538.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Separate requests per namespace on the same ASU</text>
+<text x="36" y="613.0" font-family="Microsoft YaHei, sans-serif" font-size="18" fill="#465a70" text-anchor="start">The remaining key fields must match. Provision the namespaces and fixed object sizes on the target ASU.</text>
+</svg>
