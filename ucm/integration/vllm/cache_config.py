@@ -71,19 +71,7 @@ def cache_rank_count(parallel: Any) -> int:
     return count
 
 
-def configure_cache_numa(
-    config: dict[str, Any], device: Any, device_id: int, parallel: Any, local_rank: int
-) -> None:
-    """Pass real affinity, or the worker's position among all local DP workers.
-
-    The C++ store intersects online memory nodes with the process's allowed
-    nodes. Do not synthesize affinity from CPU numbers or use the Cache-domain
-    rank as the fallback rank when local DP metadata is available.
-    """
-    node = device.get_numa_node(device_id)
-    if node is not None:
-        config["cache_detected_numa_node"] = node
-        return
+def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
     local_dp_rank = getattr(parallel, "data_parallel_rank_local", None)
     local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
     if local_dp_rank is not None and local_dp_size > 0:
@@ -92,6 +80,10 @@ def configure_cache_numa(
         count = local_dp_size * local_workers
     else:
         model_size = parallel.pipeline_parallel_size * parallel.tensor_parallel_size
+        if model_size <= 0:
+            raise ValueError(
+                f"Invalid fallback NUMA model parallel size: {model_size}."
+            )
         rank = (
             int(parallel.data_parallel_index) * model_size + parallel.rank % model_size
         )
@@ -100,5 +92,23 @@ def configure_cache_numa(
         raise ValueError(
             f"Invalid fallback NUMA worker geometry: rank={rank}, count={count}."
         )
+    return rank, count
+
+
+def configure_cache_numa(
+    config: dict[str, Any], device: Any, device_id: int, parallel: Any, local_rank: int
+) -> None:
+    """Pass device affinity and the geometry needed if that node is unavailable."""
+    node = device.get_numa_node(device_id)
+    if node is not None:
+        config["cache_detected_numa_node"] = node
+    try:
+        rank, count = _fallback_numa_geometry(parallel, local_rank)
+    except (AttributeError, ValueError):
+        if node is None:
+            raise
+        # A usable affinity needs no rank hint. The native store can fall back
+        # to the Cache-domain rank for callers without worker geometry.
+        return
     config["cache_fallback_numa_rank"] = rank
     config["cache_fallback_numa_rank_count"] = count

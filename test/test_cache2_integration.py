@@ -165,6 +165,8 @@ def test_cache2_applies_capacity_and_numa_on_all_platforms(platform, monkeypatch
         "cache_buffer_capacity_gb": 64,
         "share_buffer_enable": True,
         "cache_detected_numa_node": 3,
+        "cache_fallback_numa_rank": 0,
+        "cache_fallback_numa_rank_count": 16,
     }
     device.get_numa_node.assert_called_once_with(0)
     cache_config.logger.warning_once.assert_not_called()
@@ -320,20 +322,21 @@ def test_cache_domain_counts_only_local_workers(world, local, count):
     )
 
 
-def test_affinity_short_circuits_fallback():
+def test_affinity_works_without_worker_geometry():
     config = {}
     cache_config.configure_cache_numa(config, NS(get_numa_node=lambda _: 6), 0, NS(), 0)
     assert config == {"cache_detected_numa_node": 6}
 
 
-def test_dp_isolation_does_not_restart_numa_slices():
+@pytest.mark.parametrize("affinity", [None, 6])
+def test_dp_isolation_does_not_restart_numa_slices(affinity):
     results = []
     for dp in range(2):
         for rank in range(8):
             config = {}
             cache_config.configure_cache_numa(
                 config,
-                NS(get_numa_node=lambda _: None),
+                NS(get_numa_node=lambda _: affinity),
                 dp * 8 + rank,
                 parallel(data_parallel_rank_local=dp, data_parallel_size_local=2),
                 rank,

@@ -169,13 +169,9 @@ public:
         /* Derived from the transfer mode: only a path that puts the host
          * segment into a device descriptor needs its device-visible alias. */
         dataOptions.requireHostDeviceAddress = cfg.sdmaDirect;
-        if (cfg.fallbackNumaRank.has_value()) {
-            dataOptions.fallbackNumaRank = static_cast<size_t>(*cfg.fallbackNumaRank);
-        }
+        // Older standalone callers know only their local Cache domain.
+        dataOptions.fallbackNumaRank = static_cast<size_t>(cfg.fallbackNumaRank.value_or(myRank_));
         if (!cfg.detectedNumaNode.has_value() && !cfg.fallbackNumaRank.has_value()) {
-            // Older standalone callers know only their local Cache domain.
-            // vLLM supplies machine-wide hints above, including local DP workers.
-            dataOptions.fallbackNumaRank = myRank_;
             UC_WARN("cache2 NUMA hints absent; using cache-domain rank={} ranks={}", myRank_,
                     rankCount_);
         }
