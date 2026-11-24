@@ -17,7 +17,7 @@ cmake --build build -j                        # 增量编译
 ```
 
 - fmt / spdlog 经 FetchContent 在线拉取，版本由父工程 `cmake/vendor/dep-*.cmake` 锁定，与主工程保持一致；首次配置需网络，失败时先检查网络再查脚本。
-- 依赖缓存位于 `build/_deps/`，删除整个 `build/` 目录即可重置。
+- 依赖缓存位于 `build/_deps/`，删除整个 `build/` 目录即可重置（或用 `bash scripts/clean-build.sh` 统一清理构建目录）。
 
 ## 验证流程约定（硬性）
 

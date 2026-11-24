@@ -40,7 +40,7 @@
 #             libibverbs-dev（三 provider 共存产物编入 RoCE）
 #
 # 两模式共用 build-kv 与 testTool build 目录（CMake 检测到参数变化自动重新配置）；
-# 切换模式后如遇缓存导致的配置异常，删除 build-kv 与 build 目录后重跑即可。
+# 切换模式后如遇缓存导致的配置异常，执行 bash scripts/clean-build.sh 清理后重跑即可。
 # ============================================================================
 
 # ---- 解释器检测（须在 set 之前：Ubuntu 的 sh 是 dash，不支持 -o pipefail 与
