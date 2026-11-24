@@ -1663,8 +1663,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     ).zeros((len(keys), 2), dtype="uint64"),
                     _get_event_handle=lambda: 1,
                     _submit_dump_task=submit,
-                    tp_size=tp_size,
-                    tp_rank=rank,
+                    dump_owner_size=tp_size,
+                    dump_owner_rank=rank,
+                    _async_dump_req_ids=set(),
                     tp_dump_tasks={},
                     file_size={"FA": 4096, "WA": 0},
                 )
@@ -1698,6 +1699,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             prefix_replay_tokens=128,
             _pending_async_load_dispatches={},
             _async_load_req_ids=set(),
+            _async_dump_req_ids=set(),
             hash_block_size=64,
             transient_group_ids={1},
             window_group_ids=[],
@@ -1767,6 +1769,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     prefix_replay_tokens=0,
                     _pending_async_load_dispatches={},
                     _async_load_req_ids=set(),
+                    _async_dump_req_ids=set(),
                     hash_block_size=64,
                     transient_group_ids=set(),
                     window_group_ids=[1],
@@ -1799,6 +1802,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 ]
                 self.assertTrue(load.load_async)
                 self.assertEqual(load.load_vllm_block_ids, ([10, 11], [21]))
+                self.assertEqual(connector._async_dump_req_ids, set())
                 # After remote completion, vLLM sends the entire block table.
                 output.scheduled_new_reqs = [
                     types.SimpleNamespace(
@@ -1812,6 +1816,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 self.assertEqual(request.vllm_block_ids, ([10, 11, 12], [20, 21, 22]))
                 self.assertEqual(resumed.load_keys, [])
                 self.assertEqual(resumed.dump_vllm_block_ids, ([12], [22]))
+                self.assertEqual(connector._async_dump_req_ids, {"req"})
                 output.scheduled_new_reqs = []
                 output.scheduled_cached_reqs = types.SimpleNamespace(
                     req_ids=["req"], new_block_ids=[([13], [23])], resumed_req_ids=set()
