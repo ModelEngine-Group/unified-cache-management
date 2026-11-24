@@ -1191,13 +1191,13 @@ _HISTOGRAM_METRICS = [
         for method in _CONNECTOR_INTERFACE_METHODS
     ],
     (
-        "layerwise_layer_load_duration_ms",
-        "Layerwise per-layer wall-clock time from layer load start to wait_for_layer_load return (ms)",
+        "layerwise_batch_load_duration_sum_ms",
+        "Sum of per-layer load durations within one Layerwise batch (ms)",
         _DURATION_MS_BUCKETS,
     ),
     (
-        "layerwise_batch_load_duration_sum_ms",
-        "Sum of per-layer load durations within one Layerwise batch (ms)",
+        "layerwise_batch_load_wait_duration_sum_ms",
+        "Sum of per-layer blocking wait_for_layer_load durations within one Layerwise batch (ms)",
         _DURATION_MS_BUCKETS,
     ),
     (

@@ -75,8 +75,8 @@ Connector 连接推理引擎与 UCM，适合先判断**前缀能复用多少，�
 | `ucm:connector_build_connector_worker_meta_duration_ms` | Connector 接口 `build_connector_worker_meta` 的耗时 |
 | `ucm:connector_update_connector_output_duration_ms` | Connector 接口 `update_connector_output` 的耗时 |
 | `ucm:connector_clear_connector_metadata_duration_ms` | Connector 接口 `clear_connector_metadata` 的耗时 |
-| `ucm:layerwise_layer_load_duration_ms` | 从某层开始加载到 wait_for_layer_load 返回的墙钟时长 |
 | `ucm:layerwise_batch_load_duration_sum_ms` | 一个 Layerwise 批次内各层加载时长之和 |
+| `ucm:layerwise_batch_load_wait_duration_sum_ms` | 一个 Layerwise 批次内各层 `wait_for_layer_load` 阻塞等待时长之和 |
 
 ### 1.2 Cache Store
 

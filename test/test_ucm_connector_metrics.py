@@ -2002,8 +2002,8 @@ def test_connector_dashboard_layout_and_metrics():
 
     layerwise_panels = panels[10:12]
     assert [panel["title"] for panel in layerwise_panels] == [
-        "Layerwise Per-Layer Load Duration",
         "Layerwise All-Layer Load Duration Sum",
+        "Layerwise All-Layer Load Wait Duration Sum",
     ]
     assert [panel["gridPos"] for panel in layerwise_panels] == [
         {"h": 8, "w": 12, "x": 0, "y": 40},
@@ -2012,17 +2012,24 @@ def test_connector_dashboard_layout_and_metrics():
     for panel, metric in zip(
         layerwise_panels,
         (
-            "layerwise_layer_load_duration_ms",
             "layerwise_batch_load_duration_sum_ms",
+            "layerwise_batch_load_wait_duration_sum_ms",
         ),
         strict=True,
     ):
-        assert len(panel["targets"]) == 3
+        assert len(panel["targets"]) == 4
+        assert [
+            target["legendFormat"].split(" ", maxsplit=1)[0]
+            for target in panel["targets"]
+        ] == ["avg", "p50", "p90", "p99"]
+        average_expr = panel["targets"][0]["expr"]
+        assert f"ucm:{metric}_sum" in average_expr
+        assert f"ucm:{metric}_count" in average_expr
         assert all(
-            f"ucm:{metric}_bucket" in target["expr"] for target in panel["targets"]
+            f"ucm:{metric}_bucket" in target["expr"] for target in panel["targets"][1:]
         )
         assert [
-            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"]
+            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"][1:]
         ] == [
             "histogram_quantile(0.5",
             "histogram_quantile(0.9",
@@ -2234,18 +2241,25 @@ def test_vllm_dashboard_shows_prefix_breakdown_without_summary_stats():
     }
     assert pie_targets["GPU/HBM Prefix Hit Tokens"] == (
         'sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name="$model_name", '
+        'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))\n'
+        "or\n"
+        'sum(increase(vllm:prefix_cache_hits_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
     assert pie_targets["UCM Prefix Hit Tokens"] == (
         'sum(increase(ucm:ucm_hit_tokens_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
-    assert "ucm:total_prefix_query_tokens_total" in pie_targets["Misses"]
-    assert "ucm:gpu_hbm_hit_tokens_total" in pie_targets["Misses"]
-    assert "ucm:ucm_hit_tokens_total" in pie_targets["Misses"]
-    assert "vllm:prefix_cache_queries_total" not in pie_targets["Misses"]
+    misses_primary, misses_fallback = pie_targets["Misses"].split("\nor\n")
+    assert "ucm:total_prefix_query_tokens_total" in misses_primary
+    assert "ucm:gpu_hbm_hit_tokens_total" in misses_primary
+    assert "ucm:ucm_hit_tokens_total" in misses_primary
+    assert "vllm:prefix_cache_queries_total" not in misses_primary
     assert "vllm:external_prefix_cache_hits_total" not in pie_targets["Misses"]
-    assert pie_targets["Misses"].startswith("clamp_min(")
+    assert misses_primary.startswith("clamp_min(")
+    assert "vllm:prefix_cache_queries_total" in misses_fallback
+    assert "vllm:prefix_cache_hits_total" in misses_fallback
+    assert misses_fallback.startswith("clamp_min(")
     assert "$__rate_interval" not in pie_targets["Misses"]
 
     assert panels["E2E Request Latency"]["gridPos"]["y"] == 8
@@ -2525,6 +2539,7 @@ def layerwise_connector(request):
     connector._dumped_layer_ids = set()
     connector._layerwise_load_start_by_layer = {}
     connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_layer_load_wait_duration_sum_ms = 0.0
     connector._layerwise_load_bytes = 0
     connector._layerwise_save_bytes = 0
     connector.need_load = False
@@ -2671,9 +2686,10 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
     connector._failure_req_ids = set()
     connector._layerwise_load_start_by_layer = {0: 1.0}
     connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_layer_load_wait_duration_sum_ms = 0.0
     connector._layerwise_load_bytes = 0
 
-    times = iter([1.03])
+    times = iter([1.01, 1.03])
     original_perf_counter = ucm_connector_module.time.perf_counter
     ucm_connector_module.time.perf_counter = lambda: next(times)
     try:
@@ -2682,14 +2698,15 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
         ucm_connector_module.time.perf_counter = original_perf_counter
 
     assert fake_ucmmetrics.updated == [
-        {"layerwise_layer_load_duration_ms": pytest.approx(30.0)},
         {
             "layerwise_batch_load_duration_sum_ms": pytest.approx(30.0),
+            "layerwise_batch_load_wait_duration_sum_ms": pytest.approx(20.0),
             "load_bytes_total": 128,
         },
     ]
     assert connector._layerwise_load_start_by_layer == {}
     assert connector._layerwise_layer_load_duration_sum_ms == 0.0
+    assert connector._layerwise_layer_load_wait_duration_sum_ms == 0.0
     assert connector._layerwise_load_bytes == 0
 
 

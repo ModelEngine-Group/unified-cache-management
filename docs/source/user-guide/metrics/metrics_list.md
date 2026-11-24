@@ -52,8 +52,8 @@ No Connector-specific Gauges are exported by default.
 | `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface `clear_connector_metadata`                |
 | `ucm:connector_get_handshake_metadata_duration_ms`      | Duration of Connector interface `get_handshake_metadata`                  |
 | `ucm:connector_set_xfer_handshake_metadata_pp_aware_duration_ms` | Duration of Connector interface `set_xfer_handshake_metadata_pp_aware` |
-| `ucm:layerwise_layer_load_duration_ms`                  | Per-layer wall-clock time from layer load start to `wait_for_layer_load` return |
 | `ucm:layerwise_batch_load_duration_sum_ms`              | Sum of per-layer load durations within one Layerwise batch               |
+| `ucm:layerwise_batch_load_wait_duration_sum_ms`         | Sum of per-layer blocking `wait_for_layer_load` durations within one Layerwise batch |
 
 ### 1.2 Cache Store
 
