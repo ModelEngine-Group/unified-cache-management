@@ -12,7 +12,10 @@
 #     2) testTool：链接上一步 build-kv 目录下的预构建 kv client 库
 #   npu：HCCP KV-over-RoCE 链路（NPU 数据面，详细 ABI 契约与算子库要求见
 #       kv_semantics/docs/guide/hccp-kv-over-roce-provider.md）：
-#     1) kv client：BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，
+#     1) kv client：BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，且
+#        BUILD_KV_CLIENT_PROVIDER_ROCE=ON 与 BUILD_KV_CLIENT_PROVIDER_FAKE=ON
+#        一并编入（三种 provider 共存一份产物，conf 改 transport.provider_type
+#        即在 FAKE 模拟 / CPU-over-RoCE / HCCP 三种链路间切换，无需重编），
 #        RUNTIME_ENVIRONMENT=ascend，KV_CLIENT_CANN_ROOT=$ASCEND_HOME_PATH
 #     2) testTool：经 CMAKE_CXX_FLAGS 注入 TESTTOOL_ENABLE_ASCEND 与 CANN 头文件
 #        路径（真 NPU 内存分配——HCCP 的 RegisterMemory 只收设备内存）
@@ -33,7 +36,8 @@
 # 前置依赖（缺失时脚本前置检测报错退出，按提示安装/准备后重跑）：
 #   共同：cmake(>=3.18) / g++(C++17) / python3（metrics 代码生成）
 #   cpu 额外：libibverbs-dev（RoCE）
-#   npu 额外：CANN（ascend-toolkit）已安装并 source set_env.sh（$ASCEND_HOME_PATH 有值）
+#   npu 额外：CANN（ascend-toolkit）已安装并 source set_env.sh（$ASCEND_HOME_PATH 有值）；
+#             libibverbs-dev（三 provider 共存产物编入 RoCE）
 #
 # 两模式共用 build-kv 与 testTool build 目录（CMake 检测到参数变化自动重新配置）；
 # 切换模式后如遇缓存导致的配置异常，删除 build-kv 与 build 目录后重跑即可。
@@ -114,8 +118,9 @@ MISSING=""
 for cmd in cmake g++ python3; do
     command -v "${cmd}" > /dev/null 2>&1 || MISSING="${MISSING} ${cmd}"
 done
-if [ "${MODE}" = "cpu" ]; then
+if [ "${MODE}" = "cpu" ] || [ "${MODE}" = "npu" ]; then
     # libibverbs 按头文件探测（跨发行版通用；CMake 配置阶段同样要求 infiniband/verbs.h）
+    # —— cpu 模式 RoCE 与 npu 模式三 provider（HCCP/RoCE/FAKE 共存）均编入 RoCE，均需要
     [ -f /usr/include/infiniband/verbs.h ] || MISSING="${MISSING} libibverbs-dev"
 fi
 if [ -n "${MISSING}" ]; then
@@ -135,6 +140,13 @@ else
     if ! grep -q "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE" "${KV_SEMANTICS_ROOT}/CMakeLists.txt"; then
         echo "[FAIL] 当前代码不含 HCCP provider 构建开关（${KV_SEMANTICS_ROOT}/CMakeLists.txt）"
         echo "       请切换到含 HCCP provider 的分支（feature_26A_kvclient / PR #1698 合入分支）后重跑"
+        exit 1
+    fi
+    # 三 provider 共存后 npu 模式同时编入 RoCE：CMake 对未定义 option 的传参不报错，
+    # 缺开关的分支会静默编出双 provider 而非三 provider，故同样前置检测
+    if ! grep -q "BUILD_KV_CLIENT_PROVIDER_ROCE" "${KV_SEMANTICS_ROOT}/CMakeLists.txt"; then
+        echo "[FAIL] 当前代码不含 RoCE provider 构建开关（${KV_SEMANTICS_ROOT}/CMakeLists.txt）"
+        echo "       请切换到同时含 HCCP 与 RoCE provider 的分支后重跑"
         exit 1
     fi
 fi
@@ -172,10 +184,11 @@ if [ "${MODE}" = "cpu" ]; then
         -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 else
-    echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，build-type=${BUILD_TYPE}）====="
+    echo "===== [1/2] 构建 kv client（HCCP KV-over-RoCE + RoCE + FAKE 三 provider：RUNTIME_ENVIRONMENT=ascend，BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_ROCE=ON，BUILD_KV_CLIENT_PROVIDER_FAKE=ON，build-type=${BUILD_TYPE}）====="
     cmake -S "${KV_SEMANTICS_ROOT}" -B "${KV_SEMANTICS_ROOT}/build-kv" \
         -DRUNTIME_ENVIRONMENT=ascend -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
         -DBUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON \
+        -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON \
         -DKV_CLIENT_CANN_ROOT="${ASCEND_HOME_PATH}"
     cmake --build "${KV_SEMANTICS_ROOT}/build-kv" --target kv_client -j "$(nproc)"
 fi
@@ -210,7 +223,8 @@ if [ "${MODE}" = "cpu" ]; then
     echo "     ./build/testTool <test conf 副本> <kv client 副本>"
     echo "     建链 + region 注册完成后 Ctrl+C 断链退出（日志确认 Ctrl+C received, exiting）"
 else
-    echo "下一步（NPU 建链断链验证，详见 sop/2. NPU建链断链-SOP.md）："
+    echo "下一步（NPU 建链断链验证，详见 sop/2. NPU建链断链-SOP.md；FAKE 模拟与 RoCE 真链路也已编入，"
+    echo "       conf 改 transport.provider_type 即在 FAKE / CPU-over-RoCE / HCCP 三种链路间切换，无需重编）："
     echo "  1. 复制 conf/kv_client.conf 为副本：transport.provider_type 改 HCCP_KV_OVER_ROCE；"
     echo "     transport.hccp_kv_roce_lib_path 指向算子库主体绝对路径（模板段已内置）；对端 IP 填在"
     echo "     asu_info.N 的 local.comm_id 字段（对端 KV store 以 HCCP 后端就绪）"
