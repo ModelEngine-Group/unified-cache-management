@@ -68,9 +68,9 @@ public:
     int64_t GetBufferSize() const;
     /** 值缓冲块数（buffercount），建链时分配注册一次 */
     int GetBufferCount() const;
-    /** 值缓冲内存类型（buffertype）：host 主机内存 / device 设备内存 */
+    /** 值缓冲内存类型（buffertype）：cpu 主机内存 / gpu CUDA 显存 / npu ACL NPU 内存 */
     std::string GetBufferType() const;
-    /** 设备 ID（deviceid），buffertype=device 时使用 */
+    /** 设备 ID（deviceid），buffertype=gpu/npu 时使用 */
     int GetDeviceId() const;
     /** 读 log 的位置（readlogdir） */
     std::string GetReadLogDir() const;

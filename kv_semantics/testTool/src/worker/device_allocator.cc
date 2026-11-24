@@ -27,7 +27,6 @@
 #include <cstring>
 #include <unordered_map>
 #include "kv_client.h"
-#include "log/logger_manager.h"
 
 // ---- 设备 SDK 头：仅宏编入时引入（可移植性约束——架构相关特性预处理宏隔离）----
 #ifdef TESTTOOL_ENABLE_CUDA
@@ -40,11 +39,13 @@
 
 namespace {
 
+#if defined(TESTTOOL_ENABLE_CUDA) || defined(TESTTOOL_ENABLE_ASCEND)
 /** 值向上对齐到 alignment 的整数倍（alignment 须为正的 2 的幂） */
 std::size_t AlignUp(std::size_t value, std::size_t alignment)
 {
     return (value + alignment - 1) / alignment * alignment;
 }
+#endif
 
 #ifdef TESTTOOL_ENABLE_CUDA
 
@@ -247,21 +248,13 @@ private:
 
 }  // namespace
 
-HostAllocator::HostAllocator(bool deviceSemantics) : deviceSemantics_(deviceSemantics) {}
-
 bool HostAllocator::Allocate(std::size_t size, std::uint64_t &addr, std::string &err)
 {
     if (size == 0) {
         err = "host memory allocate size must be positive";
         return false;
     }
-    // device 语义内存须对齐到协议对齐粒度（真实设备注册约束，模拟时保持同一对齐语义）
-    void *ptr = nullptr;
-    if (deviceSemantics_) {
-        ptr = std::aligned_alloc(kv::kAlignmentBytes, AlignUp(size, kv::kAlignmentBytes));
-    } else {
-        ptr = std::malloc(size);
-    }
+    void *ptr = std::malloc(size);
     if (ptr == nullptr) {
         err = "host memory allocate failed for " + std::to_string(size) + " bytes";
         return false;
@@ -302,12 +295,12 @@ bool HostAllocator::Read(void *hostData, std::uint64_t addr, std::size_t size, s
     return true;
 }
 
-bool HostAllocator::IsDeviceMemory() const { return deviceSemantics_; }
+bool HostAllocator::IsDeviceMemory() const { return false; }
 
 std::unique_ptr<DeviceAllocator> CreateDeviceAllocator(const std::string &bufferType,
                                                        std::int32_t deviceId, std::string &err)
 {
-    if (bufferType == "cpu") { return std::make_unique<HostAllocator>(false); }
+    if (bufferType == "cpu") { return std::make_unique<HostAllocator>(); }
     if (bufferType == "gpu") {
         if (deviceId < 0) {
             err = "deviceid must be >= 0 when buffertype=gpu";
@@ -316,12 +309,13 @@ std::unique_ptr<DeviceAllocator> CreateDeviceAllocator(const std::string &buffer
 #ifdef TESTTOOL_ENABLE_CUDA
         return std::make_unique<CudaAllocator>(deviceId);
 #else
-        // 未编入 CUDA SDK：以主机内存模拟 device 语义（memoryType 仍按 DEVICE 注册走
-        // 完整链路），便于无 GPU 环境先行验证；真机开 TESTTOOL_ENABLE_CUDA 编入真实现
-        LOG_WARN(
-            "DeviceAllocator: TESTTOOL_ENABLE_CUDA not defined, buffertype=gpu falls back to "
-            "host memory simulating device semantics");
-        return std::make_unique<HostAllocator>(true);
+        // 未编入 CUDA SDK：直接报错退出，不做主机内存模拟——模拟会让测试者误以为
+        // GPU 链路已测通（注册类型仍为 DEVICE，实际无真实设备内存），假阳性结果
+        err =
+            "buffertype=gpu requires TESTTOOL_ENABLE_CUDA build "
+            "(rebuild with -DTESTTOOL_ENABLE_CUDA=ON); host-memory simulation is removed, "
+            "use buffertype=cpu for host-memory testing";
+        return nullptr;
 #endif
     }
     if (bufferType == "npu") {
@@ -332,11 +326,14 @@ std::unique_ptr<DeviceAllocator> CreateDeviceAllocator(const std::string &buffer
 #ifdef TESTTOOL_ENABLE_ASCEND
         return std::make_unique<AclAllocator>(deviceId);
 #else
-        // 未编入 ACL SDK：以主机内存模拟 device 语义（同上）
-        LOG_WARN(
-            "DeviceAllocator: TESTTOOL_ENABLE_ASCEND not defined, buffertype=npu falls back to "
-            "host memory simulating device semantics");
-        return std::make_unique<HostAllocator>(true);
+        // 未编入 ACL SDK：直接报错退出，不做主机内存模拟——模拟会让测试者误以为
+        // NPU 链路已测通（注册类型仍为 DEVICE，实际无真实设备内存），假阳性结果
+        err =
+            "buffertype=npu requires TESTTOOL_ENABLE_ASCEND build "
+            "(rebuild with -DTESTTOOL_ENABLE_ASCEND=ON -DTESTTOOL_ASCEND_ROOT=<CANN dir>, "
+            "or bash scripts/build-kv-link.sh --mode npu); host-memory simulation is removed, "
+            "use buffertype=cpu for host-memory testing";
+        return nullptr;
 #endif
     }
     err = "invalid buffertype '" + bufferType + "', expect cpu, gpu or npu";
