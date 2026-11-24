@@ -282,11 +282,15 @@ class OffloadTest(unittest.TestCase):
         self.assertAlmostEqual(values[5], 5.0)
 
     def test_load_metrics_count_bytes_and_publish_only_after_completion(self):
-        metrics = dict(payload_ms=0.0, io_queue_ms=0.0, submit_ms=0.0,
+        metrics = dict(payload_ms=0.0, payload_cpu_ms=0.0,
+                       addr_ms=0.0, tolist_ms=0.0, pack_ms=0.0,
+                       io_queue_ms=0.0, submit_ms=0.0,
                        job_latency_sum_ms=0.0, publish_lag_ms=0.0,
                        bytes=0, segments=0, jobs=0)
         payload = types.SimpleNamespace(sizes=[16, 32])
-        pages = types.SimpleNamespace(payloads=lambda layer: [payload, payload])
+        pages = types.SimpleNamespace(
+            payloads=lambda layer, timings=None: [payload, payload]
+        )
         self.linker.layer_done_counter.complete = Mock()
         with ThreadPoolExecutor(max_workers=1) as executor:
             loading = executor.submit(self.linker._load_layers, 0,

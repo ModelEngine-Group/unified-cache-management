@@ -12,7 +12,7 @@ from dataclasses import replace
 from functools import wraps
 from itertools import count
 from threading import Lock
-from time import perf_counter, sleep
+from time import perf_counter, sleep, thread_time
 from uuid import uuid4
 
 import torch.distributed as dist
@@ -475,6 +475,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
         event_ms = prepare_ms = forward_ms = layers_ms = 0.0
         metrics = dict(
             payload_ms=0.0,
+            payload_cpu_ms=0.0,
+            addr_ms=0.0,
+            tolist_ms=0.0,
+            pack_ms=0.0,
             io_queue_ms=0.0,
             submit_ms=0.0,
             job_latency_sum_ms=0.0,
@@ -525,7 +529,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     "SGLang UCM V2 load: batch=%s requests=%d total_ms=%.3f "
                     "queue_ms=%.3f event_ms=%.3f prepare_ms=%.3f "
                     "forward_ms=%.3f layers_ms=%.3f "
-                    "payload_ms=%.3f io_queue_ms=%.3f submit_ms=%.3f "
+                    "payload_ms=%.3f payload_cpu_ms=%.3f "
+                    "addr_ms=%.3f tolist_ms=%.3f pack_ms=%.3f "
+                    "io_queue_ms=%.3f submit_ms=%.3f "
                     "job_latency_sum_ms=%.3f publish_lag_ms=%.3f "
                     "bytes=%d segments=%d jobs=%d",
                     index,
@@ -537,6 +543,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     forward_ms,
                     layers_ms,
                     metrics["payload_ms"],
+                    metrics["payload_cpu_ms"],
+                    metrics["addr_ms"],
+                    metrics["tolist_ms"],
+                    metrics["pack_ms"],
                     metrics["io_queue_ms"],
                     metrics["submit_ms"],
                     metrics["job_latency_sum_ms"],
@@ -563,12 +573,20 @@ class UcmDirectLinker(UnifiedCacheLinker):
         next_complete = 0
         try:
             for layer in range(self.layout.num_layers):
+                payload_timings = metrics if self._log_performance else None
                 payload_start = perf_counter()
-                submissions = [
-                    (payloads, token)
-                    for pages, token in prepared
-                    if (payloads := pages.payloads(layer))
-                ]
+                cpu_start = thread_time() if payload_timings is not None else 0.0
+                submissions = []
+                for pages, token in prepared:
+                    payloads = (
+                        pages.payloads(layer, timings=payload_timings)
+                        if payload_timings is not None
+                        else pages.payloads(layer)
+                    )
+                    if payloads:
+                        submissions.append((payloads, token))
+                if payload_timings is not None:
+                    metrics["payload_cpu_ms"] += (thread_time() - cpu_start) * 1e3
                 metrics["payload_ms"] += (perf_counter() - payload_start) * 1e3
                 # All pages of a section/layer share the same fragment geometry.
                 # Count once per submission rather than traversing every page again.

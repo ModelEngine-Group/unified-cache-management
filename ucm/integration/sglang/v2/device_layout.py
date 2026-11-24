@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from time import perf_counter
 
 import numpy as np
 import torch.distributed as dist
@@ -303,8 +304,9 @@ class PreparedPages:
     # Retain source tensors until the job ends, including a sliced index view.
     transfers: tuple
 
-    def payloads(self, layer=None):
+    def payloads(self, layer=None, timings=None):
         """Build only this layer on load; dump combines every layer in one job."""
+        addr_start = perf_counter() if timings is not None else 0.0
         layouts = self.layout.layers if layer is None else (self.layout.layers[layer],)
         matrices, sizes, offsets = [], [], []
         for layout in layouts:
@@ -314,12 +316,20 @@ class PreparedPages:
             sizes.extend(layout.sizes)
             offsets.extend(layout.offsets)
         if not matrices:
+            if timings is not None:
+                timings["addr_ms"] += (perf_counter() - addr_start) * 1e3
             return []
         pointers = matrices[0] if len(matrices) == 1 else np.concatenate(matrices, axis=1)
+        if timings is not None:
+            tolist_start = perf_counter()
+            timings["addr_ms"] += (tolist_start - addr_start) * 1e3
         # Convert the whole matrix in NumPy, avoiding a Python ndarray view and
         # a tolist call per page. The existing binding still needs one payload
         # per page; resolve its class only once for the batch.
         pointer_rows = pointers.tolist()
+        if timings is not None:
+            pack_start = perf_counter()
+            timings["tolist_ms"] += (pack_start - tolist_start) * 1e3
         payload_type = proxy().BlockPayload
         result = []
         for row in pointer_rows:
@@ -328,4 +338,6 @@ class PreparedPages:
             payload.sizes = sizes
             payload.offsets = offsets
             result.append(payload)
+        if timings is not None:
+            timings["pack_ms"] += (perf_counter() - pack_start) * 1e3
         return result
