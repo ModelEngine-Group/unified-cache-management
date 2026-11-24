@@ -2004,14 +2004,15 @@ jobs:
               docs = {'status':'skipped', 'reason':'RTD is not configured for this fork'}
           result = {'status':'complete', 'repository':os.environ['GH_REPO'],
                     'source_sha':os.environ['SOURCE_SHA'], 'tag':os.environ['RELEASE_TAG'],
-                    'actions_run_id':int(os.environ['GITHUB_RUN_ID']), 'release':release,
+                    'actions_run_id':int(os.environ['GITHUB_RUN_ID']),
+                    'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']), 'release':release,
                     'pypi':state['pypi'], 'toolkit':state['toolkit_package'], 'chart':chart, 'docs':docs}
           Path('out/acceptance.json').write_text(json.dumps(result, indent=2))
           PY
           cat out/acceptance.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4.6.2
         with:
-          name: ucm-release-acceptance-run-${{ github.run_id }}
+          name: ucm-release-acceptance-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: out/acceptance.json
           retention-days: 90
 

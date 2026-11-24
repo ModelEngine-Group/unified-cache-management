@@ -17,6 +17,85 @@ def _load(name: str) -> dict[str, object]:
     return value
 
 
+def test_management_callbacks_are_scoped_and_runtime_tests_run_in_pr_ci() -> None:
+    management = _load("release-operations.yml")
+    assert "actions" not in management["permissions"]
+    assert "workflow_run" not in management["on"]
+    assert management["on"]["issue_comment"]["types"] == ["created"]
+    condition = management["jobs"]["operate"]["if"]
+    assert "comment.user.type != 'Bot'" in condition
+    assert "issue.pull_request == null" in condition
+    assert all(
+        "unittest" not in step.get("run", "")
+        for step in management["jobs"]["operate"]["steps"]
+    )
+    assert not management["on"]["workflow_dispatch"]
+    contracts = _load("release-operations-check.yml")
+    paths = contracts["on"]["pull_request"]["paths"]
+    assert ".github/release-operations/**" in paths
+    assert ".github/ISSUE_TEMPLATE/900-release-checklist.yml" in paths
+    assert contracts["permissions"] == {"contents": "read"}
+    assert "unittest discover" in contracts["jobs"]["contracts"]["steps"][-1]["run"]
+
+
+def test_review_observer_is_removed() -> None:
+    assert not (WORKFLOWS / "release-review-observer.yml").exists()
+
+
+def test_tag_version_gate_blocks_only_v_tags_and_preserves_other_routes() -> None:
+    workflow = _load("release-tag.yml")
+    assert workflow["on"]["push"]["tags"] == ["v*", "draft/v*", "nightly/v*"]
+    jobs = workflow["jobs"]
+    gate = jobs["version-check"]
+    assert gate["if"] == "${{ startsWith(github.ref, 'refs/tags/v') }}"
+    assert gate["needs"] == "classify-tag"
+    assert jobs["release"]["needs"] == ["classify-tag", "version-check"]
+    condition = jobs["release"]["if"]
+    assert "!cancelled()" in condition
+    assert "!startsWith(github.ref, 'refs/tags/v')" in condition
+    assert "needs.version-check.result == 'success'" in condition
+    step = next(
+        s for s in gate["steps"] if s.get("run", "").endswith("delivery.py gate")
+    )
+    assert step["env"]["SOURCE_SHA"] == "${{ github.sha }}"
+    assert step["env"]["UCM_PROJECT_TOKEN"] == "${{ secrets.UCM_PROJECT_TOKEN }}"
+    assert (
+        gate["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+
+
+def test_release_reruns_are_reported_from_lifecycle_events_and_direct_result_job() -> (
+    None
+):
+    status = _load("release-delivery-status.yml")
+    assert status["on"]["workflow_run"]["types"] == ["in_progress", "completed"]
+    assert (
+        status["jobs"]["report"]["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+    assert "head_branch, 'v'" in status["jobs"]["report"]["if"]
+    result = _load("release-tag.yml")["jobs"]["delivery-result"]
+    assert "always()" in result["if"]
+    assert "refs/tags/v" in result["if"]
+    assert result["needs"] == ["classify-tag", "version-check", "release"]
+    env = result["steps"][-1]["env"]
+    assert env["RELEASE_RESULT"] == "${{ needs.release.result }}"
+    assert result["concurrency"] == status["concurrency"]
+    assert _load("release-operations.yml")["concurrency"] == status["concurrency"]
+
+
+def test_delivery_acceptance_identifies_its_manual_rerun_attempt() -> None:
+    delivery = _load("release-ucm.yml")["jobs"]["verify-release-delivery"]
+    upload = delivery["steps"][-1]
+    assert (
+        upload["with"]["name"]
+        == "ucm-release-acceptance-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
+    )
+    record = next(s["run"] for s in delivery["steps"] if "run" in s)
+    assert "'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT'])" in record
+
+
 def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
     dockerfile = (ROOT / ".github/release/docker/Dockerfile.runtime").read_text(
         encoding="utf-8"
@@ -445,7 +524,9 @@ def test_cross_job_artifact_names_survive_failed_job_reruns() -> None:
                 artifact = step.get("with", {}).get("name", "")
                 if "github.run_attempt" in artifact:
                     # Evidence is scoped to an attempt; downstream build inputs stay run-scoped.
-                    assert artifact.startswith("ucm-release-cleanup-")
+                    assert artifact.startswith(
+                        ("ucm-release-cleanup-", "ucm-release-acceptance-")
+                    )
     assert "GITHUB_RUN_ATTEMPT" in text  # candidate Builder tags remain retry-scoped.
 
 
