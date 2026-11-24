@@ -281,14 +281,17 @@ def inject_pth():
 
         target = os.path.join(site_packages, pth_name)
 
-        if not os.path.exists(target):
-            if sys.platform == "win32":
-                import shutil
+        # Always replace: a stale/dangling .pth must not survive a
+        # reinstall from a new source directory.
+        if os.path.lexists(target):
+            os.remove(target)
+        if sys.platform == "win32":
+            import shutil
 
-                shutil.copy(source, target)
-            else:
-                os.symlink(source, target)
-            print("Injection successful.")
+            shutil.copy(source, target)
+        else:
+            os.symlink(source, target)
+        print("Injection successful.")
 
     except Exception as e:
         print(f"\033[93mWarning: Failed to inject .pth for editable mode: {e}\033[0m")
