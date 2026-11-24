@@ -21,10 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <optional>
+#include <pybind11/numpy.h>
 #include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -365,6 +367,48 @@ PYBIND11_MODULE(ucm_proxy, m)
                 CheckStatus(worker.SubmitPrefetch(jobId, std::move(token)));
             },
             py::call_guard<py::gil_scoped_release>())
+        .def(
+            "submit_get_arrays",
+            [](StoreWorker& worker, std::size_t jobId,
+               const py::array_t<std::uint64_t, py::array::c_style>& pointers,
+               const std::vector<std::size_t>& sizes,
+               const std::vector<std::size_t>& offsets, AddressedToken token,
+               const IoContext& context) {
+                // Validate with the GIL held; keep the input array alive until all
+                // addresses have been copied into Store-owned descriptors.
+                const auto info = pointers.request();
+                if (info.ndim != 2 || static_cast<std::size_t>(info.shape[0]) != token.keys.size()
+                    || static_cast<std::size_t>(info.shape[1]) != sizes.size()
+                    || sizes.size() != offsets.size()) {
+                    throw py::value_error("payload array shape must match token keys and sizes/offsets");
+                }
+                static_assert(sizeof(std::uintptr_t) == sizeof(std::uint64_t));
+                const auto* addresses = static_cast<const std::uint64_t*>(info.ptr);
+                py::gil_scoped_release release;
+                const auto packStart = std::chrono::steady_clock::now();
+                std::vector<BlockPayload> payloads(token.keys.size());
+                for (std::size_t row = 0; row < payloads.size(); ++row) {
+                    auto& payload = payloads[row];
+                    payload.pointers.reserve(sizes.size());
+                    for (std::size_t col = 0; col < sizes.size(); ++col) {
+                        payload.pointers.push_back(
+                            reinterpret_cast<void*>(addresses[row * sizes.size() + col]));
+                    }
+                    payload.sizes = sizes;
+                    payload.offsets = offsets;
+                }
+                const auto submitStart = std::chrono::steady_clock::now();
+                CheckStatus(
+                    worker.SubmitGet(jobId, std::move(payloads), std::move(token), context));
+                const auto submitEnd = std::chrono::steady_clock::now();
+                // Capture both intervals before reacquiring the GIL. Returning
+                // plain C++ values keeps Python conversion outside these timings.
+                return std::make_pair(
+                    std::chrono::duration<double, std::milli>(submitStart - packStart).count(),
+                    std::chrono::duration<double, std::milli>(submitEnd - submitStart).count());
+            },
+            py::arg("job_id"), py::arg("pointers").noconvert(), py::arg("sizes"),
+            py::arg("offsets"), py::arg("token"), py::arg("context"))
         .def(
             "submit_get",
             [](StoreWorker& worker, std::size_t jobId, std::vector<BlockPayload> payloads,
