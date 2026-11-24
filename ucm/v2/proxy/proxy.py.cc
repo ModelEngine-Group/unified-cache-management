@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -384,6 +385,7 @@ PYBIND11_MODULE(ucm_proxy, m)
                 static_assert(sizeof(std::uintptr_t) == sizeof(std::uint64_t));
                 const auto* addresses = static_cast<const std::uint64_t*>(info.ptr);
                 py::gil_scoped_release release;
+                const auto packStart = std::chrono::steady_clock::now();
                 std::vector<BlockPayload> payloads(token.keys.size());
                 for (std::size_t row = 0; row < payloads.size(); ++row) {
                     auto& payload = payloads[row];
@@ -395,8 +397,15 @@ PYBIND11_MODULE(ucm_proxy, m)
                     payload.sizes = sizes;
                     payload.offsets = offsets;
                 }
+                const auto submitStart = std::chrono::steady_clock::now();
                 CheckStatus(
                     worker.SubmitGet(jobId, std::move(payloads), std::move(token), context));
+                const auto submitEnd = std::chrono::steady_clock::now();
+                // Capture both intervals before reacquiring the GIL. Returning
+                // plain C++ values keeps Python conversion outside these timings.
+                return std::make_pair(
+                    std::chrono::duration<double, std::milli>(submitStart - packStart).count(),
+                    std::chrono::duration<double, std::milli>(submitEnd - submitStart).count());
             },
             py::arg("job_id"), py::arg("pointers").noconvert(), py::arg("sizes"),
             py::arg("offsets"), py::arg("token"), py::arg("context"))

@@ -479,6 +479,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
             addr_ms=0.0,
             tolist_ms=0.0,
             pack_ms=0.0,
+            native_pack_ms=0.0,
+            native_submit_ms=0.0,
+            native_timed_jobs=0,
             io_queue_ms=0.0,
             submit_ms=0.0,
             job_latency_sum_ms=0.0,
@@ -532,6 +535,7 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     "payload_ms=%.3f payload_cpu_ms=%.3f "
                     "addr_ms=%.3f tolist_ms=%.3f pack_ms=%.3f "
                     "io_queue_ms=%.3f submit_ms=%.3f "
+                    "native_pack_ms=%.3f native_submit_ms=%.3f native_timed_jobs=%d "
                     "job_latency_sum_ms=%.3f publish_lag_ms=%.3f "
                     "bytes=%d segments=%d jobs=%d payload_mode=%s",
                     index,
@@ -549,6 +553,9 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     metrics["pack_ms"],
                     metrics["io_queue_ms"],
                     metrics["submit_ms"],
+                    metrics["native_pack_ms"],
+                    metrics["native_submit_ms"],
+                    metrics["native_timed_jobs"],
                     metrics["job_latency_sum_ms"],
                     metrics["publish_lag_ms"],
                     metrics["bytes"],
@@ -641,11 +648,18 @@ class UcmDirectLinker(UnifiedCacheLinker):
                     if use_arrays
                     else self.runtime.submit_get
                 )
-                self._submit_job(submit, result, payloads, token, context)
+                native_timings = self._submit_job(submit, result, payloads, token, context)
             finally:
                 metrics["submit_ms"] += (perf_counter() - result.submitted_at) * 1e3
             metrics["jobs"] += 1
             jobs.append(result)
+            # Older array bindings return None. Count measured jobs so their
+            # missing measurements cannot be mistaken for zero native cost.
+            if use_arrays and self._log_performance and native_timings is not None:
+                native_pack_ms, native_submit_ms = native_timings
+                metrics["native_pack_ms"] = metrics.get("native_pack_ms", 0.0) + native_pack_ms
+                metrics["native_submit_ms"] = metrics.get("native_submit_ms", 0.0) + native_submit_ms
+                metrics["native_timed_jobs"] = metrics.get("native_timed_jobs", 0) + 1
 
     def _publish_load_layer(self, index, layer, layer_jobs, metrics):
         results = [job.result() for job in layer_jobs[layer]]
@@ -1016,9 +1030,10 @@ class UcmDirectLinker(UnifiedCacheLinker):
 
     def _submit_job(self, submit, completion, *args, resources=None):
         job_id = next(self._job_ids)
-        submit(job_id, *args)
+        submission_result = submit(job_id, *args)
         self._jobs[job_id] = (completion, resources)
         self._schedule_poll()
+        return submission_result
 
     def _schedule_poll(self):
         if not self._poll_queued:
