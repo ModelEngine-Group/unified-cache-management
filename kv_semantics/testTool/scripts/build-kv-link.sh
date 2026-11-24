@@ -230,7 +230,7 @@ if [ "${MODE}" = "cpu" ]; then
     echo "     ./build/testTool <test conf 副本> <kv client 副本>"
     echo "     建链 + region 注册完成后 Ctrl+C 断链退出（日志确认 Ctrl+C received, exiting）"
 else
-    echo "下一步（NPU 建链断链验证，详见 sop/2. NPU建链断链-SOP.md；FAKE 模拟与 RoCE 真链路也已编入，"
+    echo "下一步（NPU 建链断链验证，详见 sop/2.npu-connect-disconnect-sop.md；FAKE 模拟与 RoCE 真链路也已编入，"
     echo "       conf 改 transport.provider_type 即在 FAKE / CPU-over-RoCE / HCCP 三种链路间切换，无需重编）："
     echo "  1. 复制 conf/kv_client.conf 为副本：transport.provider_type 改 HCCP_KV_OVER_ROCE；"
     echo "     transport.hccp_kv_roce_lib_path 指向算子库主体绝对路径（模板段已内置）；对端 IP 填在"
