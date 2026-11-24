@@ -50,6 +50,13 @@ public:
     virtual ~ViewServer() = default;
     // Fetches the current global view.
     virtual Status GetGlobalView(GlobalView& view) = 0;
+    // Fetches the complete namespace views. Legacy single-view servers wrap
+    // the result under kDefaultKvNsId; M800 services return every namespace.
+    // The output is left unchanged when fetching fails.
+    virtual Status GetAllViews(std::unordered_map<KvNsId, GlobalView>& views);
+    // Fetches one namespace view. The output is left unchanged when the
+    // namespace is missing or fetching fails.
+    virtual Status GetGlobalViewByKvnsId(KvNsId nsId, GlobalView& view);
     // Returns whether a fetched view should replace the published view.
     virtual bool ShouldPublishView(const GlobalView& publishedView,
                                    const GlobalView& fetchedView) const;

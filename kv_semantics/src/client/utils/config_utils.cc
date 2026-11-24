@@ -159,6 +159,10 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
         } else if (key == "view.config_path" || key == "viewConfigPath" ||
                    key == "view_config_path") {
             config.attrs["view.config_path"] = value;
+        } else if (key.rfind("view.", 0) == 0) {
+            // View provider and scheduler settings are consumed through the
+            // generic attrs map, including the M800 role-specific keys.
+            config.attrs[key] = value;
         } else if (key == "waitTimeoutMs" || key == "wait_timeout_ms") {
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;

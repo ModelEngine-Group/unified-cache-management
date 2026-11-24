@@ -28,7 +28,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
+#include "m800_live_smoke_watch.h"
 #include "view/m800_view_master_server.h"
 #include "view/m800_view_slave_server.h"
 
@@ -77,6 +79,13 @@ struct StopGuard {
         if (master) { master->Stop(); }
     }
 };
+
+std::uint64_t MaxViewEpoch(const std::unordered_map<kv::KvNsId, kv::GlobalView>& views)
+{
+    std::uint64_t epoch{0};
+    for (const auto& item : views) { epoch = std::max(epoch, item.second.viewEpoch); }
+    return epoch;
+}
 
 int Run(int argc, const char** argv)
 {
@@ -132,8 +141,8 @@ int Run(int argc, const char** argv)
     if (!master) { return Fail("failed to create master"); }
     StopGuard guard{master, worker};
 
-    auto universe = kv::CreateViewUniverse();
-    const auto beforeStart = worker->GetAllViews(*universe);
+    std::unordered_map<kv::KvNsId, kv::GlobalView> universe;
+    const auto beforeStart = worker->GetAllViews(universe);
     if (beforeStart.code != kv::StatusCode::CONNECTION_ERROR) {
         return Fail("worker unexpectedly succeeded before Master started", &beforeStart);
     }
@@ -143,17 +152,13 @@ int Run(int argc, const char** argv)
     if (!startStatus.ok()) { return Fail("Master Start failed", &startStatus); }
     std::cout << "[OK] Master started with real Agent\n";
 
-    const auto firstFetch = worker->GetAllViews(*universe);
+    const auto firstFetch = worker->GetAllViews(universe);
     if (!firstFetch.ok()) { return Fail("Slave first full fetch failed", &firstFetch); }
-    if (universe->Empty()) { return Fail("first universe is empty"); }
-    const auto firstEpoch = universe->GetGlobalEpoch();
+    if (universe.empty()) { return Fail("first universe is empty"); }
+    const auto firstEpoch = MaxViewEpoch(universe);
     if (firstEpoch == 0) { return Fail("first globalEpoch is zero"); }
 
-    const auto nsIds = universe->GetAllNsIds();
-    for (const auto nsId : nsIds) {
-        kv::GlobalView view;
-        const auto viewStatus = universe->GetView(nsId, view);
-        if (!viewStatus.ok()) { return Fail("GetView failed for namespace", &viewStatus); }
+    for (const auto& [nsId, view] : universe) {
         if (view.viewEpoch != firstEpoch || view.viewId != nsId) {
             return Fail("viewEpoch/viewId does not match unified contract");
         }
@@ -174,10 +179,11 @@ int Run(int argc, const char** argv)
     if (!requiredPool.empty()) {
         const auto requiredId = kv::M800PoolNameToKvNsId(requiredPool);
         kv::GlobalView requiredView;
-        const auto requiredStatus = universe->GetView(requiredId, requiredView);
-        if (!requiredStatus.ok()) {
-            return Fail("required pool is missing: " + requiredPool, &requiredStatus);
+        const auto requiredIter = universe.find(requiredId);
+        if (requiredIter == universe.end()) {
+            return Fail("required pool is missing: " + requiredPool);
         }
+        requiredView = requiredIter->second;
         std::cout << "[OK] required pool is present: " << requiredPool << ", ns=" << requiredId
                   << '\n';
     }
@@ -185,25 +191,24 @@ int Run(int argc, const char** argv)
     if (!forbiddenPool.empty()) {
         const auto forbiddenId = kv::M800PoolNameToKvNsId(forbiddenPool);
         kv::GlobalView forbiddenView;
-        const auto forbiddenStatus = universe->GetView(forbiddenId, forbiddenView);
-        if (forbiddenStatus.code != kv::StatusCode::NOT_FOUND) {
-            return Fail("forbidden pool is unexpectedly present: " + forbiddenPool,
-                        &forbiddenStatus);
+        if (universe.find(forbiddenId) != universe.end()) {
+            return Fail("forbidden pool is unexpectedly present: " + forbiddenPool);
         }
         std::cout << "[OK] forbidden pool is absent: " << forbiddenPool << '\n';
     }
 
-    const auto secondFetch = worker->GetAllViews(*universe);
+    const auto secondFetch = worker->GetAllViews(universe);
     if (!secondFetch.ok()) { return Fail("Slave second fetch/304 failed", &secondFetch); }
-    if (universe->GetGlobalEpoch() != firstEpoch) {
+    if (MaxViewEpoch(universe) != firstEpoch) {
         return Fail("epoch changed unexpectedly during immediate second fetch");
     }
     std::cout << "[OK] second fetch is an OK/no-op at epoch=" << firstEpoch << '\n';
     std::cout << "[OK] bad master address failover succeeded\n";
 
     if (watchSeconds > 0) {
-        bool addSeen = expectedAddPool.empty();
-        bool removeSeen = expectedRemovePool.empty();
+        const kv::test::M800LiveSmokeWatchOptions watchOptions{watchSeconds};
+        bool addSeen = false;
+        bool removeSeen = false;
         const auto expectedAddId =
             expectedAddPool.empty() ? kv::KvNsId{0} : kv::M800PoolNameToKvNsId(expectedAddPool);
         const auto expectedRemoveId = expectedRemovePool.empty()
@@ -217,13 +222,15 @@ int Run(int argc, const char** argv)
         std::size_t lastAsuCount{0};
         std::uint64_t lastAsuChangeEpoch{0};
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(watchSeconds);
-        while (std::chrono::steady_clock::now() < deadline &&
-               !(addSeen && removeSeen && asuSequenceDone)) {
-            const auto masterStatus = master->GetAllViews(*universe);
+        std::cout << "[OK] watch mode keeps the Master HTTP listener alive for " << watchSeconds
+                  << " seconds\n";
+        while (
+            !kv::test::WatchShouldStop(std::chrono::steady_clock::now(), deadline, watchOptions)) {
+            const auto masterStatus = master->GetAllViews(universe);
             if (!masterStatus.ok()) {
                 return Fail("Master refresh failed during watch", &masterStatus);
             }
-            const auto workerStatus = worker->GetAllViews(*universe);
+            const auto workerStatus = worker->GetAllViews(universe);
             if (!workerStatus.ok()) {
                 return Fail("Slave refresh failed during watch", &workerStatus);
             }
@@ -231,13 +238,13 @@ int Run(int argc, const char** argv)
             std::size_t currentAsuCount{0};
             if (!watchAsuPool.empty()) {
                 kv::GlobalView asuView;
-                if (universe->GetView(watchAsuId, asuView).ok()) {
-                    currentAsuCount = asuView.asuMap.size();
+                const auto watchIter = universe.find(watchAsuId);
+                if (watchIter != universe.end()) {
+                    currentAsuCount = watchIter->second.asuMap.size();
                 }
             }
-            const auto currentEpoch = universe->GetGlobalEpoch();
-            std::cout << "[WATCH] epoch=" << currentEpoch
-                      << " nsCount=" << universe->GetAllNsIds().size();
+            const auto currentEpoch = MaxViewEpoch(universe);
+            std::cout << "[WATCH] epoch=" << currentEpoch << " nsCount=" << universe.size();
             if (!watchAsuPool.empty()) { std::cout << " asuCount=" << currentAsuCount; }
             std::cout << '\n';
 
@@ -262,34 +269,35 @@ int Run(int argc, const char** argv)
                 ++asuSequenceIndex;
                 asuSequenceDone = asuSequenceIndex == expectedAsuCounts.size();
             }
-            if (!addSeen) {
+            if (!addSeen && !expectedAddPool.empty()) {
                 kv::GlobalView addedView;
-                if (universe->GetView(expectedAddId, addedView).ok()) {
+                if (universe.find(expectedAddId) != universe.end()) {
                     addSeen = true;
                     std::cout << "[OK] expected namespace appeared: " << expectedAddPool << '\n';
                 }
             }
-            if (!removeSeen && (expectedAddPool.empty() || addSeen)) {
+            if (!removeSeen && !expectedRemovePool.empty() &&
+                (expectedAddPool.empty() || addSeen)) {
                 kv::GlobalView removedView;
-                if (universe->GetView(expectedRemoveId, removedView).code ==
-                    kv::StatusCode::NOT_FOUND) {
+                if (universe.find(expectedRemoveId) == universe.end()) {
                     removeSeen = true;
                     std::cout << "[OK] expected namespace disappeared: " << expectedRemovePool
                               << '\n';
                 }
             }
-            if (!(addSeen && removeSeen && asuSequenceDone)) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        if (!addSeen || !removeSeen || !asuSequenceDone) {
+        const bool addMissing = !expectedAddPool.empty() && !addSeen;
+        const bool removeMissing = !expectedRemovePool.empty() && !removeSeen;
+        const bool asuSequenceMissing = !expectedAsuCounts.empty() && !asuSequenceDone;
+        if (addMissing || removeMissing || asuSequenceMissing) {
             return Fail("dynamic namespace/ASU expectation timed out");
         }
         std::cout << "[OK] dynamic namespace/ASU transitions validated\n";
     }
 
     std::cout << "[OK] M800 live Master->HTTP->Slave view validation completed, namespaces="
-              << universe->GetAllNsIds().size() << ", epoch=" << universe->GetGlobalEpoch() << '\n';
+              << universe.size() << ", epoch=" << MaxViewEpoch(universe) << '\n';
     return 0;
 }
 

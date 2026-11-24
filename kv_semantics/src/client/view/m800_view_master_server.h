@@ -24,10 +24,10 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 #include "view/m800_view_agent_client.h"
 #include "view/view_http_server.h"
 #include "view/view_server.h"
-#include "view/view_universe.h"
 
 namespace kv {
 
@@ -45,8 +45,12 @@ public:
     // idempotent and safe to call when Start failed.
     virtual void Stop() = 0;
 
-    // M800 masters must return a real multi-namespace universe.
-    virtual Status GetAllViews(ViewUniverse& universe) = 0;
+    // M800 masters must return a complete multi-namespace view map. The
+    // output is left unchanged when fetching fails.
+    virtual Status GetAllViews(std::unordered_map<KvNsId, GlobalView>& views) override = 0;
+    // Fetches one namespace view; this is the single-namespace query entry
+    // point for a multi-namespace service.
+    virtual Status GetGlobalViewByKvnsId(KvNsId nsId, GlobalView& view) override = 0;
     // M800 serves multiple namespaces; the legacy single-view entry point is
     // intentionally unsupported. Callers must use GetAllViews.
     virtual Status GetGlobalView(GlobalView& view) override = 0;

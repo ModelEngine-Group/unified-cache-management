@@ -47,6 +47,8 @@ public:
     ThreadedRefreshScheduler& operator=(ThreadedRefreshScheduler&&) = delete;
 
     Status Start(std::chrono::milliseconds interval, RefreshCallback callback) override;
+    // Stops accepting new triggers, drains a refresh accepted before Stop, and
+    // waits for an active callback to finish before joining the worker.
     void Stop() override;
 
     void TriggerByTimer() override;
