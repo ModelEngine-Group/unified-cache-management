@@ -307,6 +307,9 @@ def apply_all_patches() -> None:
             )
             import ucm.integration.vllm.patch.engine_core_startup_shutdown_patch
 
+        if (int(major), int(minor)) >= (0, 30):
+            import ucm.integration.vllm.patch.v0300.multi_connector_handshake_patch
+
         # vllm_ascend patches
         # Disable CpuAlloc.bind_memory BEFORE any cpu_binding_patch so that
         # bind_memory is a no-op before bind_threads replacement is installed.
