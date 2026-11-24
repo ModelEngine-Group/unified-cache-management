@@ -5487,3 +5487,28 @@ index f3e5808895a2efa23197eb2eb0ab10563f3f18f9..e102983c5f1ee8f25e2e4a838042cf0b
          allocated_keys.append(key)
          allocated_objects.append(memory_obj)
  
+diff --git a/lmcache/v1/gpu_connector/gpu_ops.py b/lmcache/v1/gpu_connector/gpu_ops.py
+index 4ab3f9b5..e481b2ac 100644
+--- a/lmcache/v1/gpu_connector/gpu_ops.py
++++ b/lmcache/v1/gpu_connector/gpu_ops.py
+@@ -26,4 +26,10 @@ def lmcache_memcpy_async_h2d(
+
++    The GPU buffer may be larger than the logical memory object. Only the
++    memory object's bytes are copied into the buffer prefix; the remaining
++    buffer contents are left unchanged.
++
+     :param MemoryObj memory_obj: The memory object to be copied.
+     :param torch.Tensor gpu_buffer: The GPU buffer to copy the data to.
++    :raises ValueError: If the memory object has no raw tensor or is larger
++        than the GPU buffer.
+     """
+@@ -40,3 +46,3 @@ def lmcache_memcpy_async_h2d(
+     mem_obj_size = memory_obj.get_size()
+-    if mem_obj_size != gpu_buffer.nbytes:
++    if mem_obj_size > gpu_buffer.nbytes:
+         raise ValueError(
+@@ -55,3 +61,3 @@ def lmcache_memcpy_async_h2d(
+     else:
+-        gpu_buffer.view(torch.uint8).copy_(
++        gpu_buffer.view(torch.uint8)[:mem_obj_size].copy_(
+             src_tensor.view(torch.uint8)[:mem_obj_size], non_blocking=True
