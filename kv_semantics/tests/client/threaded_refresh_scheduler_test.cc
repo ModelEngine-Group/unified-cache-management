@@ -260,6 +260,42 @@ TEST(ThreadedRefreshScheduler, StopWaitsForActiveRefresh)
     EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
 }
 
+// 测试场景：触发 IO 失败刷新后立即调用 Stop，刷新回调进入后阻塞等待释放。
+// 预期结果：无论 Stop 时刷新已处于活动态还是待执行态，Stop 都会执行该已接收刷新；
+// Stop 完成后新触发被拒绝，最终回调计数为 1。
+TEST(ThreadedRefreshScheduler, StopDrainsAcceptedRefresh)
+{
+    ThreadedRefreshScheduler scheduler;
+    std::atomic_uint32_t refreshCount{0};
+    std::promise<void> entered;
+    std::promise<void> release;
+    auto releaseFuture = release.get_future();
+    const auto enteredFuture = entered.get_future();
+
+    const auto status = scheduler.Start(1000ms, [&] {
+        ++refreshCount;
+        entered.set_value();
+        releaseFuture.get();
+        return Status::OK();
+    });
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    scheduler.TriggerByIoFailure(Status::Error(StatusCode::IO_ERROR, "io failed"));
+    auto stopFuture = std::async(std::launch::async, [&] {
+        scheduler.Stop();
+        return true;
+    });
+    ASSERT_EQ(enteredFuture.wait_for(1s), std::future_status::ready);
+    EXPECT_EQ(stopFuture.wait_for(20ms), std::future_status::timeout);
+
+    release.set_value();
+    ASSERT_TRUE(stopFuture.get());
+    EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
+
+    scheduler.TriggerByIoFailure(Status::Error(StatusCode::IO_ERROR, "after stop"));
+    EXPECT_EQ(refreshCount.load(), std::uint32_t{1});
+}
+
 // 测试场景：活动刷新期间两个线程并发 Stop，首个 Stop 清理后另一线程立即重新 Start，最后释放原回调。
 // 预期结果：两个 Stop 均能完成，等待中的 Stop 不会被新一轮 running
 // 状态卡住，调度器可成功重启并再次停止。

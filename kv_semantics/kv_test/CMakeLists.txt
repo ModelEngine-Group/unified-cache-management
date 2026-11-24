@@ -47,6 +47,7 @@ target_link_libraries(kv-test
 add_executable(m800-live-smoke src/m800_live_smoke.cc)
 target_include_directories(m800-live-smoke
     PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
         ../include
         ../src/common
         ../src/common/utils

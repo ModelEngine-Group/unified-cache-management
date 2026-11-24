@@ -23,6 +23,7 @@
  * */
 #include <gtest/gtest.h>
 #include <type_traits>
+#include <unordered_map>
 #include "KVClientAgentABI.h"
 #include "view/m800_view_agent_client.h"
 #include "view/m800_view_codec.h"
@@ -79,10 +80,10 @@ TEST(M800ViewContractsTest, M800TypesAndHTTPContractCompile)
     EXPECT_STREQ(M800ViewTextContract::kAsuInfoFieldPrefix, "asuInfo.");
 }
 
-// 测试场景：通过编译期类型检查审视 ViewUniverse、Master/Slave
+// 测试场景：通过编译期类型检查审视 ViewServer、ViewUniverse、Master/Slave
 // Server、RefreshScheduler、AgentClient/Factory 和 ViewHttpServer 的接口及多命名空间方法签名。
-// 预期结果：这些类型均为抽象类，PublishAll、ReplaceAll、GetView 与 Master/Slave 的 GetAllViews
-// 签名严格匹配 ViewUniverse 多命名空间契约。
+// 预期结果：这些类型均为抽象类；ViewServer 的多命名空间契约使用
+// map<KvNsId, GlobalView>，Master/Slave 必须实现 GetAllViews 和 GetGlobalViewByKvnsId。
 TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementation)
 {
     static_assert(std::is_abstract<ViewUniverse>::value);
@@ -99,10 +100,21 @@ TEST(M800ViewContractsTest, M800ServerInterfacesForceMultiNamespaceImplementatio
                                Status (ViewUniverse::*)(const ViewUniverse&)>::value);
     static_assert(std::is_same<decltype(&ViewUniverse::GetView),
                                Status (ViewUniverse::*)(KvNsId, GlobalView&) const>::value);
+    static_assert(
+        std::is_same<decltype(&ViewServer::GetAllViews),
+                     Status (ViewServer::*)(std::unordered_map<KvNsId, GlobalView>&)>::value);
+    static_assert(std::is_same<decltype(&ViewServer::GetGlobalViewByKvnsId),
+                               Status (ViewServer::*)(KvNsId, GlobalView&)>::value);
     static_assert(std::is_same<decltype(&M800ViewMasterServer::GetAllViews),
-                               Status (M800ViewMasterServer::*)(ViewUniverse&)>::value);
+                               Status (M800ViewMasterServer::*)(
+                                   std::unordered_map<KvNsId, GlobalView>&)>::value);
+    static_assert(std::is_same<decltype(&M800ViewMasterServer::GetGlobalViewByKvnsId),
+                               Status (M800ViewMasterServer::*)(KvNsId, GlobalView&)>::value);
     static_assert(std::is_same<decltype(&M800ViewSlaveServer::GetAllViews),
-                               Status (M800ViewSlaveServer::*)(ViewUniverse&)>::value);
+                               Status (M800ViewSlaveServer::*)(
+                                   std::unordered_map<KvNsId, GlobalView>&)>::value);
+    static_assert(std::is_same<decltype(&M800ViewSlaveServer::GetGlobalViewByKvnsId),
+                               Status (M800ViewSlaveServer::*)(KvNsId, GlobalView&)>::value);
 }
 
 // 测试场景：默认构造 M800AgentNodeView、ViewHttpRequest 和 ViewHttpReply。
