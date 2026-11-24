@@ -6,10 +6,13 @@ or establish the safety of every model-selection/state-copy configuration.
 """
 
 import ast
+import concurrent.futures
 import math
 import sys
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,8 +114,16 @@ def hla():
             "_make_other_rank_hashers",
             "_append_mamba_align_state_block",
             "_generate_hla_dispatch_meta",
+            "update_state_after_alloc",
             "build_connector_meta",
             "start_load_kv",
+            "_start_load_kv_async",
+            "_poll_pending_hla_loads",
+            "get_finished",
+            "get_transfer_results",
+            "request_finished_all_groups",
+            "shutdown",
+            "_supports_request_async_load",
             "_mark_load_failed",
         },
         "UCMHybridLinearAttentionLayerWiseConnector": {
@@ -133,6 +144,7 @@ def hla():
             "GroupInfo",
             "HLARequestMeta",
             "HLARequestDispatchMeta",
+            "HLAPendingLoad",
         }:
             nodes.append(node)
         elif isinstance(node, ast.ClassDef) and node.name in methods:
@@ -158,9 +170,11 @@ def hla():
         "KVCacheSegment",
         "RequestMeta",
         "RequestDispatchMeta",
+        "PendingLoadTask",
         "UCMConnectorMetadata",
         "build_kv_hash_meta",
         "_get_sparse_c8_flags",
+        "_record_counter",
     }
     base_nodes = [
         node
@@ -183,6 +197,9 @@ def hla():
         "Callable": Callable,
         "List": List,
         "Optional": Optional,
+        # Stand-in for the engine's transfer-results type so the async
+        # failure channel can be asserted without a vllm dependency.
+        "KVConnectorTransferResults": SimpleNamespace,
         "KVCacheSpec": KVCacheSpec,
         "FullAttentionSpec": FullAttentionSpec,
         "MLAAttentionSpec": MLAAttentionSpec,
@@ -195,6 +212,9 @@ def hla():
             device_type="npu", is_cuda_alike=lambda: False
         ),
         "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
+        "Task": object,
+        "Future": Future,
+        "ThreadPoolExecutor": ThreadPoolExecutor,
         "request_hasher_module": SimpleNamespace(
             _layout_source_digest=lambda: "test-layout-digest"
         ),
@@ -208,6 +228,13 @@ def hla():
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
     namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
         namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
+    )
+    namespace[
+        "UCMHybridLinearAttentionLayerWiseConnector"
+    ]._supports_request_async_load = classmethod(
+        namespace[
+            "UCMHybridLinearAttentionConnector"
+        ]._supports_request_async_load.__func__
     )
     return SimpleNamespace(**namespace)
 
@@ -234,11 +261,19 @@ def direct_load_connector(hla):
     connector.is_mla = True
     connector.need_load = True
     connector.layer_order = ["mla", "state"]
-    connector.store = object()
+    # store.wait must be callable: async submissions dispatch background
+    # store.wait calls into the (lazy) executor.
+    connector.store = SimpleNamespace(wait=lambda task: None)
     connector._failure_req_ids = set()
     connector._invalid_block_ids = set()
     connector._connector_worker_meta = SimpleNamespace(mark_failed=MagicMock())
     connector._load_bytes_total = 0
+    connector._pending_hla_loads = {}
+    connector._failed_hla_loads = set()
+    connector._finished_async_load_req_ids = set()
+    connector._load_wait_executor = None
+    connector._load_wait_workers = 2
+    connector.use_request_async_load = False
     connector.device = SimpleNamespace(synchronize=MagicMock())
     layout = hla.HybridLinearAttentionLayout.__new__(hla.HybridLinearAttentionLayout)
     layout.direct_group_bytes = {0: 64, 1: 16}
@@ -344,6 +379,221 @@ def test_gqa_direct_load_keeps_all_rank_scoped_keys_in_one_task(direct_load_conn
     assert call.args[2] == [b"kv0", b"kv1", b"state@1", b"state@1"]
     assert call.kwargs == {"distribute_backend_load": False}
     connector._rank_consistency.wait_load.assert_called_once()
+
+
+def test_async_alloc_dispatches_checkpoint_state_only(hla, state_connector):
+    connector = state_connector
+    connector.use_request_async_load = True
+    req_meta = _restore_request_meta(hla)
+    # Async allocation extends the state table with exactly the external-hit
+    # blocks — no scratch tail, so the running slot is out of bounds here.
+    req_meta.group_vllm_block_ids[1] = [21, 22]
+    connector.requests_meta = {"req": req_meta}
+    blocks = SimpleNamespace(get_block_ids=lambda: req_meta.group_vllm_block_ids)
+
+    connector.update_state_after_alloc(
+        SimpleNamespace(request_id="req"), blocks, num_external_tokens=8
+    )
+
+    dispatch = connector._pending_async_load_dispatches["req"]
+    assert dispatch.load_async
+    assert dispatch.load_block_ids == (
+        [b"fa0", b"fa1", b"checkpoint"],
+        [11, 12, 22],
+    )
+    assert dispatch.dump_block_ids == ([], [])
+
+    output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+    metadata = connector.build_connector_meta(output)
+    assert metadata.request_meta["req"] is dispatch
+    assert connector._pending_async_load_dispatches == {}
+
+    output.scheduled_new_reqs = [
+        SimpleNamespace(req_id="req", block_ids=req_meta.group_vllm_block_ids)
+    ]
+    output.num_scheduled_tokens = {"req": 1}
+    resumed = connector.build_connector_meta(output).request_meta["req"]
+    assert resumed.load_block_ids == ([], [])
+    assert not resumed.load_async
+    assert connector.request_finished_all_groups(
+        SimpleNamespace(request_id="req"), req_meta.group_vllm_block_ids
+    ) == (False, None)
+
+
+def test_async_flag_dispatches_all_requests_without_waiting(direct_load_connector):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    sync_data = connector.request_data[0]
+    connector.request_data.append(("async-req", *sync_data[1:]))
+    metadata = connector._get_connector_metadata()
+    metadata.request_meta["req"].load_async = True
+    metadata.request_meta["async-req"] = SimpleNamespace(
+        load_async=True,
+        load_full_attn_count=2,
+        load_block_ids=(list(sync_data[1]), list(sync_data[3])),
+    )
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(request_id=next(iter(requests)))
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit, wait_load=MagicMock()
+    )
+    connector.start_load_kv(SimpleNamespace())
+
+    connector.device.synchronize.assert_not_called()
+    connector._rank_consistency.wait_load.assert_not_called()
+    assert set(connector._pending_hla_loads) == {"req", "async-req"}
+    assert len(connector._pending_hla_loads["async-req"].tasks) == 2
+
+
+def test_async_direct_load_waits_for_mla_and_state_before_completion(
+    hla,
+    direct_load_connector,
+):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    dispatch = connector._get_connector_metadata().request_meta["req"]
+    dispatch.load_async = True
+    # Each background store.wait blocks on its own event, so the test drives
+    # per-task completion exactly like the Store deadline would.
+    done = {"mla": threading.Event(), "state": threading.Event()}
+    waits = []
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(label="mla" if distribute_backend_load else "state")
+
+    connector.store = SimpleNamespace(
+        wait=lambda task: done[task.label].wait(timeout=5)
+    )
+
+    def wait_load(task, wait=None):
+        # Mirror rank_consistency.wait_load: invoke the background wait
+        # callable so its result/failure surfaces here.
+        waits.append(task.label)
+        if wait is not None:
+            wait()
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit,
+        wait_load=wait_load,
+    )
+    connector.start_load_kv(SimpleNamespace())
+    try:
+        connector.device.synchronize.assert_not_called()
+        assert not waits
+        pending = connector._pending_hla_loads["req"]
+        assert len(pending.tasks) == 2
+        assert not any(f.done() for f in pending.wait_futures.values())
+        assert connector.get_finished(set()) == (None, None)
+
+        done["mla"].set()
+        assert connector.get_finished(set()) == (None, None)
+
+        done["state"].set()
+        # Let the background threads observe the events before polling.
+        concurrent.futures.wait(pending.wait_futures.values(), timeout=5)
+        # Finished req ids trigger the cancel-drain path: the request's
+        # loads are drained immediately and reported as complete.
+        assert connector.get_finished({"req"}) == (None, {"req"})
+        assert waits == ["mla", "state"]
+        assert not connector._pending_hla_loads
+        assert not connector._invalid_block_ids
+        hla.ucmmetrics.update_stats.assert_called_with(
+            {
+                "load_bytes_total": 160,  # 2 MLA blocks * 64 + 2 state * 16
+                "load_blocks_num": 4,
+                "load_requests_num": 1,
+            }
+        )
+
+        assert connector.get_finished({"req", "sync-req"}) == (None, None)
+    finally:
+        for event in done.values():
+            event.set()
+        connector.shutdown()
+
+
+def test_synchronous_finished_req_returns_no_async_completion(
+    direct_load_connector,
+):
+    assert direct_load_connector.get_finished({"req"}) == (None, None)
+
+
+def test_async_direct_load_failure_drains_remaining_state(direct_load_connector):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    connector._get_connector_metadata().request_meta["req"].load_async = True
+    state_done = threading.Event()
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(label="mla" if distribute_backend_load else "state")
+
+    def wait(task):
+        if task.label == "mla":
+            raise RuntimeError("MLA load failed")
+        state_done.wait(timeout=5)
+
+    connector.store = SimpleNamespace(wait=wait)
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit,
+        # Mirror rank_consistency.wait_load: invoke the background wait
+        # callable so the injected RuntimeError surfaces and fails the load.
+        wait_load=lambda task, wait=None: None if wait is None else wait(),
+    )
+    connector.start_load_kv(SimpleNamespace())
+
+    assert connector.get_finished(set()) == (None, None)
+    assert "req" in connector._pending_hla_loads
+
+    state_done.set()
+    concurrent.futures.wait(
+        connector._pending_hla_loads["req"].wait_futures.values(), timeout=5
+    )
+    results = connector.get_transfer_results(set())
+    assert results.finished_recving == {"req"}
+    assert results.failed_recving == {"req"}
+    assert not results.finished_sending
+    assert not connector._pending_hla_loads
+    assert not connector._invalid_block_ids
+    connector._connector_worker_meta.mark_failed.assert_called_with("req")
+
+
+def test_async_direct_load_submit_failure_does_not_use_flat_block_ids(
+    direct_load_connector,
+):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    connector._get_connector_metadata().request_meta["req"].load_async = True
+
+    def submit(*args, **kwargs):
+        raise RuntimeError("submit failed")
+
+    connector._rank_consistency = SimpleNamespace(submit_load=submit)
+    connector.start_load_kv(SimpleNamespace())
+
+    # An immediate submit failure completes the request in the same call:
+    # it lands in _finished_async_load_req_ids, then flows through
+    # get_transfer_results as failed_recving without flat block ids.
+    results = connector.get_transfer_results(set())
+    assert results.finished_recving == {"req"}
+    assert results.failed_recving == {"req"}
+    assert not results.finished_sending
+    assert not connector._invalid_block_ids
+    connector._connector_worker_meta.mark_failed.assert_called_with("req")
+
+
+def test_request_async_is_scoped_to_direct_hla(hla):
+    assert hla.UCMHybridLinearAttentionConnector._supports_request_async_load()
+    assert (
+        not hla.UCMHybridLinearAttentionLayerWiseConnector._supports_request_async_load()
+    )
 
 
 @pytest.mark.parametrize(
@@ -878,6 +1128,11 @@ def state_connector(hla):
         ],
         compute_mamba_align_state_hash=MagicMock(return_value=b"checkpoint"),
     )
+    connector._pending_async_load_dispatches = {}
+    connector._async_load_req_ids = set()
+    connector._pending_hla_loads = {}
+    connector._failed_hla_loads = set()
+    connector._finished_async_load_req_ids = set()
     return connector
 
 
@@ -920,15 +1175,15 @@ def test_state_restore_selects_checkpoint_and_running_not_scratch(
         state_connector.group_manager.compute_mamba_align_state_hash.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing_checkpoint", "missing_running", "missing_hash"]
-)
-def test_incomplete_state_restore_does_not_append_partial_metadata(
+@pytest.mark.parametrize("failure", ["missing_checkpoint", "missing_hash"])
+def test_state_restore_without_checkpoint_slot_appends_nothing(
     hla, state_connector, failure
 ):
+    # Without the checkpoint slot there is nothing worth restoring: a lone
+    # running-slot seed would compute from state no future request could
+    # reuse, so the whole state restore is skipped.
     tables = {
         "missing_checkpoint": [21],
-        "missing_running": [21, 22],
         "missing_hash": [21, 22, 23],
     }
     if failure == "missing_hash":
@@ -942,6 +1197,25 @@ def test_incomplete_state_restore_does_not_append_partial_metadata(
         keys, blocks, groups, req_meta, "req", 1, 8, "load", 1
     )
     assert (keys, blocks, groups) == ([b"existing"], [7], [0])
+    assert hla.logger.error.called
+
+
+def test_state_restore_tolerates_missing_running_slot(hla, state_connector):
+    # The checkpoint restore (correctness) survives a running slot that is
+    # out of bounds; only the promotion-seeding copy is skipped.
+    req_meta = hla.HLARequestMeta(
+        group_vllm_block_ids=[[], [21, 22]],
+        group_ucm_block_ids=[[], []],
+    )
+    keys, blocks, groups = [b"existing"], [7], [0]
+    state_connector._append_mamba_align_state_block(
+        keys, blocks, groups, req_meta, "req", 1, 8, "load", 1
+    )
+    assert (keys, blocks, groups) == (
+        [b"existing", b"checkpoint"],
+        [7, 22],
+        [0, 1],
+    )
     hla.logger.error.assert_called_once()
 
 

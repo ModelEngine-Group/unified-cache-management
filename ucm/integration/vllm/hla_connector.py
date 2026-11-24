@@ -3,6 +3,7 @@ import math
 import os
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional
 
@@ -29,7 +30,9 @@ from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     KVCacheSegment,
+    KVConnectorTransferResults,
     PendingDumpTask,
+    PendingLoadTask,
     RequestDispatchMeta,
     RequestMeta,
     UCMConnectorMetadata,
@@ -80,6 +83,21 @@ class HLARequestDispatchMeta(RequestDispatchMeta):
     dump_full_attn_count: int = 0
     load_group_ids: list[int] = field(default_factory=list)
     dump_group_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
+class HLAPendingLoad:
+    request_id: str
+    tasks: list[PendingLoadTask] = field(default_factory=list)
+    load_bytes: int = 0
+    failed: bool = False
+    # Submitted block count (MLA + state tasks), captured before draining
+    # so completed stats are independent of per-task failures.
+    num_blocks: int = 0
+    # Background store.wait futures keyed by id(task): each wait runs with
+    # the Store timeout from submission, so a stalled load fails on time
+    # instead of polling Check() past its deadline.
+    wait_futures: dict[int, Future] = field(default_factory=dict)
 
 
 def layer_name_to_kv_cache_spec(
@@ -1611,11 +1629,16 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     The scheduler side (group-aware hashing, two-stage lookup, per-group
     dispatch meta) is shared between direct and layerwise modes.  The worker
     side here is DIRECT: separate shared MLA and private state tasks per request
-    at ``start_load_kv`` (waited inline), ONE whole-batch dump task in
+    at ``start_load_kv`` (sync waits inline; async completes through
+    ``get_finished``), ONE whole-batch dump task in
     ``wait_for_save`` — a single shard per block, no deferred-commit logic.
     The layerwise subclass overrides ``register_kv_caches`` and the whole
     transfer pipeline.
     """
+
+    @classmethod
+    def _supports_request_async_load(cls) -> bool:
+        return cls is UCMHybridLinearAttentionConnector
 
     @classmethod
     def supports_kv_cache_layout(cls, kv_cache_config) -> bool:
@@ -1720,6 +1743,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self._load_bytes_total = 0
         self._load_bytes_recorded = False
         self._save_bytes_total = 0
+        self._pending_hla_loads: dict[str, HLAPendingLoad] = {}
+        self._failed_hla_loads: set[str] = set()
+        # Lazy ThreadPoolExecutor for background store.wait calls (one per
+        # in-flight load task; at most 2 per request x max_num_seqs).
+        self._load_wait_executor: Optional[ThreadPoolExecutor] = None
+        self._load_wait_workers = 2 * vllm_config.scheduler_config.max_num_seqs
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -1806,6 +1835,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
     ) -> tuple[int, bool]:
+        self._pending_async_load_dispatches.pop(request.request_id, None)
+        self._async_load_req_ids.discard(request.request_id)
         assert self.group_manager is not None, (
             "get_num_new_matched_tokens must be called on the scheduler-side "
             "connector, where the group manager is initialized."
@@ -1930,7 +1961,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             group_vllm_block_ids=[[] for _ in range(self.group_manager.num_groups)],
         )
 
-        return external_hit_tokens, False
+        return external_hit_tokens, (
+            self.use_request_async_load and external_hit_tokens > 0
+        )
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
@@ -1946,6 +1979,36 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 f"HLA group count {self.group_manager.num_groups}"
             )
         req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
+        # Truncate a rejected lookup's residue; skip on the promotion call
+        # (0 external tokens after the load completes), which must keep the
+        # loaded prefix's dump position.
+        if request.request_id not in self._async_load_req_ids:
+            accepted_blocks = req_meta.hbm_hit_block_num + (
+                math.ceil(num_external_tokens / self.group_manager.lcm_block_size)
+            )
+            if req_meta.total_hit_block_num > accepted_blocks:
+                req_meta.total_hit_block_num = accepted_blocks
+                req_meta.token_processed = (
+                    accepted_blocks * self.group_manager.lcm_block_size
+                )
+        if not self.use_request_async_load or num_external_tokens <= 0:
+            return
+
+        # Async allocation schedules no tokens, so the state table ends at
+        # the external-hit blocks: restore the checkpoint slot only
+        # (new_tokens=0 degenerates the running seed onto it). The
+        # promotion-step mamba copy seeds the running slot, and no copy
+        # runs while the request waits in WAITING_FOR_REMOTE_KVS.
+        dispatch = self._generate_hla_dispatch_meta(
+            req_meta,
+            0,
+            tuple([] for _ in block_ids),
+            need_load=True,
+            request_id=request.request_id,
+        )
+        dispatch.load_async = True
+        self._pending_async_load_dispatches[request.request_id] = dispatch
+        self._async_load_req_ids.add(request.request_id)
 
     def _append_mamba_align_state_block(
         self,
@@ -1980,6 +2043,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             try:
                 vllm_block_id = block_ids[vllm_state_idx]
             except IndexError:
+                # The checkpoint slot carries the reusable state; keep the
+                # restore alive when only the running-seed slot is missing.
                 logger.error(
                     "HLA mamba-align state vLLM block missing: "
                     f"request_id={request_id}, group_id={gid}, reason={reason}, "
@@ -1987,7 +2052,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     f"vllm_state_idx={vllm_state_idx}, "
                     f"num_vllm_blocks={len(block_ids)}"
                 )
-                return
+                continue
             if vllm_block_id != 0 and vllm_block_id not in vllm_block_ids:
                 vllm_block_ids.append(vllm_block_id)
         if not vllm_block_ids:
@@ -2167,6 +2232,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 req_meta,
                 scheduler_output.num_scheduled_tokens[request_id],
                 request.block_ids,
+                need_load=request_id not in self._async_load_req_ids,
                 request_id=request_id,
                 incoming_block_ids_are_full=True,
             )
@@ -2196,7 +2262,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     new_block_ids,
-                    resumed_from_preemption,
+                    resumed_from_preemption
+                    and request_id not in self._async_load_req_ids,
                     request_id=request_id,
                     incoming_block_ids_are_full=resumed_from_preemption,
                 )
@@ -2211,13 +2278,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     request.new_block_ids,
-                    request.resumed_from_preemption,
+                    request.resumed_from_preemption
+                    and request_id not in self._async_load_req_ids,
                     request_id=request_id,
                     incoming_block_ids_are_full=request.resumed_from_preemption,
                 )
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._pending_async_load_dispatches.pop(request_id, None)
+            self._async_load_req_ids.discard(request_id)
+
+        requests_dispatch_meta.update(self._pending_async_load_dispatches)
+        self._pending_async_load_dispatches = {}
 
         return UCMConnectorMetadata(
             requests_dispatch_meta,
@@ -2686,11 +2759,17 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         return self._dump_plan
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        """Direct load: separate shared MLA and private state tasks, then wait."""
+        """Direct load: all-async or all-sync per the connector-wide flag."""
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self._reset_transfer_state()
         self._prepare_load_plan(metadata)
+
+        # The request-async flag is connector-wide, so a step is all-async
+        # or all-sync — never mixed. Async dispatch has nothing to wait for.
+        if self.use_request_async_load:
+            self._start_load_kv_async(forward_context, **kwargs)
+            return
 
         if not self.need_load or not self.layer_order:
             return
@@ -2780,8 +2859,175 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         self._load_bytes_total = 0
 
+    def _start_load_kv_async(self, forward_context: "ForwardContext", **kwargs) -> None:
+        """Submit asynchronous direct loads without waiting for Store I/O.
+
+        Takes over ``start_load_kv``'s parameters: the forward context is
+        part of the hook contract (e.g. for future stream/event handles).
+        """
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, UCMConnectorMetadata)
+        # Ranks whose scoping produced no plan must still report completion,
+        # or the request never leaves WAITING_FOR_REMOTE_KVS.
+        async_load_req_ids = {
+            request_id
+            for request_id, request_meta in metadata.request_meta.items()
+            if getattr(request_meta, "load_async", False)
+        }
+        planned_req_ids = {data[0] for data in self.request_data}
+        self._finished_async_load_req_ids.update(async_load_req_ids - planned_req_ids)
+        if not self.need_load or not self.layer_order:
+            return
+
+        layout = self.kv_cache_layout
+        assert isinstance(layout, HybridLinearAttentionLayout)
+        for (
+            request_id,
+            unscoped_ucm,
+            scoped_ucm,
+            scoped_vllm,
+            scoped_groups,
+        ) in self.request_data:
+            if request_id in self._failure_req_ids:
+                continue
+            if request_id in self._pending_hla_loads:
+                logger.warning(
+                    "Ignore duplicate async HLA load metadata for request %s.",
+                    request_id,
+                )
+                continue
+            pending = HLAPendingLoad(request_id)
+            mla_count = (
+                getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
+                if self.is_mla
+                else 0
+            )
+            # Load metadata puts shared MLA keys before rank-scoped state keys.
+            # A task with private keys cannot assign fills to other ranks.
+            for start, end, distribute_load in (
+                (0, mla_count, True),
+                (mla_count, len(scoped_ucm), False),
+            ):
+                if start == end:
+                    continue
+                try:
+                    ptrs = layout.extract_block_addrs(
+                        scoped_vllm[start:end], scoped_groups[start:end]
+                    )
+                    task = self._rank_consistency.submit_load(
+                        self.store,
+                        {request_id: unscoped_ucm[start:end]},
+                        scoped_ucm[start:end],
+                        [0] * (end - start),
+                        ptrs,
+                        distribute_backend_load=distribute_load,
+                    )
+                    pending.tasks.append(
+                        PendingLoadTask(
+                            task=task,
+                            request_id=request_id,
+                            vllm_block_ids=list(scoped_vllm[start:end]),
+                        )
+                    )
+                    pending.load_bytes += sum(
+                        layout.direct_group_bytes.get(gid, 0)
+                        for gid in scoped_groups[start:end]
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"request {request_id} submit direct load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    pending.failed = True
+                    _record_counter("connector_load_submit_errors_total")
+                    break
+
+            if pending.tasks:
+                pending.num_blocks = sum(
+                    len(task.vllm_block_ids) for task in pending.tasks
+                )
+                if self._load_wait_executor is None:
+                    self._load_wait_executor = ThreadPoolExecutor(
+                        max_workers=self._load_wait_workers,
+                        thread_name_prefix="ucm-hla-load",
+                    )
+                for load_task in pending.tasks:
+                    pending.wait_futures[id(load_task.task)] = (
+                        self._load_wait_executor.submit(self.store.wait, load_task.task)
+                    )
+                self._pending_hla_loads[request_id] = pending
+            else:
+                self._finished_async_load_req_ids.add(request_id)
+                if pending.failed:
+                    self._failed_hla_loads.add(request_id)
+                    self._connector_worker_meta.mark_failed(request_id)
+
+    def _poll_pending_hla_loads(self) -> set[str]:
+        finished = set(self._finished_async_load_req_ids)
+        self._finished_async_load_req_ids.clear()
+        for request_id, pending in list(self._pending_hla_loads.items()):
+            remaining = []
+            for load_task in pending.tasks:
+                future = pending.wait_futures.get(id(load_task.task))
+                try:
+                    if future is None or not future.done():
+                        remaining.append(load_task)
+                        continue
+                    self._rank_consistency.wait_load(load_task.task, wait=future.result)
+                except Exception as e:
+                    pending.failed = True
+                    _record_counter("connector_load_wait_errors_total")
+                    logger.error(
+                        f"request {request_id} wait direct load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                pending.wait_futures.pop(id(load_task.task), None)
+            pending.tasks = remaining
+            if remaining:
+                continue
+
+            self._pending_hla_loads.pop(request_id, None)
+            finished.add(request_id)
+            if pending.failed:
+                self._failed_hla_loads.add(request_id)
+                self._connector_worker_meta.mark_failed(request_id)
+            else:
+                ucmmetrics.update_stats(
+                    {
+                        "load_bytes_total": pending.load_bytes,
+                        "load_blocks_num": pending.num_blocks,
+                        "load_requests_num": 1,
+                    }
+                )
+        return finished
+
+    def get_finished(
+        self, finished_req_ids: set[str]
+    ) -> tuple[set[str] | None, set[str] | None]:
+        # A cancelled request's load may still be in flight; its blocks stay
+        # held by the scheduler's delay_free until the background wait hits
+        # its terminal state (completion or Store timeout) and the poll
+        # reports the finished_recving that releases them.
+        finished_recving = self._poll_pending_hla_loads()
+        if KVConnectorTransferResults is None and self._failed_hla_loads:
+            # Legacy engines lack failed_recving and cannot identify failed
+            # multi-group requests; fail closed after draining.
+            raise RuntimeError(f"Async load failed: {sorted(self._failed_hla_loads)}")
+        return None, finished_recving or None
+
+    def get_transfer_results(self, finished_req_ids: set[str]):
+        sending, recving = self.get_finished(finished_req_ids)
+        failed = self._failed_hla_loads.intersection(recving or set())
+        self._failed_hla_loads.difference_update(failed)
+        # Legacy engines never call this override (they call get_finished).
+        return KVConnectorTransferResults(
+            finished_sending=sending or set(),
+            finished_recving=recving or set(),
+            failed_recving=failed,
+        )
+
     def wait_for_layer_load(self, layer_name: str) -> None:
-        """No-op in direct mode: loads were fully waited in start_load_kv."""
+        """No-op in direct mode: synchronous loads finish in start_load_kv."""
 
     def save_kv_layer(
         self,
@@ -2873,6 +3119,13 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         return False, None
+
+    def shutdown(self) -> None:
+        if self._load_wait_executor is not None:
+            # Do not cancel queued waits: each submitted Store task needs its
+            # timeout/drain path to run before HBM can be reclaimed.
+            self._load_wait_executor.shutdown(wait=True)
+            self._load_wait_executor = None
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
