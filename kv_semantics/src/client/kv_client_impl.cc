@@ -904,11 +904,17 @@ Status KvClientImpl::MakeTransportConfig(NodeId nodeId, const NodeInfo& asuInfo,
 {
     std::lock_guard<std::mutex> lock{mutex_};
     auto configIter = transportConfigs_.find(nodeId);
-    if (configIter == transportConfigs_.end()) {
+    if (configIter != transportConfigs_.end()) {
+        config = configIter->second;
+    } else if (multiNamespaceView_) {
+        // M800: the view owns the ASU set. Every config entry carries the same global
+        // settings, so clone the first one (usually the synthesized default) for this node.
+        if (!transportConfigs_.empty()) { config = transportConfigs_.begin()->second; }
+        config.nodeId = nodeId;
+    } else {
         return Status::Error(StatusCode::NOT_FOUND,
                              "transport config not found, nodeId=" + std::to_string(nodeId));
     }
-    config = configIter->second;
     ApplyAsuInfoToTransportConfig(asuInfo, config);
     return Status::OK();
 }

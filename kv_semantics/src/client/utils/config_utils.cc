@@ -31,6 +31,7 @@
 #include "logger.h"
 #include "parser_common.h"
 #include "status_utils.h"
+#include "view/m800_view_service_factory.h"
 
 namespace kv {
 namespace {
@@ -239,7 +240,8 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
         }
     }
 
-    for (auto& transportConfig : config.transportConfigs) {
+    const auto applyTransportFields = [&config,
+                                       &transportFields](TransportConfig& transportConfig) {
         transportConfig.timeoutMs = config.timeoutMs;
         for (const auto& field : transportFields) {
             if (ApplyTransportCompletionConfigField(transportConfig, field.first, field.second)) {
@@ -269,10 +271,22 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             }
             transportConfig.attrs.emplace(field);
         }
+    };
 
+    for (auto& transportConfig : config.transportConfigs) {
+        applyTransportFields(transportConfig);
         auto iter = asuInfos.find(transportConfig.nodeId);
         if (iter == asuInfos.end()) { continue; }
         ApplyAsuInfoToTransportConfig(iter->second, transportConfig);
+    }
+
+    if (IsM800ViewProvider(config) && config.transportConfigs.empty()) {
+        // The M800 view owns the ASU set, so no node needs to be enumerated here. Keep one
+        // default carrying the transport.* settings; MakeTransportConfig clones it for
+        // every node discovered in the view.
+        TransportConfig transportDefault;
+        applyTransportFields(transportDefault);
+        config.transportConfigs.emplace_back(std::move(transportDefault));
     }
     return Status::OK();
 }

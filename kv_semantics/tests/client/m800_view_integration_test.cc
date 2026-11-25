@@ -328,6 +328,20 @@ KvClientConfig MakeClientConfig(const std::vector<NodeId>& nodeIds)
     return config;
 }
 
+KvClientConfig MakeM800ConfigWithTransportDefault()
+{
+    KvClientConfig config;
+    config.attrs["view.provider"] = "m800";
+    config.attrs["view.role"] = "worker";
+    config.attrs["view.master_addrs"] = "127.0.0.1:9100";
+    config.attrs["view.refresh_interval_ms"] = "10";
+    TransportConfig transportDefault;
+    transportDefault.providerType = TransProviderType::FAKE;
+    transportDefault.deviceId = 0;
+    config.transportConfigs.emplace_back(std::move(transportDefault));
+    return config;
+}
+
 TEST(M800ViewIntegration, InvalidProviderConfigIsReturnedByDefaultViewServer)
 {
     KvClientConfig config;
@@ -653,6 +667,86 @@ TEST(M800ViewIntegration, InvalidM800RefreshIntervalFailsInitialization)
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
     EXPECT_NE(status.message.find("view.refresh_interval_ms"), std::string::npos);
     EXPECT_EQ(master->GetAllCount(), 0);
+}
+
+TEST(M800ViewIntegration, ConfigFileSynthesizesTransportDefaultWithoutAsuIds)
+{
+    constexpr const char* kConfigPath = "m800_view_transport_defaults_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "view.provider=m800\n";
+        configFile << "view.role=worker\n";
+        configFile << "view.master_addrs=127.0.0.1:9100\n";
+        configFile << "transport.provider_type=FAKE\n";
+        configFile << "transport.device_id=3\n";
+        configFile << "transport.roce_gid_index=7\n";
+        configFile << "asu_info.10=protocol=UB,local.comm_id=127.0.0.1,port=6000\n";
+    }
+
+    KvClientConfig config;
+    const auto status = KvClientConfig::LoadFromFile(kConfigPath, config);
+    std::remove(kConfigPath);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(config.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(config.transportConfigs.front().nodeId, NodeId{0});
+    EXPECT_EQ(config.transportConfigs.front().providerType, TransProviderType::FAKE);
+    EXPECT_EQ(config.transportConfigs.front().deviceId, 3);
+    // Unknown transport.* keys are kept for the provider, not dropped.
+    EXPECT_EQ(config.transportConfigs.front().attrs.at("roce_gid_index"), "7");
+}
+
+TEST(M800ViewIntegration, InitBuildsSnapshotFromViewWithoutTransportConfigs)
+{
+    auto master = std::make_shared<FakeM800Master>();
+    master->SetViews({
+        {kDefaultKvNsId, MakeView(1, {10, 20, 30})}
+    });
+    auto client = std::make_unique<KvClientImpl>(
+        nullptr, [master](const KvClientConfig&) { return master; }, nullptr);
+
+    ASSERT_TRUE(client->Init(MakeM800ConfigWithTransportDefault()).ok());
+
+    const auto snapshot = Snapshot(*client, kDefaultKvNsId);
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_EQ(snapshot->asuIds, std::vector<NodeId>({10, 20, 30}));
+    EXPECT_EQ(snapshot->transports.size(), std::size_t{3});
+
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(M800ViewIntegration, RefreshFollowsViewNodesWithoutTransportConfigs)
+{
+    auto master = std::make_shared<FakeM800Master>();
+    master->SetViews({
+        {kDefaultKvNsId, MakeView(1, {10, 20})}
+    });
+    auto client = std::make_unique<KvClientImpl>(
+        nullptr, [master](const KvClientConfig&) { return master; }, nullptr);
+
+    ASSERT_TRUE(client->Init(MakeM800ConfigWithTransportDefault()).ok());
+    ASSERT_EQ(Snapshot(*client, kDefaultKvNsId)->asuIds, std::vector<NodeId>({10, 20}));
+
+    master->SetViews({
+        {kDefaultKvNsId, MakeView(2, {10, 20, 30})}
+    });
+    ASSERT_TRUE(WaitForSnapshotEpoch(*client, kDefaultKvNsId, 2));
+    const auto added = Snapshot(*client, kDefaultKvNsId);
+    ASSERT_NE(added, nullptr);
+    EXPECT_EQ(added->asuIds, std::vector<NodeId>({10, 20, 30}));
+    EXPECT_EQ(added->transports.size(), std::size_t{3});
+
+    master->SetViews({
+        {kDefaultKvNsId, MakeView(3, {20, 30})}
+    });
+    ASSERT_TRUE(WaitForSnapshotEpoch(*client, kDefaultKvNsId, 3));
+    const auto removed = Snapshot(*client, kDefaultKvNsId);
+    ASSERT_NE(removed, nullptr);
+    EXPECT_EQ(removed->asuIds, std::vector<NodeId>({20, 30}));
+    EXPECT_EQ(removed->transports.size(), std::size_t{2});
+
+    ASSERT_TRUE(client->Shutdown().ok());
 }
 
 }  // namespace kv::test
