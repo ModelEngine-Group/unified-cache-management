@@ -25,11 +25,11 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <functional>
 #include <limits>
-#include <optional>
 #include <thread>
 #include <utility>
 #include "ctrl_layout.h"
@@ -95,7 +95,8 @@ public:
                 buf_->Release(slotIdx_);
             }
         }
-        // Accessors require a handle that has not been moved from.
+        bool Valid() const { return buf_ != nullptr; }
+        // Slot accessors require a valid handle.
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
         size_t SlotIndex() const { return slotIdx_; }
@@ -107,10 +108,9 @@ public:
         // CPU access.
         void* HostMappedData() { return buf_->data_.HostMappedDeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
-        bool MarkReady()
+        void MarkReady()
         {
-            if (Owner()) { return buf_->MarkReady(slotIdx_); }
-            return false;
+            if (Owner()) { buf_->MarkReady(slotIdx_); }
         }
         void MarkFailed()
         {
@@ -188,20 +188,9 @@ public:
     }
 
     // Requires successful worker-side Setup; observers must not call Get.
-    // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
+    // Waits up to 30 seconds for a slot reference. A valid handle may still be Loading.
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                size_t preferredRank = kInvalid)
-    {
-        for (;;) {
-            auto handle = TryGet(blockId, offset, allowReserved, preferredRank);
-            if (handle) { return std::move(*handle); }
-            std::this_thread::yield();
-        }
-    }
-
-    // A miss can mean the preferred rank has not published the slot yet.
-    std::optional<Handle> TryGet(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
-                                 size_t preferredRank)
     {
         assert(myRank_ < rankCount_);
         assert(preferredRank == kInvalid || preferredRank < rankCount_);
@@ -212,7 +201,17 @@ public:
                             : 2 * usable;
         bool owner = false;
         auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
-        if (slot == kInvalid) { return std::nullopt; }
+        if (slot == kInvalid) {
+            using Clock = std::chrono::steady_clock;
+            const auto deadline = Clock::now() + std::chrono::seconds(30);
+            while (slot == kInvalid) {
+                std::this_thread::yield();
+                if (Clock::now() >= deadline) { break; }
+                slot =
+                    TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
+            }
+        }
+        if (slot == kInvalid) { return Handle{nullptr, kInvalid, false}; }
         return Handle{this, slot, owner};
     }
 
@@ -251,19 +250,6 @@ public:
         if (ready) { layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed); }
         lock->Unlock();
         return ready;
-    }
-
-    // A later shard failed. Invalidate the prefix probe even if its fill is still in flight.
-    // Pinned handles keep their references until the underlying copy or read finishes.
-    void Invalidate(const Detail::BlockId& blockId, size_t offset)
-    {
-        const auto bucket = HashKey(blockId, offset);
-        auto& layout = ctrl_.Layout();
-        auto* lock = layout.LockOf(bucket);
-        lock->Lock();
-        const auto slot = Lookup(layout, bucket, blockId, offset);
-        if (slot != kInvalid) { MarkFailed(slot); }
-        lock->Unlock();
     }
 
     void Touch(const Detail::BlockId* blocks, size_t num)
@@ -539,12 +525,9 @@ private:
         return ctrl_.Layout().SlotMetaArr()[slotIdx].state.load(std::memory_order_acquire);
     }
 
-    bool MarkReady(size_t slotIdx)
+    void MarkReady(size_t slotIdx)
     {
-        // A fill that started before invalidation cannot publish the slot as Ready.
-        auto expected = State::Loading;
-        return ctrl_.Layout().SlotMetaArr()[slotIdx].state.compare_exchange_strong(
-            expected, State::Ready, std::memory_order_acq_rel);
+        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Ready, std::memory_order_release);
     }
 
     void MarkFailed(size_t slotIdx)

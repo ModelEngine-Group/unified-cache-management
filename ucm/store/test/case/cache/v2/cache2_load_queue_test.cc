@@ -33,9 +33,7 @@
 #include <gtest/gtest.h>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <numeric>
-#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -68,7 +66,7 @@ public:
         Handle(FakeBuffer* buf, size_t slotIdx, bool owner, bool hostAccessible)
             : buf_{buf}, slotIdx_{slotIdx}, owner_{owner}, hostAccessible_{hostAccessible}
         {
-            buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed);
+            if (buf_ != nullptr) { buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed); }
         }
         Handle(const Handle&) = delete;
         Handle& operator=(const Handle&) = delete;
@@ -95,6 +93,7 @@ public:
         {
             if (buf_ != nullptr) { buf_->liveHandles_.fetch_sub(1, std::memory_order_relaxed); }
         }
+        bool Valid() const { return buf_ != nullptr; }
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return hostAccessible_; }
         size_t Segment() const { return buf_->SegmentOf(slotIdx_); }
@@ -104,15 +103,11 @@ public:
         // alias, so it mirrors the CPU address.
         void* HostMappedData() { return Data(); }
         SlotState GetState() const { return buf_->SlotStateOf(slotIdx_); }
-        bool MarkReady()
+        void MarkReady()
         {
-            if (!owner_) { return false; }
-            auto expected = SlotState::Loading;
-            if (!buf_->slotStates_[slotIdx_].compare_exchange_strong(expected, SlotState::Ready)) {
-                return false;
-            }
+            if (!owner_) { return; }
+            buf_->SetSlotStateByIdx(slotIdx_, SlotState::Ready);
             buf_->markedReady_.fetch_add(1, std::memory_order_relaxed);
-            return true;
         }
         void MarkFailed()
         {
@@ -150,8 +145,8 @@ public:
     Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                size_t preferredRank = UC::Cache2::kInvalid)
     {
-        std::lock_guard lock(mutex_);
         getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank});
+        if (getCalls_.size() == timeoutOnGet_) { return Handle{nullptr, 0, false, true}; }
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) { return Handle{this, it->second, false, HostAccessibleOf(key)}; }
@@ -159,23 +154,12 @@ public:
         slots_.emplace(key, slotIdx);
         return Handle{this, slotIdx, true, HostAccessibleOf(key)};
     }
-    std::optional<Handle> TryGet(const UC::Detail::BlockId& blockId, size_t offset,
-                                 bool allowReserved, size_t preferredRank)
-    {
-        if (canAcquire && !canAcquire(blockId)) { return std::nullopt; }
-        return Get(blockId, offset, allowReserved, preferredRank);
-    }
     void Prealloc(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                   size_t preferredRank = UC::Cache2::kInvalid)
     {
         preallocCalls_.push_back(PreallocCall{blockId, offset, allowReserved, preferredRank});
     }
-    void Invalidate(const UC::Detail::BlockId& block, size_t offset)
-    {
-        std::lock_guard lock(mutex_);
-        auto it = slots_.find(std::make_pair(block, offset));
-        if (it != slots_.end()) { SetSlotStateByIdx(it->second, SlotState::Failed); }
-    }
+    void TimeoutOnGet(size_t call) { timeoutOnGet_ = call; }
     void SetHostAccessible(bool accessible) { defaultHostAccessible_ = accessible; }
     void SetHostAccessible(const UC::Detail::BlockId& block, bool accessible, size_t offset = 0)
     {
@@ -200,7 +184,6 @@ public:
     size_t SegmentOf(size_t slotIdx) const { return slotSegments_[slotIdx]; }
     const std::vector<GetCall>& GetCalls() const { return getCalls_; }
     const std::vector<PreallocCall>& PreallocCalls() const { return preallocCalls_; }
-    std::function<bool(const UC::Detail::BlockId&)> canAcquire;
     std::function<void(size_t)> onGetState;
 
 private:
@@ -214,13 +197,13 @@ private:
         auto it = hostAccessibleOverrides_.find(key);
         return it != hostAccessibleOverrides_.end() ? it->second : defaultHostAccessible_;
     }
-    std::mutex mutex_;
     std::map<std::pair<UC::Detail::BlockId, size_t>, size_t> slots_{};
     std::map<std::pair<UC::Detail::BlockId, size_t>, bool> hostAccessibleOverrides_{};
     bool defaultHostAccessible_{true};
     std::array<std::atomic<SlotState>, 64> slotStates_{};
     std::array<size_t, 64> slotSegments_{};
     size_t nextSlotIdx_{0};
+    size_t timeoutOnGet_{0};
     std::atomic<size_t> liveHandles_{0};
     std::atomic<size_t> markedReady_{0};
     std::atomic<size_t> markedFailed_{0};
@@ -621,17 +604,13 @@ TEST_F(UCCache2LoadQueueTest, LoadSlotFailedFailsTask)
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendSubmitFails)
 {
     const auto block = TypesHelper::MakeBlockIdRandomly();
-    buffer_.SetExisting(block);
     EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([] {
         return UC::Expected<UC::Detail::TaskHandle>(UC::Status::Error("backend failure"));
     }));
-    auto desc = MakeDesc(block);
-    desc[0].index = 1;
-    auto [task, waiter] = SubmitOne(std::move(desc));
+    auto [task, waiter] = SubmitOne(MakeDesc(block));
     ASSERT_TRUE(waiter->WaitFor(kWaitMs));
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(buffer_.MarkedFailed(), 1);
-    EXPECT_EQ(buffer_.Get(block, 0).GetState(), SlotState::Failed);
     EXPECT_EQ(FakeStream::scatters.size(), 0);
     auto stats = UC::Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
@@ -639,187 +618,53 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendSubmitFails)
     EXPECT_EQ(counters.at("cache_load_failed_shards_total"), 1);
 }
 
-TEST_F(UCCache2LoadQueueTest, BreakerRejectionWaitsForAcceptedBackendRead)
+TEST_F(UCCache2LoadQueueTest, SlotTimeoutDrainsAcceptedReadsAndReleasesDispatcher)
 {
-    UC::Latch releaseRead;
-    releaseRead.Up();
+    buffer_.TimeoutOnGet(3);
+    const auto firstHandle = NextBackendHandle();
+    const auto secondHandle = NextBackendHandle();
+    UC::Latch firstReadStarted;
+    firstReadStarted.Set(1);
+    UC::Latch finishFirstRead;
+    finishFirstRead.Set(1);
     EXPECT_CALL(backend_, Load)
-        .WillOnce(testing::Invoke(
-            [] { return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle()); }))
-        .WillOnce(testing::Invoke(
-            [] { return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy()); }));
-    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&](UC::Detail::TaskHandle) {
-        releaseRead.WaitFor(kWaitMs);
+        .WillOnce([firstHandle](UC::Detail::TaskDesc) {
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Detail::TaskHandle{firstHandle});
+        })
+        .WillOnce([secondHandle](UC::Detail::TaskDesc) {
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Detail::TaskHandle{secondHandle});
+        });
+    EXPECT_CALL(backend_, Wait(firstHandle)).WillOnce([&](UC::Detail::TaskHandle) {
+        firstReadStarted.Done();
+        EXPECT_TRUE(finishFirstRead.WaitForDuration(kWaitMs));
         return UC::Status::OK();
-    }));
+    });
+    EXPECT_CALL(backend_, Wait(secondHandle)).WillOnce(testing::Return(UC::Status::OK()));
+
     auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
     desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x3000)}});
     auto [task, waiter] = SubmitOne(std::move(desc));
-
+    EXPECT_TRUE(firstReadStarted.WaitForDuration(kWaitMs));
     EXPECT_TRUE(AwaitTrue([&] { return failureSet_.Contains(task->id); }));
-    EXPECT_FALSE(waiter->Check());
-    releaseRead.Done();
+    EXPECT_FALSE(waiter->WaitForDuration(20));
+    EXPECT_EQ(buffer_.LiveHandles(), 2);
+    finishFirstRead.Done();
 
     ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_EQ(task->FailureStatus(), UC::Status::StoreUnhealthy());
-    EXPECT_EQ(buffer_.MarkedReady(), 1);
-    EXPECT_EQ(buffer_.MarkedFailed(), 1);
-    EXPECT_TRUE(FakeStream::scatters.empty());
-    EXPECT_EQ(buffer_.LiveHandles(), 0);
-}
-
-TEST_F(UCCache2LoadQueueTest, LaterShardFailureInvalidatesInFlightPrefixLoad)
-{
-    UC::Latch readStarted;
-    UC::Latch releaseRead;
-    readStarted.Up();
-    releaseRead.Up();
-    EXPECT_CALL(backend_, Load)
-        .WillOnce(testing::Invoke(
-            [] { return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle()); }))
-        .WillOnce(testing::Invoke(
-            [] { return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy()); }));
-    EXPECT_CALL(backend_, Wait).WillOnce(testing::Invoke([&](UC::Detail::TaskHandle) {
-        readStarted.Done();
-        EXPECT_TRUE(releaseRead.WaitFor(kWaitMs));
-        return UC::Status::OK();
-    }));
-
-    const auto block = TypesHelper::MakeBlockIdRandomly();
-    auto [prefixTask, prefixWaiter] = SubmitOne(MakeDesc(block));
-    EXPECT_TRUE(readStarted.WaitFor(kWaitMs));
-
-    auto desc = MakeDesc(block);
-    desc[0].index = 1;
-    auto [laterTask, laterWaiter] = SubmitOne(std::move(desc));
-    EXPECT_TRUE(laterWaiter->WaitFor(kWaitMs));
-    EXPECT_EQ(laterTask->FailureStatus(), UC::Status::StoreUnhealthy());
-    EXPECT_FALSE(prefixWaiter->Check());
-
-    releaseRead.Done();
-    ASSERT_TRUE(prefixWaiter->WaitFor(kWaitMs));
-    EXPECT_TRUE(failureSet_.Contains(prefixTask->id));
-    EXPECT_EQ(buffer_.Get(block, 0).GetState(), SlotState::Failed);
-    EXPECT_EQ(buffer_.MarkedReady(), 0);
-    EXPECT_TRUE(FakeStream::scatters.empty());
-}
-
-TEST_F(UCCache2LoadQueueTest, PeerFailureInterruptsDispatchWaitingForUnpublishedSlot)
-{
-    const auto failed = TypesHelper::MakeBlockIdRandomly();
-    const auto local = TypesHelper::MakeBlockIdRandomly();
-    const auto missing = TypesHelper::MakeBlockIdRandomly();
-    const auto slot = buffer_.SetExisting(failed, SlotState::Loading);
-    buffer_.SetExisting(local);
-    std::atomic<bool> attemptedMissing{false};
-    buffer_.canAcquire = [&](const UC::Detail::BlockId& block) {
-        if (block != missing) { return true; }
-        attemptedMissing.store(true);
-        return false;
-    };
-    EXPECT_CALL(backend_, Load).Times(0);
-    EXPECT_CALL(backend_, Wait).Times(0);
-
-    TaskIdSet peerFailures;
-    TestedQueue peerQueue;
-    auto config = config_;
-    config.deviceId = 1;
-    config.localRankSize = 2;
-    ASSERT_TRUE(peerQueue.Setup(config, &peerFailures, &buffer_).Success());
-    auto desc = MakeDesc(failed);
-    desc.push_back({local, 0, {reinterpret_cast<void*>(0x2000)}});
-    desc.push_back({missing, 0, {reinterpret_cast<void*>(0x3000)}});
-    desc.distributeBackendLoad = true;
-    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
-    auto waiter = std::make_shared<UC::Latch>();
-    peerQueue.Submit(task, waiter);
-
-    EXPECT_TRUE(AwaitTrue([&] { return attemptedMissing.load(); }));
-    buffer_.SetSlotStateByIdx(slot, SlotState::Failed);
-
-    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_TRUE(peerFailures.Contains(task->id));
-    EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
-    EXPECT_EQ(FakeStream::scatters.size(), 1);
-    EXPECT_EQ(FakeStream::syncs.load(), 1);
-    EXPECT_EQ(buffer_.LiveHandles(), 0);
-}
-
-TEST_F(UCCache2LoadQueueTest, SharedSlotAcquisitionTimesOutAndDispatchRecovers)
-{
-    const auto missing = TypesHelper::MakeBlockIdRandomly();
-    const auto ready = TypesHelper::MakeBlockIdRandomly();
-    buffer_.SetExisting(missing);  // Offset 0 is already Ready.
-    buffer_.SetExisting(ready);
-    buffer_.canAcquire = [&](const UC::Detail::BlockId& block) { return block != missing; };
-    EXPECT_CALL(backend_, Load).Times(0);
-    EXPECT_CALL(backend_, Wait).Times(0);
-
-    TaskIdSet peerFailures;
-    TestedQueue peerQueue;
-    auto config = config_;
-    config.deviceId = 1;
-    config.localRankSize = 2;
-    config.timeoutMs = 20;
-    ASSERT_TRUE(peerQueue.Setup(config, &peerFailures, &buffer_).Success());
-
-    auto desc = MakeDesc(missing);
-    desc[0].index = 1;
-    desc.distributeBackendLoad = true;
-    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
-    auto waiter = std::make_shared<UC::Latch>();
-    peerQueue.Submit(task, waiter);
-    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_TRUE(peerFailures.Contains(task->id));
     EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
-    EXPECT_EQ(buffer_.Get(missing, 0).GetState(), SlotState::Ready);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
 
-    auto next = std::make_shared<Task>(Task::Type::LOAD, MakeDesc(ready));
-    auto nextWaiter = std::make_shared<UC::Latch>();
-    peerQueue.Submit(next, nextWaiter);
-    ASSERT_TRUE(nextWaiter->WaitFor(kWaitMs));
-    EXPECT_FALSE(peerFailures.Contains(next->id));
-    EXPECT_EQ(FakeStream::scatters.size(), 1);
-}
-
-TEST_F(UCCache2LoadQueueTest, BreakerRejectionWaitsForSubmittedCopy)
-{
-    UC::Latch copySubmitted;
-    UC::Latch releaseSync;
-    copySubmitted.Up();
-    releaseSync.Up();
     const auto ready = TypesHelper::MakeBlockIdRandomly();
     buffer_.SetExisting(ready);
-    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
-        copySubmitted.Done();
-        return UC::Status::OK();
-    };
-    FakeStream::onSync = [&] {
-        EXPECT_TRUE(releaseSync.WaitFor(kWaitMs));
-        return UC::Status::OK();
-    };
-    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&] {
-        EXPECT_TRUE(copySubmitted.WaitFor(kWaitMs));
-        return UC::Expected<UC::Detail::TaskHandle>(UC::Status::StoreUnhealthy());
-    }));
-    EXPECT_CALL(backend_, Wait).Times(0);
-
-    auto desc = MakeDesc(ready);
-    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
-    auto [task, waiter] = SubmitOne(std::move(desc));
-    EXPECT_TRUE(AwaitTrue([] { return FakeStream::syncs.load() != 0; }));
-    EXPECT_FALSE(waiter->Check());
-    releaseSync.Done();
-
-    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
-    EXPECT_EQ(task->FailureStatus(), UC::Status::StoreUnhealthy());
-    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    auto [next, nextWaiter] = SubmitOne(MakeDesc(ready));
+    ASSERT_TRUE(nextWaiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(next->id));
 }
 
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)
 {
     const auto block = TypesHelper::MakeBlockIdRandomly();
-    buffer_.SetExisting(block);
     EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([](UC::Detail::TaskDesc) {
         return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
     }));
@@ -827,13 +672,10 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)
         backendWaits_.fetch_add(1, std::memory_order_relaxed);
         return UC::Status::Error("backend wait failure");
     }));
-    auto desc = MakeDesc(block);
-    desc[0].index = 1;
-    auto [task, waiter] = SubmitOne(std::move(desc));
+    auto [task, waiter] = SubmitOne(MakeDesc(block));
     ASSERT_TRUE(waiter->WaitFor(kWaitMs));
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(buffer_.MarkedFailed(), 1);
-    EXPECT_EQ(buffer_.Get(block, 0).GetState(), SlotState::Failed);
     EXPECT_EQ(FakeStream::scatters.size(), 0);
     auto stats = UC::Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
@@ -1125,7 +967,6 @@ TEST_F(UCCache2LoadQueueTest, CloseFailsPendingTasksWhenStreamSetupFailed)
     EXPECT_CALL(backend_, Load).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
         return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
     }));
-    EXPECT_CALL(backend_, Wait).WillRepeatedly(testing::Return(UC::Status::OK()));
 
     std::vector<std::pair<TaskPtr, WaiterPtr>> tasks;
     for (size_t i = 0; i < 2; ++i) {

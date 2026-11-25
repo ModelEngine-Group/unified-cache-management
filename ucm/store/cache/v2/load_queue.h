@@ -57,8 +57,8 @@ namespace UC::Cache2 {
  *    rank-interleaved order -> prealloc follow-up shard slots.
  *  - transfer_: per shard, wait until the slot is ready (backend wait for
  *    owned slots, state polling for others). HBM then does an H2D scatter;
- *    the last shard (or a marker after a dispatch failure) carries the waiter.
- *    Pending H2D copies are synchronized before completion. DDR skips the
+ *    the last shard or a slot-timeout marker carries the waiter. The transfer
+ *    thread synchronizes pending H2D copies before completion. DDR skips the
  *    device copy: Load memcpy's the whole shard, LoadOnToken splices the
  *    selected tensor ranges into the caller buffer.
  */
@@ -91,7 +91,6 @@ class LoadQ {
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     size_t shardSize_{0};
-    size_t slotWaitTimeoutMs_{Config::kDefaultTimeoutMs};
     std::vector<size_t> tensorSizes_{};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
@@ -119,8 +118,6 @@ public:
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         shardSize_ = config.shardSize;
-        // Even with an unlimited task Wait(), another rank may never publish its slot.
-        slotWaitTimeoutMs_ = config.timeoutMs == 0 ? Config::kDefaultTimeoutMs : config.timeoutMs;
         tensorSizes_ = config.tensorSizes;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
@@ -144,10 +141,9 @@ public:
     void Close()
     {
         if (stop_.exchange(true)) { return; }
-        // Keep consuming while the dispatcher publishes its final shard or failure marker.
         if (dispatcher_.joinable()) { dispatcher_.join(); }
         DrainWaiting();
-        transferStop_.store(true, std::memory_order_release);
+        transferStop_.store(true);
         if (transfer_.joinable()) { transfer_.join(); }
         DrainRunning();
     }
@@ -193,37 +189,45 @@ private:
         } else {
             std::iota(indexes.begin(), indexes.end(), 0);
         }
-        auto status = Status::OK();
         size_t backendSubmitCount = 0;
-        size_t acquiredShardCount = 0;
         size_t waitShardCount = 0;
-        size_t i = 0;
-        for (; i < nShard; ++i) {
+        for (size_t i = 0; i < nShard; ++i) {
             const auto originalIndex = indexes[i];
             auto& shard = task->desc[originalIndex];
-            const auto preferredRank =
-                task->desc.distributeBackendLoad ? originalIndex % localRankSize_ : kInvalid;
-            auto acquired = AcquireShardSlot(task, shard, preferredRank);
-            if (!acquired) {
-                status = acquired.Error();
-                break;
-            }
-            ++acquiredShardCount;
-            auto handle = std::move(acquired).Value();
-            const auto state = handle.GetState();
             ShardTask shardTask;
-            shardTask.fromCache = state == SlotState::Ready;
-            if (!shardTask.fromCache) { ++waitShardCount; }
-            if (state == SlotState::Failed) {
-                status = Status::Error();
-                break;
+            auto handle =
+                task->desc.distributeBackendLoad
+                    ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_)
+                    : buffer_->Get(shard.owner, shard.index, true);
+            if (!handle.Valid()) [[unlikely]] {
+                UC_ERROR("Load task({}) timed out acquiring shard({}) slot.", task->id,
+                         shard.index);
+                RecordLoadSourceShards(i, waitShardCount);
+                RecordFailedShards(nShard - i);
+                task->slotWaitTimedOut.store(true, std::memory_order_relaxed);
+                task->Fail(Status::Timeout());
+                if (i == 0) {
+                    FailTask(task, waiter);
+                } else {
+                    // Complete on the transfer thread after the already queued shards.
+                    failureSet_->Insert(task->id);
+                    shardTask.task = task;
+                    shardTask.waiter = waiter;
+                    running_.Push(std::move(shardTask));
+                }
+                return;
             }
+            shardTask.fromCache = handle.GetState() == SlotState::Ready;
+            if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
                 auto res = SubmitBackendLoad(task, shard, handle);
                 if (!res) [[unlikely]] {
-                    FailSlot(shard, handle);
-                    status = res.Error();
-                    break;
+                    handle.MarkFailed();
+                    RecordLoadSourceShards(i + 1, waitShardCount);
+                    RecordFailedShards(nShard - i);
+                    task->Fail(res.Error());
+                    FailTask(task, waiter);
+                    return;
                 }
                 shardTask.backendTaskHandle = res.Value();
                 ++backendSubmitCount;
@@ -236,55 +240,12 @@ private:
             shardTask.firstShard = i == 0;
             running_.Push(std::move(shardTask));
         }
-        RecordLoadSourceShards(acquiredShardCount, waitShardCount);
-        if (status.Failure()) [[unlikely]] {
-            RecordFailedShards(nShard - i);
-            task->Fail(status);
-            failureSet_->Insert(task->id);
-            if (i == 0) {
-                waiter->Done();
-                return;
-            }
-            // The transfer thread owns any queued backend reads and pending copies.
-            ShardTask end;
-            end.task = task;
-            end.waiter = waiter;
-            running_.Push(std::move(end));
-            return;
-        }
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_submit_duration_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
+        RecordLoadSourceShards(nShard, waitShardCount);
         PreallocNextShards(task, indexes);
-    }
-    Expected<Handle> AcquireShardSlot(const TaskPtr& task, const Detail::Shard& shard,
-                                      size_t preferredRank)
-    {
-        auto handle = buffer_->TryGet(shard.owner, shard.index, true, preferredRank);
-        if (handle) { return std::move(*handle); }
-        const auto deadline = NowTime::Now() + slotWaitTimeoutMs_ * 1e-3;
-        for (;;) {
-            auto status = SlotWaitStatus(task);
-            if (status.Failure()) { return status; }
-            if (NowTime::Now() >= deadline) {
-                UC_ERROR("Load task({}) timed out acquiring shard({}) slot, preferred rank({}).",
-                         task->id, shard.index, preferredRank);
-                return Status::Timeout();
-            }
-            std::this_thread::yield();
-            handle = buffer_->TryGet(shard.owner, shard.index, true, preferredRank);
-            if (handle) { return std::move(*handle); }
-        }
-    }
-    void InvalidatePrefix(const Detail::Shard& shard)
-    {
-        if (shard.index != 0) { buffer_->Invalidate(shard.owner, 0); }
-    }
-    void FailSlot(const Detail::Shard& shard, Handle& handle)
-    {
-        handle.MarkFailed();
-        InvalidatePrefix(shard);
     }
     Expected<Detail::TaskHandle> SubmitBackendLoad(const TaskPtr& task, const Detail::Shard& shard,
                                                    Handle& handle)
@@ -479,15 +440,10 @@ private:
     }
     void DiscardFailedShard(ShardTask& task)
     {
-        // An accepted read can still write into the slot after this task fails.
+        // A submitted backend read must finish before releasing its slot.
         if (task.backendTaskHandle != 0) { WaitShardReady(task); }
+        if (task.bufferHandle->GetState() != SlotState::Ready) { task.bufferHandle->MarkFailed(); }
         RecordFailedShards(1);
-    }
-    Status SlotWaitStatus(const TaskPtr& task) const
-    {
-        if (stop_.load(std::memory_order_relaxed)) { return Status::Error(); }
-        if (failureSet_->Contains(task->id)) { return task->FailureStatus(); }
-        return Status::OK();
     }
     Status WaitShardReady(ShardTask& task)
     {
@@ -501,20 +457,19 @@ private:
                          task.backendTaskHandle, task.task->id);
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"),
                                      1.0);
-                FailSlot(*task.shard, *task.bufferHandle);
+                task.bufferHandle->MarkFailed();
                 return s;
             }
-            if (!task.bufferHandle->MarkReady()) {
-                return Status::Error("cache slot invalidated during backend load");
-            }
-            return SlotWaitStatus(task.task);
+            task.bufferHandle->MarkReady();
+            return Status::OK();
         }
         for (;;) {
             auto state = task.bufferHandle->GetState();
             if (state == SlotState::Ready) { return Status::OK(); }
             if (state == SlotState::Failed) { return Status::Error(); }
-            auto status = SlotWaitStatus(task.task);
-            if (status.Failure()) { return status; }
+            if (stop_.load(std::memory_order_relaxed) || failureSet_->Contains(task.task->id)) {
+                return Status::Error();
+            }
             std::this_thread::yield();
         }
     }
@@ -619,7 +574,10 @@ private:
         while (running_.TryPop(shardTask)) {
             UC_WARN("Cache2 load task({}) shard discarded on close.", shardTask.task->id);
             failureSet_->Insert(shardTask.task->id);
-            if (shardTask.bufferHandle) { DiscardFailedShard(shardTask); }
+            if (shardTask.bufferHandle &&
+                shardTask.task->slotWaitTimedOut.load(std::memory_order_relaxed)) {
+                DiscardFailedShard(shardTask);
+            }
             if (shardTask.waiter) { shardTask.waiter->Done(); }
         }
     }

@@ -295,52 +295,6 @@ TEST_F(Cache2BufferTest, ExistDoesNotStealPreallocatedOwner)
     owner.MarkReady();
 }
 
-TEST_F(Cache2BufferTest, InvalidatedPrefixMissesUntilRefilled)
-{
-    const auto block = MakeBlockId(2);
-    using State = CtrlLayout::SlotMeta::State;
-    {
-        auto owner = buffer_.Get(block, 0);
-        owner.MarkReady();
-        EXPECT_TRUE(buffer_.Exist(block, 0));
-
-        buffer_.Invalidate(block, 0);
-        EXPECT_EQ(owner.GetState(), State::Failed);
-        EXPECT_FALSE(buffer_.Exist(block, 0));
-        EXPECT_FALSE(buffer_.Get(block, 0).Owner());
-    }
-    {
-        auto refill = buffer_.Get(block, 0);
-        ASSERT_TRUE(refill.Owner());
-        EXPECT_EQ(refill.GetState(), State::Loading);
-        EXPECT_FALSE(buffer_.Exist(block, 0));
-        refill.MarkReady();
-    }
-    EXPECT_TRUE(buffer_.Exist(block, 0));
-}
-
-TEST_F(Cache2BufferTest, InvalidatedInFlightFillCannotPublishReady)
-{
-    const auto block = MakeBlockId(2);
-    using State = CtrlLayout::SlotMeta::State;
-    {
-        auto inFlight = buffer_.Get(block, 0);
-        ASSERT_TRUE(inFlight.Owner());
-        ASSERT_EQ(inFlight.GetState(), State::Loading);
-
-        buffer_.Invalidate(block, 0);
-        EXPECT_EQ(inFlight.GetState(), State::Failed);
-        EXPECT_FALSE(inFlight.MarkReady());
-        EXPECT_EQ(inFlight.GetState(), State::Failed);
-        EXPECT_FALSE(buffer_.Exist(block, 0));
-        EXPECT_FALSE(buffer_.Get(block, 0).Owner());
-    }
-    auto refill = buffer_.Get(block, 0);
-    ASSERT_TRUE(refill.Owner());
-    ASSERT_TRUE(refill.MarkReady());
-    EXPECT_TRUE(buffer_.Exist(block, 0));
-}
-
 TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
 {
     auto block = MakeBlockId(3);
@@ -353,6 +307,7 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
             EXPECT_FALSE(reader->Owner());
         }
         EXPECT_EQ(reader->GetState(), CtrlLayout::SlotMeta::State::Failed);
+        EXPECT_FALSE(buffer_.Exist(block, 0));
     }
 
     auto retry = buffer_.Get(block, 0);
@@ -360,6 +315,7 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Loading);
     retry.MarkReady();
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Ready);
+    EXPECT_TRUE(buffer_.Exist(block, 0));
 }
 
 TEST_F(Cache2BufferTest, MoveTransfersReferenceWithoutAbandoningOwner)
@@ -424,6 +380,7 @@ TEST_F(Cache2BufferTest, GetWaitsForPinnedSlotAndReturnsAnAcquiredHandle)
     pinned.pop_back();
 
     auto handle = pending.get();
+    ASSERT_TRUE(handle.Valid());
     EXPECT_EQ(handle.SlotIndex(), releasedSlot);
     EXPECT_TRUE(handle.Owner());
     EXPECT_EQ(handle.GetState(), CtrlLayout::SlotMeta::State::Loading);

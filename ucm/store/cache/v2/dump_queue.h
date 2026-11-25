@@ -198,6 +198,13 @@ private:
         if (backend_ != nullptr) { backendDesc.reserve(task->desc.size()); }
         for (auto& shard : task->desc) {
             auto handle = buffer_->Get(shard.owner, shard.index);
+            if (!handle.Valid()) [[unlikely]] {
+                UC_ERROR("Dump task({}) timed out acquiring shard({}) slot.", task->id,
+                         shard.index);
+                if (copiedShards > 0) { stream.Synchronize(); }
+                FailOwnedHandles(ctx);
+                return Status::Timeout();
+            }
             if (!handle.Owner()) { continue; }
             ctx.bufferHandles.push_back(std::move(handle));
             auto& pinned = ctx.bufferHandles.back();

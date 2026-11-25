@@ -66,7 +66,7 @@ public:
               state_{state},
               hostAccessible_{hostAccessible}
         {
-            buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed);
+            if (buf_ != nullptr) { buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed); }
         }
         Handle(const Handle&) = delete;
         Handle& operator=(const Handle&) = delete;
@@ -95,6 +95,7 @@ public:
         {
             if (buf_ != nullptr) { buf_->liveHandles_.fetch_sub(1, std::memory_order_relaxed); }
         }
+        bool Valid() const { return buf_ != nullptr; }
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return hostAccessible_; }
         void* Data() { return gSlotBase + slotIdx_ * kShardSize; }
@@ -132,6 +133,9 @@ public:
     Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
     {
         getCalls_.push_back(GetCall{blockId, offset, allowReserved});
+        if (getCalls_.size() == timeoutOnGet_) {
+            return Handle{nullptr, 0, false, SlotState::Loading, true};
+        }
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) {
@@ -143,6 +147,7 @@ public:
         return Handle{this, slotIdx, true, ownerState_, HostAccessibleOf(blockId, offset)};
     }
     void SetOwnerState(SlotState state) { ownerState_ = state; }
+    void TimeoutOnGet(size_t call) { timeoutOnGet_ = call; }
     void SetHostAccessible(bool accessible) { defaultHostAccessible_ = accessible; }
     void SetHostAccessible(const UC::Detail::BlockId& block, bool accessible, size_t offset = 0)
     {
@@ -170,6 +175,7 @@ private:
     bool defaultHostAccessible_{true};
     SlotState ownerState_{SlotState::Loading};
     size_t nextSlotIdx_{0};
+    size_t timeoutOnGet_{0};
     std::atomic<size_t> liveHandles_{0};
     std::atomic<size_t> markedReady_{0};
     std::atomic<size_t> markedFailed_{0};
@@ -427,6 +433,27 @@ TEST_F(UCCache2DumpQueueTest, DumpFailsWhenGatherFails)
     EXPECT_EQ(buffer_.LiveHandles(), 0);
     auto stats = UC::Metrics::GetAllStatsAndClear();
     EXPECT_EQ(std::get<0>(stats).at("cache_d2h_errors_total"), 1);
+}
+
+TEST_F(UCCache2DumpQueueTest, SlotTimeoutSynchronizesPendingCopies)
+{
+    buffer_.TimeoutOnGet(2);
+    EXPECT_CALL(backend_, Dump).Times(0);
+    FakeStream::onSync = [&] {
+        EXPECT_EQ(buffer_.LiveHandles(), 1);
+        return UC::Status::OK();
+    };
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(FakeStream::gathers.size(), 1);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_EQ(buffer_.MarkedFailed(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
 }
 
 TEST_F(UCCache2DumpQueueTest, DumpFailsWhenSyncFails)
