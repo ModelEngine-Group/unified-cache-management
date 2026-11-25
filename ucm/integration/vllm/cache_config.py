@@ -75,9 +75,14 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
     local_dp_rank = getattr(parallel, "data_parallel_rank_local", None)
     local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
     if local_dp_rank is not None and local_dp_size > 0:
+        local_dp_rank = int(local_dp_rank)
+        if not 0 <= local_dp_rank < local_dp_size:
+            raise ValueError(
+                f"Invalid local DP rank for NUMA fallback: local_dp_rank={local_dp_rank}, "
+                f"local_dp_size={local_dp_size}."
+            )
         local_workers = cache_rank_count(parallel)
-        dp_offset = int(local_dp_rank) * local_workers
-        count = local_dp_size * local_workers
+        dp_offset = local_dp_rank * local_workers
         if getattr(parallel, "distributed_executor_backend", None) == "mp":
             # The executor rank is assigned before device binding adds a DP offset.
             local_rank = parallel.rank - parallel.node_rank_within_dp * local_workers
@@ -88,7 +93,10 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
                 f"Invalid worker local rank for NUMA fallback: local_rank={local_rank}, "
                 f"local_dp_rank={local_dp_rank}, workers_per_dp={local_workers}."
             )
+        if getattr(parallel, "nnodes", 1) == 1:
+            return local_rank, local_workers
         rank = dp_offset + local_rank
+        count = local_dp_size * local_workers
     elif (
         getattr(parallel, "data_parallel_size", None) == 1
         and getattr(parallel, "local_world_size", parallel.world_size)
@@ -128,7 +136,7 @@ def configure_cache_numa(
     try:
         rank, count = _fallback_numa_geometry(parallel, local_rank)
     except (AttributeError, TypeError, ValueError) as error:
-        # Without node-wide hints, CacheStore can rank-slice within its own domain.
+        # Without worker hints, CacheStore can rank-slice within its own domain.
         config.pop("cache_fallback_numa_rank", None)
         config.pop("cache_fallback_numa_rank_count", None)
         logger.warning(

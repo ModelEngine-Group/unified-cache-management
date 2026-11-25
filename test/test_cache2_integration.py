@@ -166,7 +166,7 @@ def test_cache2_applies_capacity_and_numa_on_all_platforms(platform, monkeypatch
         "share_buffer_enable": True,
         "cache_detected_numa_node": 3,
         "cache_fallback_numa_rank": 0,
-        "cache_fallback_numa_rank_count": 16,
+        "cache_fallback_numa_rank_count": 8,
     }
     device.get_numa_node.assert_called_once_with(0)
     cache_config.logger.warning_once.assert_not_called()
@@ -368,8 +368,8 @@ def test_multiproc_dp_pcp_numa_uses_executor_rank():
         cache_config.configure_cache_numa(
             config, NS(get_numa_node=lambda _: None), device_rank, geometry, device_rank
         )
-        assert config["cache_fallback_numa_rank"] == rank + 8
-        assert config["cache_fallback_numa_rank_count"] == 16
+        assert config["cache_fallback_numa_rank"] == rank
+        assert config["cache_fallback_numa_rank_count"] == 8
 
 
 @pytest.mark.parametrize("affinity", [None, 6])
@@ -396,21 +396,27 @@ def test_cross_host_tp_numa_uses_local_worker_rank(affinity, global_rank, local_
 
 @pytest.mark.parametrize("affinity", [None, 6])
 @pytest.mark.parametrize("rank_has_dp_offset", [False, True])
-@pytest.mark.parametrize("workers_per_dp", [2, 8])
-def test_dp_isolation_does_not_restart_numa_slices(
-    affinity, rank_has_dp_offset, workers_per_dp
+@pytest.mark.parametrize(
+    "nnodes,expected_nodes",
+    [(1, [[1, 3, 5, 7], [1, 3, 5, 7]]), (2, [[1, 1, 3, 3], [5, 5, 7, 7]])],
+)
+def test_numa_slices_for_multiple_local_dp_groups(
+    affinity, rank_has_dp_offset, nnodes, expected_nodes
 ):
-    results = []
+    available_nodes = [1, 3, 5, 7]
     for dp in range(2):
         geometry = parallel(
+            nnodes=nnodes,
+            data_parallel_size=2 * nnodes,
             data_parallel_rank_local=dp,
             data_parallel_size_local=2,
-            tensor_parallel_size=workers_per_dp,
-            world_size=workers_per_dp,
-            local_world_size=workers_per_dp,
+            tensor_parallel_size=4,
+            world_size=4,
+            local_world_size=4,
         )
-        for rank in range(workers_per_dp):
-            device_id = dp * workers_per_dp + rank
+        selected_nodes = []
+        for rank in range(4):
+            device_id = dp * 4 + rank
             config = {}
             cache_config.configure_cache_numa(
                 config,
@@ -419,11 +425,14 @@ def test_dp_isolation_does_not_restart_numa_slices(
                 geometry,
                 device_id if rank_has_dp_offset else rank,
             )
+            assert config.get("cache_detected_numa_node") == affinity
             worker = config["cache_fallback_numa_rank"]
             count = config["cache_fallback_numa_rank_count"]
-            assert (worker, count) == (device_id, 2 * workers_per_dp)
-            results.append(worker * workers_per_dp // count)
-    assert results == [n for n in range(workers_per_dp) for _ in range(2)]
+            assert (worker, count) == ((rank, 4) if nnodes == 1 else (device_id, 8))
+            selected_nodes.append(
+                available_nodes[worker * len(available_nodes) // count]
+            )
+        assert selected_nodes == expected_nodes[dp]
 
 
 @pytest.mark.parametrize("affinity", [None, 6])
