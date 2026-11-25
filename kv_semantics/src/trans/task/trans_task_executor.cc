@@ -482,6 +482,12 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 // 正常结果前置排除（含 query miss）：不重试、不记失败。
                 if (ErrorClassifier::IsNormalResult(subBatchContext)) {
                     if (connManager_) { connManager_->ReportSuccess(subBatchContext.channel); }
+                    // 业务完整成功（BUSINESS 完整成功；query miss 按正常完成计入）
+                    // 驱动 Group 动态流控 +1/稳定解除；探针不升载。
+                    if (task->origin == TaskOrigin::BUSINESS &&
+                        subBatchContext.group != nullptr) {
+                        subBatchContext.group->OnBusinessSuccess(now);
+                    }
                     if (subBatchContext.status.code == StatusCode::CQE_CHECK_RESULT_BUFFER) {
                         CompleteSubBatch(*task, subBatchContext, Status::OK());
                     } else {
@@ -502,9 +508,10 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                     decision.healthAction == ChannelHealthAction::RECORD_FAILURE) {
                     connManager_->ReportFailure(subBatchContext.channel);
                 }
-                if (decision.flowAction == FlowControlAction::ON_BUSY) {
-                    // Group 动态流控 ON_BUSY 降载钩子由 Shard 5 接入
-                    // GroupFlowController；分类结果先记账于此日志。
+                if (decision.flowAction == FlowControlAction::ON_BUSY &&
+                    subBatchContext.group != nullptr) {
+                    // 合法 CQE busy：Group 动态流控 -2 降载（下限 busyFloor）。
+                    subBatchContext.group->OnBusy();
                     KV_DEBUG("TransportTaskExecutor ON_BUSY load reduction task_id={} cid={}",
                              task->taskId, subBatchContext.cid);
                 }
@@ -588,9 +595,14 @@ void TransportTaskExecutor::ReleaseAttemptResources(TransportSubBatchContext& su
 }
 
 void TransportTaskExecutor::CompleteFailedSubBatch(TransportTask& task,
-                                                  TransportSubBatchContext& subBatchContext)
+                                                   TransportSubBatchContext& subBatchContext)
 {
     // 耗尽保留原始错误：status/entryStatus 保持分类前的原始值。
+    // 业务失败终结（应用错误/链路故障/超时耗尽）：复位 Group 流控稳定计数
+    //（不升载）；探针结论不参与流控。
+    if (task.origin == TaskOrigin::BUSINESS && subBatchContext.group != nullptr) {
+        subBatchContext.group->OnNonSuccess();
+    }
     CompleteSubBatch(task, subBatchContext, subBatchContext.status);
 }
 

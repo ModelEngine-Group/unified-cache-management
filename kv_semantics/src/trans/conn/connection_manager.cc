@@ -152,6 +152,15 @@ Status ConnectionManager::AddGroup(const NodeEndpoint& endpoint, std::uint32_t q
         auto group = std::make_shared<ConnectionGroup>(gid, endpoint, capabilities, qp_num);
         group->BindSelf(group);
         for (auto handle : handles) { group->AddChannel(handle, &provider_); }
+        // Group 动态流控：启用时挂接控制器；busyFloor 不小于实际 ioQueueDepth
+        // 收紧后的每通道上限则 Init 拒绝（INVALID_ARGUMENT）。
+        if (config_.flowControl.flowControlEnabled) {
+            std::unique_ptr<GroupFlowController> controller;
+            const auto flowStatus = GroupFlowController::Create(
+                config_.flowControl, qp_num, capabilities.ioQueueDepth, controller);
+            if (!flowStatus.ok()) { return flowStatus; }
+            group->SetFlowController(std::move(controller));
+        }
         groups_.push_back(std::move(group));
 
         for (const auto& channel : groups_.back()->GetChannels()) {
@@ -272,10 +281,10 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::AcquireChannel(
 
 bool ConnectionManager::CanAcquireGroup(const ConnectionGroup& group) const
 {
-    // Static admission until the dynamic group flow controller (Shard 5)
-    // attaches per-group budgets.
-    (void)group;
-    return true;
+    // Group 动态流控静态准入：actualInflight < currentLimit 才允许，达到即
+    // fail-fast；未启用流控的组直接放行。
+    const auto* flowController = group.GetFlowController();
+    return flowController == nullptr || flowController->CanAcquire(group.GetInflightCount());
 }
 
 std::shared_ptr<ConnectionChannel> ConnectionManager::AcquireProbe(
@@ -787,8 +796,22 @@ Status ConnectionManager::UpdateGroups(const std::vector<NodeEndpoint>& toAdd,
                                                               config_.qpNum);
                 group->BindSelf(group);
                 for (auto handle : handles) { group->AddChannel(handle, &provider_); }
-                groups_.push_back(std::move(group));
-                cacheDirty_.store(true, std::memory_order_release);
+                // 动态 Endpoint 新建组同样挂接流控（best-effort：非法关系按失败计）。
+                if (config_.flowControl.flowControlEnabled) {
+                    std::unique_ptr<GroupFlowController> controller;
+                    const auto flowStatus = GroupFlowController::Create(
+                        config_.flowControl, config_.qpNum, capabilities.ioQueueDepth,
+                        controller);
+                    if (!flowStatus.ok()) {
+                        status = flowStatus;
+                    } else {
+                        group->SetFlowController(std::move(controller));
+                    }
+                }
+                if (status.ok()) {
+                    groups_.push_back(std::move(group));
+                    cacheDirty_.store(true, std::memory_order_release);
+                }
             }
         }
         if (!status.ok()) {
@@ -837,13 +860,20 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByPolicyLocked(
 {
     if (candidates.empty()) { return nullptr; }
 
+    // 候选分组准入（Group 动态流控：达到 currentLimit 即 fail-fast）。
+    const auto candidateAdmissible = [this](const std::shared_ptr<ConnectionChannel>& channel) {
+        const auto group = channel->LockGroup();
+        return group == nullptr || CanAcquireGroup(*group);
+    };
+
     if (routingPolicy_ == RoutingPolicy::LEAST_LOADED) {
         std::shared_ptr<ConnectionChannel> selected;
         std::uint32_t minInflight = std::numeric_limits<std::uint32_t>::max();
         for (const auto& channel : candidates) {
             if (channel->GetState() != ChannelState::ACTIVE) { continue; }
             const auto inflight = channel->GetInflightCount();
-            if (inflight < maxInflightPerChannel_ && inflight < minInflight) {
+            if (inflight < maxInflightPerChannel_ && inflight < minInflight &&
+                candidateAdmissible(channel)) {
                 minInflight = inflight;
                 selected = channel;
                 if (minInflight == 0) { break; }
@@ -863,7 +893,7 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByPolicyLocked(
     for (std::size_t i = 0; i < total; ++i) {
         const auto& channel = candidates[(start + i) % total];
         if (channel->GetState() != ChannelState::ACTIVE) { continue; }
-        if (channel->GetInflightCount() < maxInflightPerChannel_) {
+        if (channel->GetInflightCount() < maxInflightPerChannel_ && candidateAdmissible(channel)) {
             channel->IncrementInflight();
             return channel;
         }

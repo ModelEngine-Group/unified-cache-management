@@ -30,6 +30,7 @@
 #include <memory>
 #include <vector>
 #include "connection_manager.h"
+#include "group_flow_controller.h"
 #include "kv_transport.h"
 #include "kv_types.h"
 #include "trans_provider.h"
@@ -160,7 +161,25 @@ public:
     // carry a weak group lease; stack-allocated test groups leave it empty.
     void BindSelf(const std::shared_ptr<ConnectionGroup>& self) { self_ = self; }
 
-    // Group-level dynamic flow admission is wired by the manager (Shard 5).
+    // Group 级动态流控（Shard 5）：由 ConnectionManager 在建组时挂接；
+    // 未启用时为空（准入门直接放行）。全组共享，线程安全。
+    GroupFlowController* GetFlowController() const { return flowController.get(); }
+    void SetFlowController(std::unique_ptr<GroupFlowController> controller)
+    {
+        flowController = std::move(controller);
+    }
+    void OnBusy()
+    {
+        if (flowController != nullptr) { flowController->OnBusy(); }
+    }
+    void OnBusinessSuccess(std::chrono::steady_clock::time_point now)
+    {
+        if (flowController != nullptr) { flowController->OnBusinessSuccess(now); }
+    }
+    void OnNonSuccess()
+    {
+        if (flowController != nullptr) { flowController->OnNonSuccess(); }
+    }
 
 private:
     std::uint32_t groupId{0};
@@ -171,6 +190,7 @@ private:
     std::atomic<std::uint32_t> nextChannelId_{0};
     std::atomic<bool> recovering{false};
     std::weak_ptr<ConnectionGroup> self_;
+    std::unique_ptr<GroupFlowController> flowController;
 };
 
 }  // namespace kv
