@@ -234,7 +234,7 @@ echo "testTool    ：${TESTTOOL_ROOT}/build/testTool"
 echo
 if [ "${MODE}" = "cpu" ]; then
     echo "下一步（CPU 建链断链验证；FAKE 模拟与 RoCE 真链路均已编入，conf 改 provider_type 即切换）："
-    echo "  1. 复制 conf/kv_client.conf 与 conf/kv_client_view.conf 为副本：transport.provider_type 改 CPU；"
+    echo "  1. 复制 conf/kv_client.conf 为副本：transport.provider_type 改 CPU（建链端点即副本 asu_info.N，无需独立 view 文件）；"
     echo "     RoCE 旋钮键名 transport.roce_*（模板段已内置，取消注释按环境改值即可，"
     echo "     必填 roce_gid_index；对端 KV store 侧同名键前缀为 asu_roce_*），"
     echo "     参考 ${KV_SEMANTICS_ROOT}/docs/guide/roce-provider.md；对端 KV store 需先就绪"
