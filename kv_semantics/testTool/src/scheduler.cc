@@ -34,6 +34,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <sched.h>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <variant>
@@ -252,8 +253,23 @@ bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runt
 
 void Scheduler::WorkerLoop(int workerId, int testmode)
 {
-    // 绑核（worker i 绑 startcoreid+i；失败仅告警不绑）与线程命名（调试可见，上限 15 字符）
-    BindThreadToCore(startCoreId_ + workerId);
+    // 绑核（worker i 绑 startcoreid+i；失败抛异常在此捕获转整体 fail-fast）与线程命名
+    // （调试可见，上限 15 字符）
+    try {
+        BindThreadToCore(startCoreId_ + workerId);
+    } catch (const std::exception &e) {
+        // 绑核失败不继续执行：记录失败（Run 汇总时经 err 报告首次失败），并唤醒全部
+        // worker 退出——含 barrier 中的等待者（推进 barrier 代使其谓词满足）与主循环
+        // 领任务者（下一轮锁内查退出标志），全员退出后 Run 返回 false
+        RecordFail("worker " + std::to_string(workerId) + ": " + e.what());
+        {
+            std::lock_guard<std::mutex> lock(barrierMutex_);
+            exiting_ = true;
+            ++barrierGen_;
+            barrierCv_.notify_all();
+        }
+        return;
+    }
     pthread_setname_np(pthread_self(), ("test_worker-" + std::to_string(workerId)).c_str());
 
     Executor *executor = executors_[workerId].get();
@@ -359,12 +375,16 @@ void Scheduler::ReleaseBuffers(const std::vector<std::size_t> &owned)
 
 void Scheduler::BindThreadToCore(int core)
 {
-    // Linux 平台绑核直调（与线程命名同一先例）；失败仅告警不绑，不影响多线程执行
+    // Linux 平台绑核直调（与线程命名同一先例）；失败抛异常——startcoreid/numjobs 与环境
+    // 核数不匹配属配置错误，fail-fast 不做"告警后裸跑"的静默降级（裸跑会污染性能数据可信度）
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(core, &set);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) != 0) {
-        LOG_WARN("Scheduler: bind worker to core {} failed, running unbound", core);
+    // pthread 系函数惯例：返回值即错误码（不走 -1 + errno），直接用它取描述
+    const int bindErr = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    if (bindErr != 0) {
+        throw std::runtime_error("bind worker to core " + std::to_string(core) +
+                                 " failed: " + std::strerror(bindErr));
     }
 }
 

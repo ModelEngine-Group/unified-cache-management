@@ -115,7 +115,8 @@ private:
     /**
      * worker 线程主循环：绑核并命名后进入领任务循环——锁内查退出标志与当前段末，段内经原子
      * 游标领取任务（每任务仅执行一次）并发执行，本段领完进 barrier 全员同步；持续执行语义，
-     * 单任务工具链失败记录后继续
+     * 单任务工具链失败记录后继续；绑核失败属配置错误（核数不匹配），捕获异常后唤醒全员
+     * 退出（fail-fast，不做裸跑降级）
      */
     void WorkerLoop(int workerId, int testmode);
 
@@ -132,7 +133,8 @@ private:
     /** 归还值缓冲块到空闲池并唤醒等待领用的 worker */
     void ReleaseBuffers(const std::vector<std::size_t> &owned);
 
-    /** 绑定当前线程到指定 CPU 核（Linux 平台直调；失败仅告警不绑，不影响执行） */
+    /** 绑定当前线程到指定 CPU 核（Linux 平台直调）；失败抛异常——startcoreid/numjobs 与
+     *  环境核数不匹配属配置错误，调用方 fail-fast 不继续执行 */
     void BindThreadToCore(int core);
 
     /** 记录工具链失败并打错误日志（保留首次失败描述，线程安全） */
