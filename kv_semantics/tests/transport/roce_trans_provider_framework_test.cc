@@ -138,7 +138,9 @@ TEST(CpuKvOverRoceTransProviderTest, PerItemCallsMirrorTheInputSize)
     };
     const std::vector<Status> sent = provider.Send(batches, 1, 1);
     ASSERT_EQ(batches.size(), sent.size());
-    EXPECT_EQ(StatusCode::UNSUPPORTED, sent.front().code);
+    // A handle that was never handed out is rejected before the batch reaches the
+    // data path, exactly like the other per item calls.
+    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, sent.front().code);
 }
 
 TEST(CpuKvOverRoceTransProviderTest, ThreadHooksSucceedWithoutAllocatingAnything)
@@ -169,15 +171,17 @@ TEST(CpuKvOverRoceTransProviderTest, FactoryReturnsTheProviderBehindTheInterface
 
 TEST(CpuKvOverRoceTransProviderTest, CreateTransProviderDispatchesOnCpuProviderType)
 {
-    TransportConfig config = MakeRoceConfig();
-    config.providerType = TransProviderType::CPU;
+    for (const TransProviderType type : {TransProviderType::CPU, TransProviderType::CPU_ROCE}) {
+        TransportConfig config = MakeRoceConfig();
+        config.providerType = type;
 
-    std::shared_ptr<TransProvider> provider;
-    const Status status = CreateTransProvider(config, provider);
+        std::shared_ptr<TransProvider> provider;
+        const Status status = CreateTransProvider(config, provider);
 
-    ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_NE(nullptr, provider);
-    EXPECT_NE(nullptr, dynamic_cast<roce::CpuKvOverRoceTransProvider*>(provider.get()));
+        ASSERT_TRUE(status.ok()) << status.message;
+        ASSERT_NE(nullptr, provider);
+        EXPECT_NE(nullptr, dynamic_cast<roce::CpuKvOverRoceTransProvider*>(provider.get()));
+    }
 }
 
 TEST(CpuKvOverRoceTransProviderTest, UnknownProviderTypeIsRejected)
@@ -197,6 +201,9 @@ TEST(CpuKvOverRoceTransProviderTest, CpuProviderCanBeSelectedFromConfiguration)
 {
     EXPECT_EQ(TransProviderType::CPU, ParseConfigTransProviderType("CPU"));
     EXPECT_EQ(TransProviderType::CPU, ParseConfigTransProviderType("cpu"));
+    // The CPU IO documentation names the same provider cpu_roce.
+    EXPECT_EQ(TransProviderType::CPU_ROCE, ParseConfigTransProviderType("CPU_ROCE"));
+    EXPECT_EQ(TransProviderType::CPU_ROCE, ParseConfigTransProviderType("cpu_roce"));
     EXPECT_EQ(TransProviderType::FAKE, ParseConfigTransProviderType("fake"));
     EXPECT_EQ(TransProviderType::UNSUPPORTED, ParseConfigTransProviderType("roce"));
 }

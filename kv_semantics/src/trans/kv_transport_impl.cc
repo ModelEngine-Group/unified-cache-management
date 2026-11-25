@@ -303,6 +303,11 @@ void AsuTransportImpl::CompletionLoop()
     std::size_t noCompletionRounds = 0;
 
     while (!stopCompletionWorker_.load(std::memory_order_acquire)) {
+        // A provider that owns a completion queue publishes its finished IO into
+        // the flag buffers here, before the tasks are polled; doing it even while
+        // no task is in flight keeps the receive ring drained.
+        if (transProvider_) { transProvider_->PollCompletion(); }
+
         const auto tasks = taskManager_.GetAll();
         if (tasks.empty()) {
             noCompletionRounds = 0;

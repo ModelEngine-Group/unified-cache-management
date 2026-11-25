@@ -48,10 +48,21 @@ public:
         void* sendBuffer;
         void* flagBuffer;
         uint64_t len;
+        // KV opcode of the packed SQE.  The transport fills it from the sub-batch
+        // so that a provider does not have to unpack the SQE to know what it is
+        // sending; a zero means the caller did not fill it.
+        uint8_t opcode{0};
     };
 
     virtual std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches,
                                      uint32_t kernelCount, uint32_t quietCount) = 0;
+
+    // Reaps the completions the transport produced since the last call and
+    // publishes them where the caller polls for them.  The transport calls it
+    // from its completion loop, so a provider that owns a completion queue posts
+    // its IO in Send() and only drains the queue here: Send() never waits for a
+    // completion and never polls a queue itself.
+    virtual void PollCompletion() {}
 
     enum class MemType { MEM_DEVICE, MEM_HOST };
 

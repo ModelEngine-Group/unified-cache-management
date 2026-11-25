@@ -59,6 +59,7 @@ Status CreateTransProvider(const TransportConfig& config,
                 "KV_CLIENT_AIV_PROVIDER_ROOT");
 #endif
         case TransProviderType::CPU:
+        case TransProviderType::CPU_ROCE:
             // The provider is always built: without libibverbs the device half
             // is the stub, which refuses to open an adapter but still runs the
             // link protocol, so tests keep their coverage.

@@ -318,6 +318,7 @@ mean a consumer exists. The following fields have explicit consumers.
 | `transport.sc` | Query seek-control flag; true requests per-key results. |
 | `transport.kernel_count` | Send kernel-count argument passed to the provider; kv-test supplies 1 if absent. AICPU currently ignores this argument. |
 | `transport.quiet_count` | Send quiet-count argument passed to the provider; kv-test supplies 1 if absent. AICPU currently ignores this argument. |
+| `transport.send_response` | Packs the request for the CPU data path: Rflag clear and no response buffer, so the store answers with an RDMA send. The CPU provider rejects a request packed for the writeback. |
 | `transport.timeout` | Legacy AICPU send-timeout fallback in milliseconds; not TransportConfig.timeoutMs. Use wait_timeout_ms for Client/transport task timeout. |
 
 ### AICPU fields not all shown in the sample
