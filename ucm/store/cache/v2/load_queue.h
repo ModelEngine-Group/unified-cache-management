@@ -441,7 +441,10 @@ private:
     void DiscardFailedShard(ShardTask& task)
     {
         // A submitted backend read must finish before releasing its slot.
-        if (task.backendTaskHandle != 0) { WaitShardReady(task); }
+        if (task.backendTaskHandle != 0 &&
+            task.task->slotWaitTimedOut.load(std::memory_order_relaxed)) {
+            WaitShardReady(task);
+        }
         if (task.bufferHandle->GetState() != SlotState::Ready) { task.bufferHandle->MarkFailed(); }
         RecordFailedShards(1);
     }
