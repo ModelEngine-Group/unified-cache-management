@@ -1076,7 +1076,7 @@ std::vector<Status> HccpKvOverRoceTransProvider::Send(const std::vector<SendIoBa
 }
 
 Status HccpKvOverRoceTransProvider::RegisterMemory(
-    const std::vector<RegisterMemoryDesc>& memoryDescs, std::vector<MRHandle>& mrHandles)
+    std::vector<RegisterMemoryDesc>& memoryDescs, std::vector<MRHandle>& mrHandles)
 {
     mrHandles.clear();
     if (!impl_) {
@@ -1150,6 +1150,10 @@ Status HccpKvOverRoceTransProvider::RegisterMemory(
                              "token id at index " +
                                  std::to_string(index));
     }
+
+    // The operator registers exactly the device address it was given, so the
+    // transport keeps addressing the region the way it allocated it.
+    for (auto& desc : memoryDescs) { desc.outDeviceAddr = desc.addr; }
 
     {
         std::unique_lock<std::shared_mutex> lock(impl_->memoryMu);

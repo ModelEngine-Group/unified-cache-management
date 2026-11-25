@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <utility>
+#include "roce_io_wire.h"
 
 namespace kv {
 namespace roce {
@@ -36,10 +37,10 @@ constexpr const char* kProviderName = "CpuKvOverRoceTransProvider";
 // The low bits of a handle carry the queue pair index so that one link can hand
 // out several handles while still being a single out-of-band exchange.
 constexpr std::uint32_t kHandleIndexBits = 8;
+constexpr std::uint32_t kHandleIndexMask = (1U << kHandleIndexBits) - 1U;
 
 constexpr std::uint32_t kDefaultOutOfBandTimeoutMs = 3000;
 constexpr std::uint32_t kDefaultHandshakeTimeoutMs = 5000;
-
 // Announcing a teardown is best effort: the peer notices the closed socket
 // anyway, so this must not block the caller (or process exit) for as long as
 // a handshake would.
@@ -58,22 +59,16 @@ constexpr const char* kAttrQpBackend = "roce_qp_backend";
 constexpr const char* kBackendVerbs = "verbs";
 constexpr const char* kBackendSimulated = "simulated";
 
+// Receive slots per queue pair: the depth of the receive ring, which is also the
+// number of requests that queue pair can keep in flight.
+constexpr std::uint32_t kDefaultReceiveDepth = 64;
+constexpr std::uint32_t kMaxReceiveDepth = 1024;
+
 // Every region is reachable from the peer, so local and remote writes are both
 // allowed on it.
 constexpr int kRegistrationAccess =
     kMemoryAccessLocalWrite | kMemoryAccessRemoteWrite | kMemoryAccessRemoteRead;
 constexpr std::uint32_t kSimulatedRkeyBase = 0x1000;
-
-Status NotImplemented(const std::string& operation)
-{
-    return Status::Error(StatusCode::UNSUPPORTED,
-                         std::string(kProviderName) + ": " + operation + " is not implemented yet");
-}
-
-std::vector<Status> NotImplementedForEach(const std::string& operation, std::size_t count)
-{
-    return std::vector<Status>(count, NotImplemented(operation));
-}
 
 Status InvalidArgument(const std::string& message)
 {
@@ -153,7 +148,7 @@ CpuKvOverRoceTransProvider::CpuKvOverRoceTransProvider(const TransportConfig& co
 
 CpuKvOverRoceTransProvider::~CpuKvOverRoceTransProvider()
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> guard(mutex_);
     for (const auto& link : links_) {
         if (link == nullptr) { continue; }
         // Announce the teardown exactly like DeleteConnections does, but ignore a
@@ -318,10 +313,25 @@ Status CpuKvOverRoceTransProvider::BuildVerbConfig(const std::string& localIp, V
     config.localIp = localIp;
     config.hcaName = Attr("roce_hca_name");
 
+    // The configuration the CPU IO documentation describes uses the short names
+    // gid_index / roce_port / ioq_depth; the asu_roce_* family is the canonical
+    // one.  Both reach the same fields.
+    std::unordered_map<std::string, std::string> attrs = config_.attrs;
+    const auto adoptAlias = [&attrs](const char* canonical, const char* alias) {
+        if (attrs.find(canonical) != attrs.end()) { return; }
+        const auto found = attrs.find(alias);
+        if (found != attrs.end()) { attrs.emplace(canonical, found->second); }
+    };
+    adoptAlias("roce_gid_index", "gid_index");
+    adoptAlias("roce_hca_port", "roce_port");
+    adoptAlias("roce_rq_depth", "ioq_depth");
+
     // The port number has to stay inside the byte the verbs layer takes. A value
     // that does not parse is an error like every other knob, keeping the default
     // instead would hide a typo.
-    if (const std::string value = Attr("roce_hca_port"); !value.empty()) {
+    if (const auto port = attrs.find("roce_hca_port");
+        port != attrs.end() && !port->second.empty()) {
+        const std::string& value = port->second;
         std::uint64_t hcaPort = 0;
         if (!ParseUnsigned(value, hcaPort)) {
             error = "roce_hca_port '" + value + "' is not a number";
@@ -337,23 +347,23 @@ Status CpuKvOverRoceTransProvider::BuildVerbConfig(const std::string& localIp, V
     // The limits are the widths the verbs attributes and the protocol table give
     // these fields: 8 bits for sl/traffic class, 5 for the timeout and the RNR
     // timer, 3 for the retry counters, 8 for the queue pair atomicity.
-    if (config_.attrs.find("roce_gid_index") == config_.attrs.end()) {
+    if (attrs.find("roce_gid_index") == attrs.end()) {
         error = "roce_gid_index is required (the provider does not choose a GID automatically)";
         return Failure(StatusCode::INVALID_ARGUMENT, error);
     }
-    if (!ApplyUnsigned(config_.attrs, "roce_gid_index", config.gidIndex, 0xFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_sq_depth", config.sendDepth, 0x7FFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_rq_depth", config.recvDepth, 0x7FFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_cq_depth", config.cqDepth, 0xFFFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_inline_threshold", config.inlineThreshold, 0x1000U,
+    if (!ApplyUnsigned(attrs, "roce_gid_index", config.gidIndex, 0xFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_sq_depth", config.sendDepth, 0x7FFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_rq_depth", config.recvDepth, 0x7FFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_cq_depth", config.cqDepth, 0xFFFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_inline_threshold", config.inlineThreshold, 0x1000U,
                        error) ||
-        !ApplyUnsigned(config_.attrs, "roce_sl", config.sl, 0xFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_traffic_class", config.trafficClass, 0xFFU, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_qp_timeout", config.timeout, 31U, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_retry_cnt", config.retryCnt, 7U, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_rnr_retry", config.rnrRetryCnt, 7U, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_min_rnr_timer", config.rnrTimer, 31U, error) ||
-        !ApplyUnsigned(config_.attrs, "roce_qp_rd_atom", config.qpRdAtom, 0xFFU, error)) {
+        !ApplyUnsigned(attrs, "roce_sl", config.sl, 0xFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_traffic_class", config.trafficClass, 0xFFU, error) ||
+        !ApplyUnsigned(attrs, "roce_qp_timeout", config.timeout, 31U, error) ||
+        !ApplyUnsigned(attrs, "roce_retry_cnt", config.retryCnt, 7U, error) ||
+        !ApplyUnsigned(attrs, "roce_rnr_retry", config.rnrRetryCnt, 7U, error) ||
+        !ApplyUnsigned(attrs, "roce_min_rnr_timer", config.rnrTimer, 31U, error) ||
+        !ApplyUnsigned(attrs, "roce_qp_rd_atom", config.qpRdAtom, 0xFFU, error)) {
         return Failure(StatusCode::INVALID_ARGUMENT, error);
     }
     return Status::OK();
@@ -536,7 +546,7 @@ Status CpuKvOverRoceTransProvider::ExchangeCapabilities(Link& link, std::string&
 
 Status CpuKvOverRoceTransProvider::ValidateTimeoutAttrs(std::string& error) const
 {
-    // These two used to fall back to their default when they did not parse, so a
+    // These used to fall back to their default when they did not parse, so a
     // typo looked like a working configuration while every other knob rejected.
     const char* keys[] = {kAttrConnectTimeout, kAttrHandshakeTimeout};
     for (const char* key : keys) {
@@ -695,6 +705,50 @@ Status CpuKvOverRoceTransProvider::ConnectQueuePairs(Link& link, std::string& er
     return Status::OK();
 }
 
+Status CpuKvOverRoceTransProvider::StartIoConnections(Link& link, std::string& error)
+{
+    if (!UseVerbsBackend()) { return Status::OK(); }
+    VerbQpConfig config;
+    Status built = BuildVerbConfig(std::string(), config, error);
+    if (!built.ok()) { return built; }
+    std::uint32_t receiveDepth =
+        config.recvDepth == 0U ? kDefaultReceiveDepth : config.recvDepth;
+    // The store may advertise a smaller IO queue depth; the receive ring cannot
+    // exceed it, because each outstanding answer claims one of its slots.
+    const std::uint32_t advertisedDepth = link.negotiatedCapabilities.ioqDepth;
+    if (advertisedDepth != 0U && receiveDepth > advertisedDepth) {
+        receiveDepth = advertisedDepth;
+    }
+    std::uint64_t maxInflightPerQp = 0;
+    if (ParseUnsigned(Attr("max_inflight_kv_per_qp"), maxInflightPerQp) && maxInflightPerQp != 0U &&
+        receiveDepth > NarrowTimeout(maxInflightPerQp)) {
+        receiveDepth = NarrowTimeout(maxInflightPerQp);
+    }
+    if (receiveDepth > kMaxReceiveDepth) {
+        error = "roce_rq_depth is " + std::to_string(receiveDepth) + ", above the supported " +
+                std::to_string(kMaxReceiveDepth) + " receive slots";
+        return Failure(StatusCode::INVALID_ARGUMENT, error);
+    }
+
+    link.ioConnections.clear();
+    for (auto& queuePair : link.queuePairs) {
+        std::unique_ptr<VerbsConnection> connection;
+        Status opened =
+            VerbsConnection::Open(Device(), *queuePair, receiveDepth, connection, error);
+        if (!opened.ok()) {
+            // The connections opened so far own receive memory of a link that is
+            // about to fail, so they are released before the caller tears it down.
+            for (auto& openedConnection : link.ioConnections) {
+                if (openedConnection != nullptr) { openedConnection->Shutdown(); }
+            }
+            link.ioConnections.clear();
+            return opened;
+        }
+        link.ioConnections.push_back(std::move(connection));
+    }
+    return Status::OK();
+}
+
 Status CpuKvOverRoceTransProvider::ExchangeConnectDone(Link& link, std::string& error)
 {
     std::vector<std::uint8_t> frame;
@@ -717,7 +771,17 @@ auto CpuKvOverRoceTransProvider::FindLinkPosition(std::uint64_t linkId)
     });
 }
 
-void CpuKvOverRoceTransProvider::TeardownLink(Link& link) noexcept { link.queuePairs.clear(); }
+void CpuKvOverRoceTransProvider::TeardownLink(Link& link) noexcept
+{
+    // The data paths own receive memory and completion state, so they are
+    // released before the queue pairs behind them go away.
+    for (auto& connection : link.ioConnections) {
+        if (connection != nullptr) { connection->Shutdown(); }
+    }
+    link.ioConnections.clear();
+    link.queuePairs.clear();
+}
+
 
 Capabilities CpuKvOverRoceTransProvider::AdoptCapabilities(const Capabilities& local,
                                                            const Capabilities& peer)
@@ -833,13 +897,16 @@ Status CpuKvOverRoceTransProvider::CreateConnection(
     if (handshake.ok()) { handshake = ExchangeConnectRequests(*link, error); }
     if (handshake.ok()) { handshake = ConnectQueuePairs(*link, error); }
     if (handshake.ok()) { handshake = ExchangeConnectDone(*link, error); }
+    // The data path needs queue pairs in RTS, so it starts once the handshake is
+    // through and before the handles are handed out.
+    if (handshake.ok()) { handshake = StartIoConnections(*link, error); }
     if (!handshake.ok()) {
         TeardownLink(*link);
         return Failure(handshake.code, "linking with " + remoteIp + ":" + std::to_string(port) +
                                            " failed: " + error);
     }
 
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> guard(mutex_);
     link->id = nextLinkId_++;
     const std::uint64_t linkId = link->id;
 
@@ -863,7 +930,7 @@ std::vector<Status> CpuKvOverRoceTransProvider::DeleteConnections(
         std::uint64_t linkId = 0;
         bool lastHandle = false;
         {
-            std::lock_guard<std::mutex> guard(mutex_);
+            std::unique_lock<std::shared_mutex> guard(mutex_);
             const auto found = handleToLink_.find(handle);
             if (found == handleToLink_.end()) {
                 results.push_back(InvalidArgument("unknown connection handle"));
@@ -879,7 +946,7 @@ std::vector<Status> CpuKvOverRoceTransProvider::DeleteConnections(
         if (lastHandle) {
             std::unique_ptr<Link> closing;
             {
-                std::lock_guard<std::mutex> guard(mutex_);
+                std::unique_lock<std::shared_mutex> guard(mutex_);
                 const auto position = FindLinkPosition(linkId);
                 if (position != links_.end()) {
                     closing = std::move(*position);
@@ -906,7 +973,7 @@ Status CpuKvOverRoceTransProvider::GetServerCapabilities(ConnectionHandle connec
                                                          ServerKvCapabilities& capabilities)
 {
     capabilities = ServerKvCapabilities{};
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> guard(mutex_);
     const auto found = handleToLink_.find(connectionHandle);
     if (found == handleToLink_.end()) { return InvalidArgument("unknown connection handle"); }
     const auto position = FindLinkPosition(found->second);
@@ -935,17 +1002,154 @@ Status CpuKvOverRoceTransProvider::GetServerCapabilities(ConnectionHandle connec
     return Status::OK();
 }
 
+Status CpuKvOverRoceTransProvider::ResolveHandle(ConnectionHandle handle, Link*& link,
+                                                 std::uint32_t& qpIndex)
+{
+    link = nullptr;
+    qpIndex = 0;
+    const auto found = handleToLink_.find(handle);
+    if (found == handleToLink_.end()) { return InvalidArgument("unknown connection handle"); }
+    const auto position = FindLinkPosition(found->second);
+    if (position == links_.end()) {
+        return InvalidArgument("connection handle refers to a closed link");
+    }
+    const auto raw = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(handle));
+    const auto encodedIndex = static_cast<std::uint32_t>(raw & kHandleIndexMask);
+    if (encodedIndex == 0U) { return InvalidArgument("malformed connection handle"); }
+    qpIndex = encodedIndex - 1U;
+    link = position->get();
+    // The simulated backend creates a queue pair record per handle without a
+    // verbs object, so the agreed count is what a handle can address.
+    if (qpIndex >= link->linkQpCount) {
+        return InvalidArgument("connection handle refers to a queue pair the link does not carry");
+    }
+    return Status::OK();
+}
+
+Status CpuKvOverRoceTransProvider::ResolveSendLkey(std::uintptr_t addr, std::size_t size,
+                                                   std::uint32_t& lkey, std::string& error) const
+{
+    lkey = 0;
+    if (addr == 0U || size == 0U) {
+        error = "the buffer address and size must not be zero";
+        return Failure(StatusCode::INVALID_ARGUMENT, error);
+    }
+
+    ProcessState& state = ProcessState::Instance();
+    std::lock_guard<std::mutex> guard(state.memoryMutex);
+    bool backendMismatch = false;
+    bool deviceMismatch = false;
+    const MRHandle handle = FindCoveringRegistration(
+        addr, size, device_.load(std::memory_order_acquire), backendMismatch, deviceMismatch);
+    if (handle == 0) {
+        if (backendMismatch) {
+            error = "the covering registration was made by the simulated queue pair backend";
+            return Failure(StatusCode::UNSUPPORTED, error);
+        }
+        if (deviceMismatch) {
+            error = "the covering registration belongs to another (adapter, port) pair";
+            return Failure(StatusCode::UNSUPPORTED, error);
+        }
+        error = "no registered region of this provider covers the send buffer";
+        return Failure(StatusCode::BUFFER_NOT_REGISTERED, error);
+    }
+
+    const Registration& registration = state.registrations.at(handle);
+    lkey = registration.device != nullptr ? registration.device->Lkey(registration.mr) : 0U;
+    if (lkey == 0U) {
+        error = "the covering registration has no local key";
+        return Failure(StatusCode::BUFFER_NOT_REGISTERED, error);
+    }
+    return Status::OK();
+}
+
 std::vector<Status> CpuKvOverRoceTransProvider::Send(const std::vector<SendIoBatch>& ioBatches,
                                                      std::uint32_t kernelCount,
                                                      std::uint32_t quietCount)
 {
+    // The CPU posts every request on its own and reaps every completion, so the
+    // on-device launch knobs have nothing to configure on this path.
     (void)kernelCount;
     (void)quietCount;
-    return NotImplementedForEach("Send", ioBatches.size());
+
+    std::vector<Status> results(ioBatches.size(), Status::OK());
+    if (ioBatches.empty()) { return results; }
+
+    // Shared: Send only has to keep the link alive while it posts, so it never
+    // excludes the completion loop or another send; only create and teardown
+    // take the lock exclusively.
+    std::shared_lock<std::shared_mutex> guard(mutex_);
+    std::string error;
+    for (std::size_t index = 0; index < ioBatches.size(); ++index) {
+        const SendIoBatch& batch = ioBatches[index];
+        Link* link = nullptr;
+        std::uint32_t qpIndex = 0;
+        Status status = ResolveHandle(batch.connectionHandle, link, qpIndex);
+        if (!status.ok()) { results[index] = status; continue; }
+        if (!UseVerbsBackend()) {
+            // Without a device there is no completion queue to poll: the simulated
+            // backend keeps the handshake testable, not the data path.
+            results[index] = Failure(
+                StatusCode::UNSUPPORTED,
+                "Send needs the verbs queue pair backend; set asu_roce_qp_backend to verbs");
+            continue;
+        }
+        if (batch.sendBuffer == nullptr || batch.flagBuffer == nullptr || batch.len == 0U) {
+            results[index] = InvalidArgument(
+                "send buffer, flag buffer and length have to be set for every batch");
+            continue;
+        }
+        if (qpIndex >= link->ioConnections.size() || link->ioConnections[qpIndex] == nullptr) {
+            results[index] = Failure(StatusCode::NOT_INITIALIZED,
+                                     "the queue pair of this handle has no data path");
+            continue;
+        }
+
+        // The send/response mode needs a request that does not ask for the
+        // writeback: the store answers with an RDMA send instead, and the
+        // completion is published into the flag buffer by PollCompletion().
+        RequestDescription description;
+        status = DescribeRequest(batch.sendBuffer, batch.len, description);
+        if (!status.ok()) { results[index] = status; continue; }
+        if (description.writeback) {
+            results[index] = InvalidArgument(
+                "the SQE asks for a response writeback; the CPU path needs send_response");
+            continue;
+        }
+        if (batch.opcode != 0U && batch.opcode != description.opcode) {
+            results[index] = InvalidArgument("the batch opcode does not match the packed SQE");
+            continue;
+        }
+
+        std::uint32_t lkey = 0;
+        error.clear();
+        status = ResolveSendLkey(reinterpret_cast<std::uintptr_t>(batch.sendBuffer), batch.len,
+                                 lkey, error);
+        if (!status.ok()) { results[index] = Failure(status.code, error); continue; }
+
+        error.clear();
+        results[index] = link->ioConnections[qpIndex]->PostRequest(
+            batch.sendBuffer, static_cast<std::size_t>(batch.len), lkey, batch.flagBuffer,
+            description.cid, description.responseBytes, error);
+    }
+    return results;
+}
+
+void CpuKvOverRoceTransProvider::PollCompletion()
+{
+    // Shared: publishing answers only reads the link table; a teardown waits for
+    // the poll to finish before the queue pairs go away.
+    std::shared_lock<std::shared_mutex> guard(mutex_);
+    for (auto& link : links_) {
+        if (link == nullptr) { continue; }
+        for (auto& connection : link->ioConnections) {
+            if (connection != nullptr) { connection->PollCompletion(); }
+        }
+    }
 }
 
 Status CpuKvOverRoceTransProvider::RegisterMemory(
-    const std::vector<RegisterMemoryDesc>& memoryDescs, std::vector<MRHandle>& mrHandles)
+    std::vector<RegisterMemoryDesc>& memoryDescs, std::vector<MRHandle>& mrHandles)
 {
     mrHandles.clear();
     if (memoryDescs.empty()) { return InvalidArgument("no memory descriptor was given"); }
@@ -973,6 +1177,7 @@ Status CpuKvOverRoceTransProvider::RegisterMemory(
         Registration registration;
         registration.addr = desc.addr;
         registration.size = desc.size;
+        registration.memoryType = desc.memoryType;
         registration.owner = this;
         MRHandle handle = 0;
         if (verbs) {
@@ -1024,6 +1229,9 @@ Status CpuKvOverRoceTransProvider::RegisterMemory(
             state.registrations[handles[index]] = staged[index];
         }
     }
+    // The CPU path keeps the address it was given; report it so the transport
+    // addresses the region exactly as it allocated it.
+    for (auto& desc : memoryDescs) { desc.outDeviceAddr = desc.addr; }
     mrHandles = std::move(handles);
     return Status::OK();
 }
@@ -1108,6 +1316,9 @@ Status CpuKvOverRoceTransProvider::BindMemory(const std::vector<BindMemoryDesc>&
         registration.tokenId = desc.tokenId;
         registration.source = sources[index];
         registration.owner = this;
+        // A binding describes the very region the source registration owns, so it
+        // carries the address space of that region as well.
+        registration.memoryType = state.registrations.at(sources[index]).memoryType;
         const MRHandle handle = state.nextBookkeepingId++;
         state.registrations[handle] = registration;
         mrHandles.push_back(handle);
@@ -1224,8 +1435,8 @@ Status CpuKvOverRoceTransProvider::AllocThread(std::uint32_t threadNum,
 {
     (void)threadNum;
     (void)notifyNumPerThread;
-    // IO submitted through this provider runs on the caller thread, so there is
-    // no SDK thread to hand out.  Reporting success keeps the client code path
+    // The data path is reaped by the transport's completion loop, so there is no
+    // SDK thread to hand out.  Reporting success keeps the client code path
     // identical to the other providers.
     threads.clear();
     return Status::OK();
@@ -1253,13 +1464,13 @@ Status CpuKvOverRoceTransProvider::GetMemTokenId(MRHandle mrHandle, std::uint32_
 
 std::size_t CpuKvOverRoceTransProvider::ConnectionCount() const
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> guard(mutex_);
     return links_.size();
 }
 
 std::size_t CpuKvOverRoceTransProvider::HandleCount() const
 {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> guard(mutex_);
     return handleToLink_.size();
 }
 

@@ -28,7 +28,7 @@ target_include_directories(m800_fake_agent PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.
 add_dependencies(kv.test m800_fake_agent)
 target_compile_definitions(kv.test PRIVATE M800_FAKE_AGENT_PATH="$<TARGET_FILE:m800_fake_agent>")
 
-if(BUILD_KV_CLIENT_PROVIDER_ROCE)
+if(BUILD_KV_CLIENT_PROVIDER_ROCE OR BUILD_KV_CLIENT_PROVIDER_CPU_ROCE)
     # The tests branch on the build flavour: the stub device layer rejects the
     # verbs backend with UNSUPPORTED, the real one tries to open an adapter.
     target_compile_definitions(kv.test PRIVATE UCM_ASU_ENABLE_ROCE_PROVIDER=1)

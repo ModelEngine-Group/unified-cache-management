@@ -79,7 +79,7 @@ public:
     {
         return {};
     }
-    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& descs,
+    Status RegisterMemory(std::vector<RegisterMemoryDesc>& descs,
                           std::vector<MRHandle>& handles) override
     {
         handles.clear();

@@ -852,7 +852,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, RegisterMemoryRegistersDeviceMemory)
     CreateProvider();
     ASSERT_TRUE(provider_ != nullptr);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096, 0x8000},
         {TransProvider::MemType::MEM_DEVICE, 0x2000, 8192, 0x9000}
     };
@@ -887,21 +887,22 @@ TEST_F(HccpKvOverRoceTransProviderTest, RegisterMemoryRejectsInvalidDescriptors)
     ASSERT_TRUE(provider_ != nullptr);
 
     std::vector<MRHandle> handles{7, 8};
-    ASSERT_TRUE(provider_->RegisterMemory({}, handles).ok());
+    std::vector<TransProvider::RegisterMemoryDesc> none;
+    ASSERT_TRUE(provider_->RegisterMemory(none, handles).ok());
     EXPECT_TRUE(handles.empty());
     EXPECT_EQ(fake_.registerCalls(), 0U);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> host{
+    std::vector<TransProvider::RegisterMemoryDesc> host{
         {TransProvider::MemType::MEM_HOST, 0x1000, 4096}
     };
     EXPECT_EQ(provider_->RegisterMemory(host, handles).code, StatusCode::INVALID_ARGUMENT);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> zeroAddr{
+    std::vector<TransProvider::RegisterMemoryDesc> zeroAddr{
         {TransProvider::MemType::MEM_DEVICE, 0, 4096}
     };
     EXPECT_EQ(provider_->RegisterMemory(zeroAddr, handles).code, StatusCode::INVALID_ARGUMENT);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> zeroSize{
+    std::vector<TransProvider::RegisterMemoryDesc> zeroSize{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 0}
     };
     EXPECT_EQ(provider_->RegisterMemory(zeroSize, handles).code, StatusCode::INVALID_ARGUMENT);
@@ -916,7 +917,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, RegisterMemoryReportsOperatorFailure)
     ASSERT_TRUE(provider_ != nullptr);
     fake_.setRegisterResult(HCCP_KV_ROCE_UNSUPPORTED);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096}
     };
     std::vector<MRHandle> handles;
@@ -932,7 +933,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, RegisterMemoryRollsBackOnZeroRkey)
     ASSERT_TRUE(provider_ != nullptr);
     fake_.setRegisterZeroRkeyIndex(1);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096},
         {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096}
     };
@@ -951,7 +952,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryDropsRegisteredRecords)
     CreateProvider();
     ASSERT_TRUE(provider_ != nullptr);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096},
         {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096}
     };
@@ -979,7 +980,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryRejectsInvalidHandles)
     CreateProvider();
     ASSERT_TRUE(provider_ != nullptr);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096}
     };
     std::vector<MRHandle> handles;
@@ -1009,7 +1010,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryKeepsRecordOnOperatorFai
     CreateProvider();
     ASSERT_TRUE(provider_ != nullptr);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096}
     };
     std::vector<MRHandle> handles;
@@ -1040,7 +1041,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryDoesNotBlockOtherMemoryC
     CreateProvider();
     ASSERT_TRUE(provider_ != nullptr);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096},
         {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096}
     };
@@ -1069,7 +1070,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, UnregisterMemoryDoesNotBlockOtherMemoryC
     std::thread lookupThread([&] {
         std::uint32_t tokenId = 0;
         tokenStatus = provider_->GetMemTokenId(handles[1], tokenId);
-        const std::vector<TransProvider::RegisterMemoryDesc> extra{
+        std::vector<TransProvider::RegisterMemoryDesc> extra{
             {TransProvider::MemType::MEM_DEVICE, 0x3000, 4096}
         };
         registerStatus = provider_->RegisterMemory(extra, extraHandles);
@@ -1185,7 +1186,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, DestructorUnregistersOperatorMemory)
 
     auto connections = CreateConnections(1);
     ASSERT_EQ(connections.size(), 1U);
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096}
     };
     std::vector<MRHandle> handles;
@@ -1239,7 +1240,7 @@ TEST_F(HccpKvOverRoceTransProviderTest, MinimalLibraryFallsBackToUnsupported)
               StatusCode::UNSUPPORTED);
     EXPECT_EQ(fake_.capabilitiesCalls(), 0U);
 
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096}
     };
     std::vector<MRHandle> memoryHandles;

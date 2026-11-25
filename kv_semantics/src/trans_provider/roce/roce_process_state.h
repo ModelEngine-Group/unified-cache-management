@@ -67,6 +67,10 @@ struct Registration {
     // of the same (adapter, port) pair and by nobody else.  Null for simulated
     // registrations, which have no access record at all.
     const VerbDevice* device{nullptr};
+    // Address space the client registered the region in.  A registration made
+    // for a queue pair has to be addressed by the CPU (it posts the SGE itself),
+    // so the data path only accepts host registrations.
+    TransProvider::MemType memoryType{TransProvider::MemType::MEM_HOST};
 };
 
 struct DeviceKey {

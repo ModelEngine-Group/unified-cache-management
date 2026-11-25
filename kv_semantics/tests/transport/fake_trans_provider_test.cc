@@ -57,7 +57,7 @@ std::array<std::uint32_t, kSqeDwordCount> BuildKeepAliveRequest(std::uint16_t ci
 TEST(FakeTransProviderTest, RegisterMemoryReturnsUniqueHandlesAcrossCalls)
 {
     FakeTransProvider provider(FakeTransProviderConfig{});
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096},
         {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096}
     };
@@ -102,19 +102,13 @@ TEST(FakeTransProviderTest, SendQueuesCompletionForWorker)
     auto request = BuildKeepAliveRequest(cid);
     std::array<std::uint32_t, kCqeDwordCount> completion{};
     std::vector<MRHandle> handles;
-    ASSERT_TRUE(
-        provider
-            .RegisterMemory(
-                {
-                    {TransProvider::MemType::MEM_HOST,
-                     reinterpret_cast<std::uintptr_t>(request.data()),    sizeof(request),
-                     reinterpret_cast<std::uintptr_t>(request.data())   },
-                    {TransProvider::MemType::MEM_HOST,
-                     reinterpret_cast<std::uintptr_t>(completion.data()), sizeof(completion),
-                     reinterpret_cast<std::uintptr_t>(completion.data())}
-    },
-                handles)
-            .ok());
+    std::vector<TransProvider::RegisterMemoryDesc> regionDescs{
+        {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(request.data()),
+         sizeof(request), reinterpret_cast<std::uintptr_t>(request.data())   },
+        {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(completion.data()),
+         sizeof(completion), reinterpret_cast<std::uintptr_t>(completion.data())}
+    };
+    ASSERT_TRUE(provider.RegisterMemory(regionDescs, handles).ok());
 
     const auto statuses = provider.Send(
         {

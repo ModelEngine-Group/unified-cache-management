@@ -748,13 +748,16 @@ void FakeTransProvider::ProcessIoTask(IoTask& task)
     PublishCompletion(task.flagBuffer, completion);
 }
 
-Status FakeTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+Status FakeTransProvider::RegisterMemory(std::vector<RegisterMemoryDesc>& memoryDescs,
                                          std::vector<MRHandle>& mrHandles)
 {
     mrHandles.clear();
     mrHandles.reserve(memoryDescs.size());
     std::lock_guard<std::mutex> lock(registeredMemoryMu_);
-    for (const auto& desc : memoryDescs) {
+    for (auto& desc : memoryDescs) {
+        // The fake backend keeps the address it was given, so the transport can
+        // keep addressing the region the way it allocated it.
+        desc.outDeviceAddr = desc.addr;
         auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
         if (handle == 0) { handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed); }
         auto mrHandle = reinterpret_cast<MRHandle>(handle);

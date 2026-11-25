@@ -51,7 +51,7 @@ TEST(CpuKvOverRoceSharedStateTest, ASecondProviderBindsWhatTheFirstOneRegistered
     roce::CpuKvOverRoceTransProvider first(MakeSimulatedConfig());
     roce::CpuKvOverRoceTransProvider second(MakeSimulatedConfig());
     std::uint8_t buffer[4096] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };
@@ -111,7 +111,7 @@ TEST(CpuKvOverRoceSharedStateTest, RejectsRangesRegisteredWithAnotherBackend)
     roce::CpuKvOverRoceTransProvider simulated(MakeSimulatedConfig());
     roce::CpuKvOverRoceTransProvider verbs(verbsConfig);
     std::uint8_t buffer[2048] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };
@@ -139,11 +139,11 @@ TEST(CpuKvOverRoceSharedStateTest, HandlesOfTwoProvidersNeverAlias)
     std::uint8_t secondBuffer[1024] = {0};
     std::vector<MRHandle> firstHandles;
     std::vector<MRHandle> secondHandles;
-    const std::vector<TransProvider::RegisterMemoryDesc> firstDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> firstDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(firstBuffer),
          sizeof(firstBuffer), 0}
     };
-    const std::vector<TransProvider::RegisterMemoryDesc> secondDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> secondDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(secondBuffer),
          sizeof(secondBuffer), 0}
     };
@@ -159,7 +159,7 @@ TEST(CpuKvOverRoceSharedStateTest, OnlyTheOwningProviderReleasesARegion)
     roce::CpuKvOverRoceTransProvider owner(MakeSimulatedConfig());
     roce::CpuKvOverRoceTransProvider other(MakeSimulatedConfig());
     std::uint8_t buffer[2048] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };
@@ -183,7 +183,7 @@ TEST(CpuKvOverRoceSharedStateTest, DestroyingTheOwnerRetiresItsBindings)
     auto owner = std::make_unique<roce::CpuKvOverRoceTransProvider>(MakeSimulatedConfig());
     roce::CpuKvOverRoceTransProvider other(MakeSimulatedConfig());
     std::uint8_t buffer[4096] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };

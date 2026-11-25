@@ -97,8 +97,16 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
                 return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
             }
             if (!buffer->SupportsHostMappedDeviceBuffer()) {
-                return Status::Error(StatusCode::UNSUPPORTED,
-                                     "host-mapped device buffer not supported by runtime");
+                // A pure CPU deployment has no device alias to hand out.  Pinned
+                // host memory is visible to the CPU and to the NIC alike, so it is
+                // used as the fallback instead of failing the whole transport.
+                auto owner = buffer->MakeHostBuffer(size);
+                if (!owner) {
+                    return Status::Error(StatusCode::INTERNAL_ERROR,
+                                         "failed to allocate pinned host memory");
+                }
+                region = {owner, owner.get(), owner.get(), TransProvider::MemType::MEM_HOST};
+                return Status::OK();
             }
             void* deviceAddr = nullptr;
             auto owner = buffer->MakeHostMappedDeviceBuffer(size, &deviceAddr);
@@ -190,8 +198,14 @@ Status BufferManager::GetRegisterMemoryDesc(TransProvider::RegisterMemoryDesc& d
 {
     if (!region_) { return Status::Error(StatusCode::NOT_INITIALIZED, name_ + " not initialized"); }
     desc = {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr),
-            slot_stride_ * slot_num_, reinterpret_cast<uintptr_t>(region_.localAddr)};
+            slot_stride_ * slot_num_, reinterpret_cast<uintptr_t>(region_.localAddr), 0};
     return Status::OK();
+}
+
+void BufferManager::SetDeviceAddress(std::uintptr_t deviceAddr)
+{
+    if (deviceAddr == 0) { return; }
+    region_.deviceAddr = reinterpret_cast<void*>(deviceAddr);
 }
 
 Status BufferManager::Allocate(std::size_t size, ScatterGatherEntry& sge)

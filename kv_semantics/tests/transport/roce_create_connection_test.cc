@@ -488,6 +488,26 @@ TEST(CpuKvOverRoceCreateConnectionTest, RejectsACapabilityRequestFromAnotherMajo
         << serverStatus.message;
 }
 
+// The CPU IO documentation names the knobs with the short aliases; they have to
+// configure the same queue pair settings as the canonical asu_roce_* keys.
+TEST(CpuKvOverRoceCreateConnectionTest, AcceptsTheShortConfigAliases)
+{
+    TransportConfig config = MakeClientConfig();
+    config.attrs.erase("roce_gid_index");
+    config.attrs["gid_index"] = "0";
+    config.attrs["roce_port"] = "1";
+    config.attrs["ioq_depth"] = "16";
+    config.attrs["max_inflight_kv_per_qp"] = "8";
+
+    roce::CpuKvOverRoceTransProvider provider(config);
+    ConnectionHandles handles;
+    // Nothing listens on port 1: the failure has to be the connect attempt, not a
+    // rejected configuration, which proves the aliases were understood.
+    const Status status = provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 200, handles);
+    EXPECT_NE(std::string::npos, status.message.find("out-of-band TCP connect"))
+        << status.message;
+}
+
 TEST(RoceTcpChannelTest, ReportsThatAPortIsAlreadyInUse)
 {
     const std::uint16_t port = ReserveTcpPort();

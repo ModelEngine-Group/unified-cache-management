@@ -74,7 +74,7 @@ public:
         return std::vector<Status>(ioBatches.size(), Status::OK());
     }
 
-    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+    Status RegisterMemory(std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& handles) override
     {
         ++registerCallCount;

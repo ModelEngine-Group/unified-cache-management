@@ -151,8 +151,11 @@ Status TransportTaskExecutor::RegisterBufferMemory(BufferManager& bufferManager,
     auto status = bufferManager.GetRegisterMemoryDesc(desc);
     if (!status.ok()) { return status; }
 
+    // The provider may place the region at an address of its own; whatever it
+    // reports becomes the device address the transport hands out afterwards.
+    std::vector<TransProvider::RegisterMemoryDesc> descs{desc};
     std::vector<MRHandle> mrHandles;
-    status = transProvider_->RegisterMemory({desc}, mrHandles);
+    status = transProvider_->RegisterMemory(descs, mrHandles);
     if (!status.ok()) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "provider memory registration failed: " + status.message);
@@ -160,6 +163,9 @@ Status TransportTaskExecutor::RegisterBufferMemory(BufferManager& bufferManager,
     if (mrHandles.empty() || mrHandles[0] == kInvalidMRHandle) {
         return Status::Error(StatusCode::INTERNAL_ERROR, "provider returned no valid MR handle");
     }
+    std::uintptr_t deviceAddress = descs[0].outDeviceAddr;
+    if (deviceAddress == 0) { deviceAddress = desc.addr; }
+    bufferManager.SetDeviceAddress(deviceAddress);
 
     mrHandle = mrHandles[0];
     std::uint32_t tokenId = 0;

@@ -1674,10 +1674,17 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
     return results;
 }
 
-Status AICPUTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+Status AICPUTransProvider::RegisterMemory(std::vector<RegisterMemoryDesc>& memoryDescs,
                                           std::vector<MRHandle>& mrHandles)
 {
-    return RegisterMemoryImpl(memoryDescs, RegistrationMode::REGISTER, "RegisterMemory", mrHandles);
+    const Status status =
+        RegisterMemoryImpl(memoryDescs, RegistrationMode::REGISTER, "RegisterMemory", mrHandles);
+    if (status.ok()) {
+        // HCOMM keeps the business address it was handed, so the transport keeps
+        // addressing the device memory it allocated.
+        for (auto& desc : memoryDescs) { desc.outDeviceAddr = desc.addr; }
+    }
+    return status;
 }
 
 Status AICPUTransProvider::BindMemory(const std::vector<BindMemoryDesc>& regions,

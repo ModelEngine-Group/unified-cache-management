@@ -133,6 +133,7 @@ const char* TransProviderBackendName(kv::TransProviderType providerType)
         case kv::TransProviderType::AIV: return "aiv";
         case kv::TransProviderType::AICPU: return "aicpu";
         case kv::TransProviderType::CPU: return "cpu";
+        case kv::TransProviderType::CPU_ROCE: return "cpu_roce";
         case kv::TransProviderType::HCCP_KV_OVER_ROCE: return "hccp_kv_over_roce";
         case kv::TransProviderType::UNSUPPORTED: return "unsupported";
     }
@@ -147,6 +148,9 @@ kv::TransProviderType ParseTransProviderBackend(std::string backend)
     if (backend == "AIV") { return kv::TransProviderType::AIV; }
     if (backend == "AICPU") { return kv::TransProviderType::AICPU; }
     if (backend == "CPU") { return kv::TransProviderType::CPU; }
+    if (backend == "CPU_ROCE" || backend == "CPU-ROCE") {
+        return kv::TransProviderType::CPU_ROCE;
+    }
     if (backend == "HCCP_KV_OVER_ROCE" || backend == "HCCP") {
         return kv::TransProviderType::HCCP_KV_OVER_ROCE;
     }
@@ -245,6 +249,11 @@ bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key
 constexpr std::string_view kRoceTransportKeys[] = {
     "asu_roce_hca_name",
     "asu_roce_hca_port",
+    // Short aliases the CPU IO data path documentation uses.
+    "asu_roce_port",
+    "asu_gid_index",
+    "asu_ioq_depth",
+    "asu_max_inflight_kv_per_qp",
     "asu_roce_gid_index",
     "asu_roce_sq_depth",
     "asu_roce_rq_depth",
@@ -315,6 +324,14 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
     // The provider reads these attributes; backends that do not know a key ignore it.
     for (const auto& entry : config.roceAttrs) {
         transportConfig.attrs[entry.first] = entry.second;
+    }
+
+    if (config.transProviderType == kv::TransProviderType::CPU ||
+        config.transProviderType == kv::TransProviderType::CPU_ROCE) {
+        // The CPU data path asks the store to answer with an RDMA send: the SQE
+        // carries no response buffer and the provider publishes the completion
+        // into the flag buffer itself.
+        transportConfig.attrs["send_response"] = "true";
     }
 
     if (config.transProviderType == kv::TransProviderType::HCCP_KV_OVER_ROCE) {
@@ -871,7 +888,8 @@ private:
         }
         // The provider refuses to guess a GID table entry, so a cpu backend
         // without the index would only fail on the first connection attempt.
-        if (config.transProviderType == kv::TransProviderType::CPU &&
+        if ((config.transProviderType == kv::TransProviderType::CPU ||
+             config.transProviderType == kv::TransProviderType::CPU_ROCE) &&
             config.roceAttrs.find("roce_gid_index") == config.roceAttrs.end()) {
             return Status::InvalidParam(
                 "asu_roce_gid_index is required when asu_trans_provider_backend is cpu (the "

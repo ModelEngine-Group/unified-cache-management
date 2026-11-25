@@ -64,7 +64,7 @@ public:
         size_t size;
     };
 
-    virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+    virtual Status RegisterMemory(std::vector<RegisterMemoryDesc>& memoryDescs,
                                   std::vector<MRHandle>& mrHandles) = 0;
 
     struct BindMemoryDesc {

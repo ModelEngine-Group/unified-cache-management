@@ -44,7 +44,7 @@ TEST(CpuKvOverRoceMemoryTest, RegistersBuffersAndReportsTheirRemoteKeys)
 
     std::uint8_t first[4096] = {0};
     std::uint8_t second[8192] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> descs{
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(first),  sizeof(first),
          0},
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(second), sizeof(second),
@@ -82,17 +82,18 @@ TEST(CpuKvOverRoceMemoryTest, RejectsEmptyAndZeroSizedDescriptors)
     roce::CpuKvOverRoceTransProvider provider(MakeSimulatedConfig());
 
     std::vector<MRHandle> handles;
-    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, provider.RegisterMemory({}, handles).code);
+    std::vector<TransProvider::RegisterMemoryDesc> empty;
+    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, provider.RegisterMemory(empty, handles).code);
     EXPECT_TRUE(handles.empty());
 
     std::uint8_t buffer[64] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> zeroAddress{
+    std::vector<TransProvider::RegisterMemoryDesc> zeroAddress{
         {TransProvider::MemType::MEM_HOST, 0, sizeof(buffer), 0}
     };
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT, provider.RegisterMemory(zeroAddress, handles).code);
     EXPECT_TRUE(handles.empty());
 
-    const std::vector<TransProvider::RegisterMemoryDesc> zeroSize{
+    std::vector<TransProvider::RegisterMemoryDesc> zeroSize{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), 0, 0}
     };
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT, provider.RegisterMemory(zeroSize, handles).code);
@@ -104,7 +105,7 @@ TEST(CpuKvOverRoceMemoryTest, BindsARegisteredRangeAndCarriesThePeerToken)
     roce::CpuKvOverRoceTransProvider provider(MakeSimulatedConfig());
 
     std::uint8_t buffer[4096] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };
@@ -156,7 +157,7 @@ TEST(CpuKvOverRoceMemoryTest, RejectsBindingMemoryItDidNotRegister)
 
     // A registered region is not a licence to bind a range that runs past its
     // end either.
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), 512, 0}
     };
     std::vector<MRHandle> registrations;
@@ -174,7 +175,7 @@ TEST(CpuKvOverRoceMemoryTest, ReleasingARegistrationRetiresItsBindings)
     roce::CpuKvOverRoceTransProvider provider(MakeSimulatedConfig());
 
     std::uint8_t buffer[2048] = {0};
-    const std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs{
         {TransProvider::MemType::MEM_HOST, reinterpret_cast<std::uintptr_t>(buffer), sizeof(buffer),
          0}
     };

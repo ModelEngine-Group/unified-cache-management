@@ -125,7 +125,7 @@ public:
         return std::vector<Status>(ioBatches.size(), Status::OK());
     }
 
-    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+    Status RegisterMemory(std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& mrHandles) override
     {
         state_->registerCalls.emplace_back(asuId_);

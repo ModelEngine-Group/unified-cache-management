@@ -76,6 +76,11 @@ Status VerbDevice::UnregisterMemory(void* region, std::string& error) const
     error = kNotBuilt;
     return Status::Error(StatusCode::UNSUPPORTED, error);
 }
+std::uint32_t VerbDevice::Lkey(void* region) const noexcept
+{
+    static_cast<void>(region);
+    return 0;
+}
 VerbQp::~VerbQp() = default;
 VerbQp::VerbQp(VerbQp&& other) noexcept = default;
 VerbQp& VerbQp::operator=(VerbQp&& other) noexcept = default;
@@ -98,6 +103,32 @@ Status VerbQp::Connect(VerbDevice& device, const VerbQpConfig& config, const QpI
     static_cast<void>(linkPsn);
     error = kNotBuilt;
     return Status::Error(StatusCode::UNSUPPORTED, error);
+}
+Status VerbQp::PostSend(std::uint64_t wrId, const void* buffer, std::size_t length,
+                        std::uint32_t lkey, std::string& error)
+{
+    static_cast<void>(wrId);
+    static_cast<void>(buffer);
+    static_cast<void>(length);
+    static_cast<void>(lkey);
+    error = kNotBuilt;
+    return Status::Error(StatusCode::UNSUPPORTED, error);
+}
+Status VerbQp::PostReceive(std::uint64_t wrId, void* buffer, std::size_t length, std::uint32_t lkey,
+                           std::string& error)
+{
+    static_cast<void>(wrId);
+    static_cast<void>(buffer);
+    static_cast<void>(length);
+    static_cast<void>(lkey);
+    error = kNotBuilt;
+    return Status::Error(StatusCode::UNSUPPORTED, error);
+}
+std::size_t VerbQp::Poll(Completion* completions, std::size_t maxCompletions) noexcept
+{
+    static_cast<void>(completions);
+    static_cast<void>(maxCompletions);
+    return 0;
 }
 void VerbQp::Reset() noexcept {}
 std::uint32_t VerbQp::Qpn() const noexcept { return 0; }

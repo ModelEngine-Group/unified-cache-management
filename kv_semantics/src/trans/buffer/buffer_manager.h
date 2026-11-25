@@ -65,6 +65,11 @@ public:
     void SetTokenId(std::uint32_t tokenId) { tokenId_ = tokenId; }
     Status GetRegisterMemoryDesc(TransProvider::RegisterMemoryDesc& desc) const;
 
+    // Adopts the device address a provider reported for the region.  The CPU
+    // path registers the memory where it already is, while a provider that maps
+    // a different alias may hand back another address.
+    void SetDeviceAddress(std::uintptr_t deviceAddr);
+
 private:
     struct BufferRegion {
         static Status Create(MemoryType type, std::size_t size, BufferRegion& region);

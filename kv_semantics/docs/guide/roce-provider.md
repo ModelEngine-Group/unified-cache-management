@@ -18,8 +18,8 @@ The provider is registered as `kv::TransProviderType::CPU` and selected with
 | `GetServerCapabilities` | implemented: returns the limits the peer announced, field by field, with `queueNum` set to the number of queue pairs this link actually carries |
 | `RegisterMemory` / `UnregisterMemory` | implemented with plain verbs (`ibv_reg_mr` / `ibv_dereg_mr`) |
 | `BindMemory` | implemented for ranges some provider in the process registered: records the peer token and returns it unchanged |
-| `Send` | not implemented yet (returns `UNSUPPORTED`) |
-| `AllocThread` / `FreeThread` | no-op success: IO runs on the caller thread |
+| `Send` | implemented on the verbs backend: posts the packed SQE with an RDMA send and returns; the transport's completion loop reaps the answer the store sends back (see [Data path](#data-path-sendresponse-mode)) |
+| `AllocThread` / `FreeThread` | no-op success: `Send` runs on the calling thread and the provider creates no thread of its own |
 | `GetMemTokenId` | implemented, returns the `rkey` of the registered region |
 
 ## Link establishment
@@ -89,6 +89,51 @@ pairs and closes the socket. The request is a one-way notification, so nothing
 waits for an acknowledgement: a peer that is already gone does not fail the
 call, and the local resources are released regardless.
 
+## Data path (send/response mode)
+
+Every connection carries one data path per queue pair (`VerbsConnection`); the
+CPU posts the packed requests itself and the store answers with a two sided RDMA
+send, so no device operator is involved and the provider starts no thread.
+
+1. **Packing (client layer).** With `send_response` set in the transport attrs the
+   SQE is packed with `Rflag=0`, no response buffer address and no MR key: the
+   store must answer with a send. `asu_trans_provider_backend: cpu` (or
+   `cpu_roce`) sets the attr automatically.
+2. **Send (CPU).** `Send` validates the batch, looks up the queue pair of its
+   handle, checks that the packed request is the send/response form, and posts
+   it with an RDMA send (`IBV_WR_SEND`, signalled). It never waits for, polls or
+   sleeps on a completion queue: when every receive work request of the queue
+   pair is claimed by an outstanding answer it returns `RESOURCE_BUSY`, and a
+   failed post returns `IO_ERROR`.
+3. **Answer (store).** The store answers with one two sided send carrying the
+   completion record: the sixteen byte CQE header (cid and the fifteen bit status
+   in the third dword) followed by the result buffer, which is the layout of the
+   store appliance's `recv_data_block`.
+4. **Completion (CPU).** The transport's completion loop calls
+   `TransProvider::PollCompletion()`; the provider drains the completion queues of
+   every link, matches each answer to its request by `cid` (answers are not
+   ordered like the requests), copies the record into the flag buffer the caller
+   polls and only then reposts the receive buffer. The cid/status dword is stored
+   last with release semantics, which is exactly what
+   `ProtocolManager::PollResponseCid` waits for, so the upper layers are
+   unchanged.
+
+One receive work request covers one outstanding answer, so the receive depth
+(`asu_roce_rq_depth`, 64 by default) is the per queue pair limit of requests in
+flight. The ring is posted in full when the connection is established and each
+slot is reposted as soon as its answer has been copied out.
+
+Failures are reported through the normal path: a failed post fails only that
+batch with `IO_ERROR` (the client then reports the channel), a failed or
+unpostable completion marks the queue pair as failed so the next `Send` on it
+returns `CONNECTION_ERROR` and the transport rebuilds the channel, and an answer
+that never arrives is retired by the task timeout of the transport. A request
+whose `cid` is already in flight, or whose cid is zero, is refused instead of
+being allowed to cross answers.
+
+`kernelCount` and `quietCount` are accepted and ignored: the CPU path signals
+every send and reaps every completion, so there is no kernel launch to tune.
+
 ## Relation to `link_protocol`
 
 `kv_semantics/src/trans/proto/link_protocol.{h,cc}` describes an older RDMA-CM
@@ -110,9 +155,10 @@ them into `TransportConfig::attrs` as `roce_*`.
 | `asu_roce_oob_connect_timeout_ms` | `3000` | TCP connect/accept timeout |
 | `asu_roce_handshake_timeout_ms` | `5000` | timeout of every message exchange |
 | `asu_roce_hca_name` | first device | HCA to open, for example `mlx5_0` |
-| `asu_roce_hca_port` | `1` | port of the HCA |
-| `asu_roce_gid_index` | required | GID table index to use; there is no automatic selection. Ask the fabric owner for the index whose GID carries the store address. |
-| `asu_roce_sq_depth` / `asu_roce_rq_depth` / `asu_roce_cq_depth` | `256` / `64` / `512` | queue sizes |
+| `asu_roce_hca_port` (alias `asu_roce_port`) | `1` | port of the HCA |
+| `asu_roce_gid_index` (alias `asu_gid_index`) | required | GID table index to use; there is no automatic selection. Ask the fabric owner for the index whose GID carries the store address. |
+| `asu_roce_sq_depth` / `asu_roce_rq_depth` / `asu_roce_cq_depth` | `256` / `64` / `512` | queue sizes; `asu_roce_rq_depth` (alias `asu_ioq_depth`) bounds the requests in flight per queue pair |
+| `asu_max_inflight_kv_per_qp` | receive depth | further caps the requests in flight per queue pair; the value the store advertises as `ioq_depth` caps it as well |
 | `asu_roce_inline_threshold` | `0` | inline data size per send |
 | `asu_roce_sl`, `asu_roce_traffic_class` | `3`, `104` | service level and traffic class |
 | `asu_roce_qp_timeout`, `asu_roce_retry_cnt`, `asu_roce_rnr_retry`, `asu_roce_min_rnr_timer` | `17`, `7`, `7`, `12` | retransmission timers |
@@ -144,9 +190,10 @@ cmake --build build -j
 ctest --test-dir build -j8
 ```
 
-`BUILD_KV_CLIENT_PROVIDER_ROCE=ON` requires `infiniband/verbs.h` and
-`libibverbs` (package `libibverbs-dev`); configuration fails with a clear
-message when they are missing.
+`BUILD_KV_CLIENT_PROVIDER_ROCE=ON` (or `BUILD_KV_CLIENT_PROVIDER_CPU_ROCE=ON`,
+which builds the same data path under the CPU IO name) requires
+`infiniband/verbs.h` and `libibverbs` (package `libibverbs-dev`); configuration
+fails with a clear message when they are missing.
 
 The provider itself is always compiled. Only its device half has two
 implementations: `roce_verb_qp.cc` when the option is on, and
@@ -257,7 +304,19 @@ Verified:
 - clean failures when the peer is missing or the request exceeds the 32
   queue pair table;
 - memory registration and release bookkeeping (`CpuKvOverRoceMemoryTest`), with
-  and without a usable handle.
+  and without a usable handle;
+- the data path codec without hardware (`CpuKvOverRoceIoWireTest`): the packed
+  SQE is described, its writeback flag is reported, the response sizing matches
+  the flag buffer the client reserved, and a completion record is published into
+  the flag buffer without writing past its slot;
+- the data path bookkeeping against a fake queue pair
+  (`CpuKvOverRoceVerbsConnectionTest`): the receive ring is posted in full, a
+  full ring reports `RESOURCE_BUSY`, a failed post reports `IO_ERROR` and gives
+  its slot back, answers are matched by cid although they arrive out of order,
+  the record is copied before the slot is reposted, and a failed completion or
+  repost marks the connection as failed;
+- `Send` on the simulated backend reports `UNSUPPORTED` per batch, and an unknown
+  connection handle is rejected with `INVALID_ARGUMENT` before anything is sent.
 
 Not verified yet (needs two nodes with RoCE NICs):
 
@@ -265,10 +324,23 @@ Not verified yet (needs two nodes with RoCE NICs):
 
 - the verbs path: `ibv_create_qp`, `ibv_modify_qp` up to RTS, and a first
   registered memory region;
+- the data path against a store appliance: posting the SQE, reaping the answers,
+  the cid matching in a real completion queue and the resulting throughput;
 - MTU negotiation against a real switch, and PFC/ECN behaviour;
 - device memory registration (`ibv_reg_mr` with peermem/dmabuf);
 - reconnect after a link failure. The client rebuilds a dropped channel, but
   this provider does not retry on its own.
+
+Known limitations:
+
+- the data path reports failures through the per batch status and through a
+  failed queue pair; the `io_submitted_total` / `io_completed_total` /
+  `io_failed_total` / `io_inflight` / `io_latency_us` / `rq_free_slots` metrics of
+  the CPU IO design are not registered with the metrics layer yet, and the
+  provider itself emits no log lines (the client logs the task failure);
+- the answer is copied into the flag buffer at most as large as the response
+  size of its opcode, so the provider assumes the store sends a completion
+  record of that shape (the same assumption the writeback path makes).
 
 ## Troubleshooting
 
@@ -283,3 +355,13 @@ Not verified yet (needs two nodes with RoCE NICs):
 - `checksum mismatch` - the peer does not speak this protocol version, or a
   middlebox rewrote the payload.
 - `ibv_modify_qp(RTR) failed` - GID or MTU mismatch between the two hosts.
+- `Send` fails with `UNSUPPORTED` and mentions `asu_roce_qp_backend` - the
+  provider was built without `BUILD_KV_CLIENT_PROVIDER_ROCE` or the connection
+  runs the `simulated` backend; the data path needs a real completion queue.
+- `RESOURCE_BUSY` from `Send` - the queue pair has more requests queued than the
+  engine accepts, or no receive buffer of the post is free; raise
+  `asu_roce_rq_depth` / `asu_roce_cq_depth` or lower the concurrency.
+- The task times out although the store answers - the answer's cid does not match
+  the request, or the store wrote the completion through the response buffer
+  (rflag) instead of sending it. Check that the store appliance speaks the
+  send/response mode.
