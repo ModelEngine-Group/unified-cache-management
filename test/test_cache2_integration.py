@@ -328,6 +328,50 @@ def test_affinity_works_without_worker_geometry():
     assert config == {"cache_detected_numa_node": 6}
 
 
+@pytest.mark.parametrize("dcp_size", [1, 2])
+def test_single_host_pcp_numa_counts_all_workers(dcp_size):
+    geometry = parallel(
+        data_parallel_size=1,
+        data_parallel_index=0,
+        data_parallel_rank_local=None,
+        tensor_parallel_size=2,
+        pipeline_parallel_size=2,
+        prefill_context_parallel_size=2,
+        decode_context_parallel_size=dcp_size,
+    )
+
+    for rank in range(8):
+        geometry.rank = rank
+        config = {}
+        cache_config.configure_cache_numa(
+            config, NS(get_numa_node=lambda _: None), rank, geometry, rank
+        )
+        assert config["cache_fallback_numa_rank"] == rank
+        assert config["cache_fallback_numa_rank_count"] == 8
+
+
+def test_multiproc_dp_pcp_numa_uses_executor_rank():
+    geometry = parallel(
+        distributed_executor_backend="mp",
+        data_parallel_rank_local=1,
+        data_parallel_size_local=2,
+        node_rank_within_dp=0,
+        tensor_parallel_size=4,
+        prefill_context_parallel_size=2,
+    )
+
+    for rank in range(8):
+        geometry.rank = rank
+        # vLLM's device rank uses an offset of TP x PP in this launch path.
+        device_rank = rank + 4
+        config = {}
+        cache_config.configure_cache_numa(
+            config, NS(get_numa_node=lambda _: None), device_rank, geometry, device_rank
+        )
+        assert config["cache_fallback_numa_rank"] == rank + 8
+        assert config["cache_fallback_numa_rank_count"] == 16
+
+
 @pytest.mark.parametrize("affinity", [None, 6])
 @pytest.mark.parametrize("global_rank,local_rank", [(0, 0), (1, 1), (2, 0), (3, 1)])
 def test_cross_host_tp_numa_uses_local_worker_rank(affinity, global_rank, local_rank):

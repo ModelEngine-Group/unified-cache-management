@@ -78,16 +78,17 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
         local_workers = cache_rank_count(parallel)
         dp_offset = int(local_dp_rank) * local_workers
         count = local_dp_size * local_workers
-        # CUDA multiprocessing can pass a rank that already includes the DP offset.
-        if dp_offset <= local_rank < dp_offset + local_workers:
-            rank = local_rank
-        elif 0 <= local_rank < local_workers:
-            rank = dp_offset + local_rank
-        else:
+        if getattr(parallel, "distributed_executor_backend", None) == "mp":
+            # The executor rank is assigned before device binding adds a DP offset.
+            local_rank = parallel.rank - parallel.node_rank_within_dp * local_workers
+        elif dp_offset <= local_rank < dp_offset + local_workers:
+            local_rank -= dp_offset
+        if not 0 <= local_rank < local_workers:
             raise ValueError(
                 f"Invalid worker local rank for NUMA fallback: local_rank={local_rank}, "
                 f"local_dp_rank={local_dp_rank}, workers_per_dp={local_workers}."
             )
+        rank = dp_offset + local_rank
     elif (
         getattr(parallel, "data_parallel_size", None) == 1
         and getattr(parallel, "local_world_size", parallel.world_size)
@@ -97,7 +98,11 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
         rank = local_rank
         count = cache_rank_count(parallel)
     else:
-        model_size = parallel.pipeline_parallel_size * parallel.tensor_parallel_size
+        model_size = (
+            parallel.pipeline_parallel_size
+            * parallel.tensor_parallel_size
+            * getattr(parallel, "prefill_context_parallel_size", 1)
+        )
         if model_size <= 0:
             raise ValueError(
                 f"Invalid fallback NUMA model parallel size: {model_size}."
