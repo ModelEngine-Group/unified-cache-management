@@ -149,9 +149,9 @@ public:
     /**
      * @brief Load shards into cache slots, then apply per-tensor token filters.
      *
-     * Default: unsupported. CacheStore implements DDR-only for now: ensure each
-     * shard resides in a cache slot and obtain the slot pointer; splicing selected
-     * ranges into the caller buffer is left for a later revision.
+     * Default: unsupported. CacheStore implements DDR-only: ensure each shard
+     * resides in a cache slot, then splice the selected ranges into the caller
+     * buffer. range.offset is relative to that tensor.
      *
      * @param task Description of shards (DDR: one host address per shard).
      * @param filter Per-shard filters; filter.size() must equal task.size().

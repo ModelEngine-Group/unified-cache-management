@@ -10,6 +10,7 @@
 3. 提供 FakeVllmConfig / GSA 构造 fixtures，将 buffer 规模压缩到 MB 级。
 """
 import logging
+import os
 import sys
 import types
 from pathlib import Path
@@ -155,7 +156,14 @@ def install_stubs():
     # ---------------- ucm.integration.vllm.ucm_connector ----------------
     _mod("ucm.integration")
     _mod("ucm.integration.vllm")
-    _mod("ucm.integration.vllm.ucm_connector", RequestHasher=_RequestHasher)
+    # build_kv_hash_meta 对齐 public 真实签名（ucm_connector.py:104：
+    # build_kv_hash_meta(vllm_config, rank_id) -> str）；gsa.py:46/225 依赖它，
+    # 缺失会使整个 UT 套件在收集期 ImportError。
+    _mod(
+        "ucm.integration.vllm.ucm_connector",
+        RequestHasher=_RequestHasher,
+        build_kv_hash_meta=lambda vllm_config, rank=0: "ut-hash-meta",
+    )
     # ucm/__init__.py 会执行 from ucm.integration.vllm.patch.logger_patch import
     # patch_logger —— 预置 stub 避免触发真实 patch 链（依赖真实 vllm）
     _mod("ucm.integration.vllm.patch")
@@ -168,11 +176,33 @@ def install_stubs():
         UCMKVPrefetch=fakes.FakeUCMPrefetch,
     )
 
-    # ---------------- torch.ops._C_gsa（ACL 自定义 op）----------------
+    # ---------------- torch.ops._C_gsa（本地 ops/ 扩展的 ACL op）----------------
     # 无条件覆盖：UT 不依赖真实 ACL op（NPU 环境同理，保证跨环境确定性）
+    # 生产代码 gsa.py / sfa_kv_transfer_patch.py / sfa_v1_patch.py 中
+    # gsa_gather_copy/gsa_scatter_copy/indexer_gather_qw/gsa_topk_expand_tmp
+    # 均通过 torch.ops._C_gsa.* 调用（由 ops/torch_binding.cpp 注册）；
+    # test_gsa.py 的 _record_ops 亦 patch 此命名空间。
     import torch
 
     torch.ops._C_gsa = SimpleNamespace(
+        gsa_gather_copy=lambda *a, **k: None,
+        gsa_scatter_copy=lambda *a, **k: None,
+        indexer_gather_qw=lambda *a, **k: None,
+        gsa_topk_expand_tmp=lambda *a, **k: a[3] if len(a) > 3 else None,
+        # execute_kv_quant_sparse_flash_attention patch 返回 (attn_out, smax, ssum)
+        npu_kv_quant_sparse_flash_attention_gsa=lambda *a, **k: (
+            a[0] if a else None,
+            torch.empty(0),
+            torch.empty(0),
+        ),
+    )
+
+    # ---------------- torch.ops._C_ascend（vllm-ascend csrc patch 注册的 op）----
+    # 生产代码 patch 文件中 store_kv_block/store_kv_block_metadata/
+    # npu_lightning_indexer*/npu_sparse_flash_attention 仍引用 torch.ops._C_ascend.*
+    # （_C_gsa 未注册这些算子）；该命名空间由 vllm-ascend-csrc-build-1020-c8.patch
+    # 编译注册，UT 环境必须 stub（README/FEASIBILITY 亦声明 conftest 覆盖 _C_ascend）。
+    torch.ops._C_ascend = SimpleNamespace(
         gsa_gather_copy=lambda *a, **k: None,
         gsa_scatter_copy=lambda *a, **k: None,
     )
@@ -187,11 +217,15 @@ def install_stubs():
 
 install_stubs()
 
+# UCM_SPARSE_GSA_ENABLE：IS_OPEN_GSA 在 ucm.sparse.utils 模块导入时求值，
+# 生产默认 False（显式 opt-in）；UT 被测对象即 GSA 全链路，必须置 1，
+# 否则 worker 初始化链（含 topk_layer_num）被短路。
+os.environ.setdefault("UCM_SPARSE_GSA_ENABLE", "1")
+
 # 被测模块：导入即覆盖其模块级代码（含 gsa.py L30-43 平台分支 True 侧）
 import ucm.sandbox.sparse.gsav2.gsa  # noqa: E402,F401
 import ucm.sandbox.sparse.gsav2.gsa_log  # noqa: E402,F401
 import ucm.sandbox.sparse.gsav2.gsa_shared_memory  # noqa: E402,F401
-import ucm.sandbox.sparse.gsav2.gsa_tensor_slot_manager_ds  # noqa: E402,F401
 import ucm.sandbox.sparse.gsav2.prefetch.prefetch_engine  # noqa: E402,F401
 
 
@@ -224,10 +258,10 @@ def make_gsa(tmp_path, monkeypatch):
         monkeypatch.setattr(
             gsa_mod, "SharedTensorVersion", fakes.FakeSharedTensorVersion
         )
-        monkeypatch.setattr(gsa_mod.GSA, "bind_cpus", lambda self: (None, None))
+        monkeypatch.setattr(gsa_mod.GSAV2, "bind_cpus", lambda self: (None, None))
         monkeypatch.setattr(gsa_mod, "bind_thread_memory_policy", lambda node: None)
         cfg = fakes.FakeVllmConfig(**cfg_kwargs)
-        return gsa_mod.GSA(cfg, role)
+        return gsa_mod.GSAV2(cfg, role)
 
     return _make
 

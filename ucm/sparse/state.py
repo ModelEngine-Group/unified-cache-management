@@ -6,7 +6,7 @@ similar to KV connector pattern. It allows the scheduler and worker to access
 the same UCM sparse agent across different processes.
 """
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import torch
 from vllm.config import VllmConfig
@@ -17,9 +17,6 @@ from ucm.sparse.base import UcmSparseBase, UcmSparseRole
 from ucm.sparse.factory import UcmSparseFactory
 from ucm.sparse.utils import IS_OPEN_GSA
 from ucm.utils import Config
-
-if TYPE_CHECKING:
-    from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
@@ -33,12 +30,6 @@ def ensure_ucm_sparse_initialized(
     """
     Initialize UCM sparse agent for the given role.
 
-    The sparse method is selected from the user's ``kv_transfer_config``
-    (``ucm_sparse_config``), restoring the config-driven behavior so that
-    ESA / KVStar / GSAOnDevice / Blend can still be selected by their own
-    configurations. GSA / GSAPD additionally require the explicit
-    ``IS_OPEN_GSA`` switch (see ``ucm.sparse.utils``).
-
     Args:
         vllm_config: vLLM configuration
         role: UCM sparse role (SCHEDULER or WORKER)
@@ -48,38 +39,27 @@ def ensure_ucm_sparse_initialized(
     if vllm_config.kv_transfer_config is None:
         return
 
-    # Read the user-configured sparse method (config-driven).
+    # Check if UCM sparse is enabled
     ucm_config = Config(vllm_config.kv_transfer_config)
     ucm_sparse_config = ucm_config.get_config().get("ucm_sparse_config")
     if not ucm_sparse_config:
         if not IS_OPEN_GSA:
             return
-        else:
-            ucm_sparse_config = {}
-            ucm_sparse_config["GSA"] = {}
+        # GSAV2 通过 UCM_SPARSE_GSA_ENABLE 开关启用，无需在配置文件中显式声明。
+        ucm_sparse_config = {"GSAV2": {}}
 
     sparse_method_name = next(iter(ucm_sparse_config))
 
     if _UCM_SPARSE_AGENT is None:
-        logger.info("Initializing UCM sparse agent with method: %s", sparse_method_name)
+        logger.info(f"Initializing UCM sparse agent with method: {sparse_method_name}")
         _UCM_SPARSE_AGENT = UcmSparseFactory.create_sparse_method(
-            vllm_config,
-            ucm_sparse_config,
-            role=role,
+            vllm_config, ucm_sparse_config, role=role
         )
     else:
         # Update role if needed (for debugging/logging purposes)
         logger.debug(
-            "UCM sparse agent already initialized, current role: %s",
-            _UCM_SPARSE_AGENT._role,
+            f"UCM sparse agent already initialized, current role: {_UCM_SPARSE_AGENT._role}"
         )
-
-
-def ensure_ucm_sparse_shutdown(role: UcmSparseRole = UcmSparseRole.WORKER) -> None:
-    if not has_ucm_sparse():
-        return
-    ucm_spare = get_ucm_sparse()
-    ucm_spare.shutdown()
 
 
 def get_ucm_sparse() -> UcmSparseBase:
@@ -139,17 +119,18 @@ def maybe_execute_sparse_attention_begin(
     layer_name: str,
     forward_context: ForwardContext,
     output: Optional[torch.Tensor] = None,
-    indexer_cache: Optional[torch.Tensor] = None,
-    indexer_scale: Optional[torch.Tensor] = None,
-    vllm_indexer_cache: Optional[torch.Tensor] = None,
-    vllm_indexer_scale: Optional[torch.Tensor] = None,
     phase: Optional[str] = None,
     k_hash: Optional[torch.Tensor] = None,
     decode_ql_nope: Optional[torch.Tensor] = None,
     decode_q_pe: Optional[torch.Tensor] = None,
-    has_indexer: Optional[bool] = True,
-    use_li_c8: Optional[bool] = False,
+    **kwargs,
 ):
+    """All UcmSparseBase methods (GSAV2 / GSA / Blend / ESA / ...) share this hook.
+
+    通用参数走具名形参（与 UcmSparseBase.attention_begin 的契约一致）；
+    个别实现的专属扩展参数（如 GSAV2 的 indexer_cache / has_indexer 等）
+    通过 ``**kwargs`` 原样透传，由实现方自行声明。
+    """
     if not has_ucm_sparse():
         return query, key, value, output
 
@@ -165,17 +146,12 @@ def maybe_execute_sparse_attention_begin(
         value,
         layer_name,
         forward_context,
-        indexer_cache,
-        indexer_scale,
-        vllm_indexer_cache,
-        vllm_indexer_scale,
         output,
         phase,
         k_hash,
         decode_ql_nope,
         decode_q_pe,
-        has_indexer,
-        use_li_c8,
+        **kwargs,
     )
 
 
@@ -187,8 +163,7 @@ def maybe_execute_sparse_attention_finished(
     layer_name: str,
     forward_context: ForwardContext,
     phase: Optional[str] = None,
-    has_indexer: Optional[bool] = True,
-    use_li_c8: Optional[bool] = False,
+    **kwargs,
 ):
     if not has_ucm_sparse():
         return
@@ -200,13 +175,5 @@ def maybe_execute_sparse_attention_finished(
         return
 
     ucm_sparse.attention_finished(
-        query,
-        key,
-        value,
-        attn_output,
-        layer_name,
-        forward_context,
-        phase,
-        has_indexer,
-        use_li_c8,
+        query, key, value, attn_output, layer_name, forward_context, phase, **kwargs
     )

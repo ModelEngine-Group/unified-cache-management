@@ -21,11 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -1006,6 +1008,182 @@ TEST_F(UCCache2LoadQueueTest, StageMetrics)
     EXPECT_EQ(counters.count("cache_backend_load_submit_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_load_wait_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_h2d_errors_total"), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadMissCopiesSlotIntoCallerBuffer)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> payload(kShardSize, std::byte{0x5a});
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc desc) {
+        EXPECT_EQ(desc.size(), 1U);
+        EXPECT_NE(desc.front().addrs.front(), caller.data());
+        std::memcpy(desc.front().addrs.front(), payload.data(), kShardSize);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.prerequisiteHandle = 0x1111;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize), 0);
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_TRUE(FakeStream::d2dScatters.empty());
+    EXPECT_TRUE(FakeStream::waitedEvents.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    EXPECT_EQ(buffer_.MarkedReady(), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadHitCopiesExistingSlot)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    std::vector<std::byte> payload(kShardSize, std::byte{0xa5});
+    std::memcpy(gSlotBase + slotIdx * kShardSize, payload.data(), kShardSize);
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+    EXPECT_CALL(backend_, Wait).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize), 0);
+    EXPECT_EQ(std::memcmp(gSlotBase + slotIdx * kShardSize, payload.data(), kShardSize), 0);
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+    auto stats = UC::Metrics::GetAllStatsAndClear();
+    EXPECT_EQ(std::get<0>(stats).at("cache_load_success_shards_total"), 1);
+    EXPECT_EQ(std::get<0>(stats).at("cache_posix_load_success_shards_total"), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadHostInaccessibleHitFails)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block, SlotState::Ready);
+    buffer_.SetHostAccessible(block, false);
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Error());
+    EXPECT_TRUE(std::all_of(caller.begin(), caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_EQ(buffer_.MarkedFailed(), 0);
+    EXPECT_TRUE(FakeStream::d2dScatters.empty());
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadOnTokenSplicesSelectedRange)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> payload(kShardSize, std::byte{0x5a});
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc desc) {
+        std::memcpy(desc.front().addrs.front(), payload.data(), kShardSize);
+        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+    }));
+    EXPECT_CALL(backend_, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{UC::Detail::TokenRange{0, kShardSize / 2, 0}}};
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ_.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(std::memcmp(caller.data(), payload.data(), kShardSize / 2), 0);
+    EXPECT_TRUE(std::all_of(caller.begin() + kShardSize / 2, caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_TRUE(FakeStream::scatters.empty());
+    EXPECT_EQ(FakeStream::syncs.load(), 0);
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadOnTokenUsesTensorBase)
+{
+    constexpr size_t tensorSize = 4;
+    constexpr size_t shardSize = tensorSize * 2;
+    TestedQueue loadQ;
+    auto config = config_;
+    config.tensorSizes = {tensorSize, tensorSize};
+    config.shardSize = shardSize;
+    config.blockSize = shardSize;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    auto* slot = reinterpret_cast<std::byte*>(gSlotBase + slotIdx * kShardSize);
+    std::fill_n(slot, tensorSize, std::byte{0x11});
+    std::fill_n(slot + tensorSize, tensorSize, std::byte{0x22});
+    std::vector<std::byte> caller(shardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{}, {UC::Detail::TokenRange{1, 2, 0}}};
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    EXPECT_EQ(caller[0], std::byte{0x22});
+    EXPECT_EQ(caller[1], std::byte{0x22});
+    EXPECT_TRUE(std::all_of(caller.begin() + 2, caller.end(),
+                            [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_EQ(slot[tensorSize], std::byte{0x22});
+}
+
+TEST_F(UCCache2LoadQueueTest, LoadOnTokenInvalidFilterFailsTask)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    std::vector<std::byte> caller(kShardSize, std::byte{0});
+    EXPECT_CALL(backend_, Load).Times(0);
+    std::vector<UC::Detail::TokenFilter> filter(1);
+    filter[0].ranges = {{UC::Detail::TokenRange{0, 0, 0}}};
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {caller.data()}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD_ON_TOKEN, std::move(desc), filter);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ_.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_TRUE(buffer_.GetCalls().empty());
+    EXPECT_TRUE(FakeStream::scatters.empty());
+}
+
+TEST_F(UCCache2LoadQueueTest, DdrLoadRejectsMissingHostAddress)
+{
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    const auto slotIdx = buffer_.SetExisting(block, SlotState::Ready);
+    std::memset(gSlotBase + slotIdx * kShardSize, 0x3c, kShardSize);
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.memoryType = UC::Detail::TaskDesc::MemoryType::DDR;
+    desc.push_back({block, 0, {}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
+    EXPECT_TRUE(FakeStream::scatters.empty());
 }
 
 }  // namespace

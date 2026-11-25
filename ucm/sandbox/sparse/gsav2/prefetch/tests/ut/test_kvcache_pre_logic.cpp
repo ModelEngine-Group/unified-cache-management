@@ -4,10 +4,9 @@
  * UT for the pure-logic / mockable methods of GSAPrefetchEngineC declared in
  * kvcache_pre.h and implemented in kvcache_pre.cpp.
  *
- * Covers TokenIndexMapInter, Add/DeleteIndexerMapForRequest, the UCM-merge
+ * Covers TokenIndexMapInter, the UCM-merge
  * helpers (Validate/BuildContexts/BuildPlan/Submit load/Prepare/Memcpy/
- * Copy/BuildTokenCopyTasks), LastChunkMove early-return branches, and
- * CheckInputIndex.
+ * Copy/BuildTokenCopyTasks), and LastChunkMove early-return branches.
  *
  * These paths are pure host logic or only depend on the MockStoreV1, so they
  * run safely without ACL device / TaskManager worker threads.
@@ -100,20 +99,6 @@ protected:
 
 }  // namespace
 
-/* ---------------- CheckInputIndex ---------------- */
-
-TEST_F(PreLogicTest, CheckInputIndexPassesWhenIndexBelowMaxLen)
-{
-    engine = MakeEngine();
-    // index < maxLen -> no abort, returns normally.
-    engine->CheckInputIndex(/*maxLen=*/10, /*index=*/5);
-    SUCCEED();
-}
-
-// NOTE: The index >= maxLen branch calls std::abort() and cannot be tested
-// in-process without killing the test runner; it is documented as a fatal
-// contract violation rather than a recoverable error.
-
 /* ---------------- TokenIndexMapInter ---------------- */
 
 TEST_F(PreLogicTest, TokenIndexMapInterRewritesTopkToBlockIndexedSlots)
@@ -144,74 +129,54 @@ TEST_F(PreLogicTest, TokenIndexMapInterIsNoopWhenOffloadOff)
     EXPECT_EQ(oneTopkList, (std::vector<int>{0, 5}));  // unchanged
 }
 
-/* ---------------- AddIndexerMapForRequest ---------------- */
-
-TEST_F(PreLogicTest, AddIndexerMapForRequestAppendsBlocksToDocsAndBlocksMap)
-{
-    engine = MakeEngine(/*layerNum=*/2);
-    const std::string reqID = "req1";
-    // Pre-seed empty docs/blocks tables for 2 layers.
-    engine->mDocsTables[reqID].assign(2, {});
-    engine->mBlocksMap[reqID].assign(2, {});
-    engine->mIndexerSlot[reqID] = {0, 1};  // 2 existing slots -> next idx = 2
-    engine->mIndexerAdd[reqID] = {
-        {10, 100},
-        {11, 200}
-    };  // {slot, blockID}
-    engine->AddIndexerMapForRequest(reqID);
-    // BUG-FOCUS: the first loop computes idx = mIndexerSlot[reqID].size() which
-    // is NOT incremented per-j inside the loop (mIndexerSlot is only grown in
-    // the SECOND loop).  So BOTH new blocks are written to idx == 2, and the
-    // last write (block 200) wins in mDocsTables.  This test pins the current
-    // (buggy) behavior; the fix would be `idx = base + j`.
-    EXPECT_EQ(engine->mDocsTables[reqID][0][2], 200);  // last write wins
-    EXPECT_EQ(engine->mBlocksMap[reqID][0][100], 2);   // both map to idx 2
-    EXPECT_EQ(engine->mBlocksMap[reqID][0][200], 2);
-    // Same for layer 1.
-    EXPECT_EQ(engine->mDocsTables[reqID][1][2], 200);
-    EXPECT_EQ(engine->mBlocksMap[reqID][1][200], 2);
-    // IndexerSlot appended with the slot values {10, 11} (second loop).
-    EXPECT_EQ(engine->mIndexerSlot[reqID].size(), 4u);
-    EXPECT_EQ(engine->mIndexerSlot[reqID][2], 10);
-    EXPECT_EQ(engine->mIndexerSlot[reqID][3], 11);
-}
-
-TEST_F(PreLogicTest, AddIndexerMapForRequestWithEmptyAddIsNoop)
+// L-5: negative tokens are skipped (kept as-is) instead of masquerading as
+// block-0 translations with a negative slot.
+TEST_F(PreLogicTest, TokenIndexMapInterSkipsNegativeToken)
 {
     engine = MakeEngine(/*layerNum=*/1);
     const std::string reqID = "req1";
-    engine->mDocsTables[reqID].assign(1, {});
-    engine->mBlocksMap[reqID].assign(1, {});
-    engine->mIndexerSlot[reqID] = {0};
-    engine->mIndexerAdd[reqID] = {};
-    engine->AddIndexerMapForRequest(reqID);
-    EXPECT_TRUE(engine->mDocsTables[reqID][0].empty());
-    EXPECT_EQ(engine->mIndexerSlot[reqID].size(), 1u);
+    engine->mRealTimeIdx[reqID] = {{5, 9}};
+    engine->mSeqLen[reqID] = 1000;
+    std::vector<int> oneTopkList = {-1, 0};
+    engine->TokenIndexMapInter(oneTopkList, 0, 0, 2, reqID);
+    // -1 rejected (kept); 0 translated to 5*4 + 0 = 20.
+    EXPECT_EQ(oneTopkList, (std::vector<int>{-1, 20}));
 }
 
-/* ---------------- DeleteIndexerMapForRequest ---------------- */
-
-TEST_F(PreLogicTest, DeleteIndexerMapForRequestRemovesBlocksAndErasesFromPrefetchIdx)
+// L-5: revIdx beyond the real-time table skips translation for that token.
+TEST_F(PreLogicTest, TokenIndexMapInterSkipsRevIdxOutOfRange)
 {
     engine = MakeEngine(/*layerNum=*/1);
     const std::string reqID = "req1";
-    engine->mDocsTables[reqID].assign(1, {});
-    engine->mBlocksMap[reqID].assign(1, {});
-    engine->mIndexerSlot[reqID] = {0, 1};
-    // block 100 -> idx 2, block 200 -> idx 3 (matching Add test).
-    engine->mDocsTables[reqID][0][2] = 100;
-    engine->mDocsTables[reqID][0][3] = 200;
-    engine->mBlocksMap[reqID][0][100] = 2;
-    engine->mBlocksMap[reqID][0][200] = 3;
-    engine->mPrefetchIdx[reqID].assign(1, {2, 3, 5});
-    engine->mIndexerDel[reqID] = {100};  // delete block 100 (idx 2)
-    engine->DeleteIndexerMapForRequest(reqID);
-    EXPECT_EQ(engine->mBlocksMap[reqID][0].count(100), 0u);
-    EXPECT_EQ(engine->mDocsTables[reqID][0].count(2), 0u);
-    // idx 2 removed from mPrefetchIdx.
-    EXPECT_EQ(engine->mPrefetchIdx[reqID][0], (std::vector<int>{3, 5}));
-    // block 200 untouched.
-    EXPECT_EQ(engine->mBlocksMap[reqID][0][200], 3);
+    engine->mRealTimeIdx[reqID] = {{5, 9}};  // only blocks 0..1 mapped
+    engine->mSeqLen[reqID] = 1000;
+    std::vector<int> oneTopkList = {8};  // block 8/4 = 2 -> out of range
+    engine->TokenIndexMapInter(oneTopkList, 0, 0, 1, reqID);
+    EXPECT_EQ(oneTopkList, (std::vector<int>{8}));  // kept as-is
+}
+
+// L-5: translated token beyond seqLen is rejected before commit (no
+// masquerade: the original value is preserved).
+TEST_F(PreLogicTest, TokenIndexMapInterSkipsTranslatedOutOfRange)
+{
+    engine = MakeEngine(/*layerNum=*/1);
+    const std::string reqID = "req1";
+    engine->mRealTimeIdx[reqID] = {{5}};
+    engine->mSeqLen[reqID] = 10;  // 5*4 + 0 = 20 >= 10
+    std::vector<int> oneTopkList = {0};
+    engine->TokenIndexMapInter(oneTopkList, 0, 0, 1, reqID);
+    EXPECT_EQ(oneTopkList, (std::vector<int>{0}));  // kept as-is
+}
+
+// L-5: unknown reqID returns early without operator[]-inserting empty state.
+TEST_F(PreLogicTest, TokenIndexMapInterUnknownReqIDReturnsEarlyWithoutInsert)
+{
+    engine = MakeEngine(/*layerNum=*/1);
+    std::vector<int> oneTopkList = {0, 5};
+    engine->TokenIndexMapInter(oneTopkList, 0, 0, 2, "ghost");
+    EXPECT_EQ(oneTopkList, (std::vector<int>{0, 5}));
+    EXPECT_EQ(engine->mRealTimeIdx.count("ghost"), 0u);  // no insertion
+    EXPECT_EQ(engine->mSeqLen.count("ghost"), 0u);
 }
 
 /* ---------------- ValidateUCMMergeRequest ---------------- */
@@ -223,7 +188,7 @@ TEST_F(PreLogicTest, ValidateUCMMergeRequestReturnsFalseWhenNoMissTokens)
     // mMissGlobalToken[reqID][topkIndex 0] is default-empty -> returns false.
     engine->mMissGlobalToken[reqID].assign(engine->mTopkIndexerNum, {});
     engine->mLoadSlot[reqID].assign(engine->mTopkIndexerNum, {});
-    EXPECT_FALSE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID));
+    EXPECT_FALSE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID, /*previousLoadNum=*/0));
 }
 
 TEST_F(PreLogicTest, ValidateUCMMergeRequestLogsWhenStoreV1IsNull)
@@ -242,7 +207,7 @@ TEST_F(PreLogicTest, ValidateUCMMergeRequestLogsWhenStoreV1IsNull)
     engine->mLoadNum.assign(engine->mLayerNum, 0);
     engine->mLoadIndexBufferLen = 16;
     engine->mKVBufferLen = 16;
-    EXPECT_TRUE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID));
+    EXPECT_TRUE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID, /*previousLoadNum=*/0));
 }
 
 TEST_F(PreLogicTest, ValidateUCMMergeRequestReturnsTrueWithValidState)
@@ -259,7 +224,7 @@ TEST_F(PreLogicTest, ValidateUCMMergeRequestReturnsTrueWithValidState)
     engine->mLoadNum.assign(engine->mLayerNum, 0);
     engine->mLoadIndexBufferLen = 16;
     engine->mKVBufferLen = 16;
-    EXPECT_TRUE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID));
+    EXPECT_TRUE(engine->ValidateUCMMergeRequest(/*layerID=*/0, reqID, /*previousLoadNum=*/0));
 }
 
 /* ---------------- BuildUCMMergeBlockContexts ---------------- */
@@ -481,8 +446,8 @@ TEST_F(PreLogicTest, SubmitUCMTokenLoadLegReturnsTrueWhenTaskEmpty)
 {
     engine = MakeEngine();
     std::vector<UC::Detail::TokenFilter> filters;
-    EXPECT_TRUE(engine->SubmitUCMTokenLoadLeg(UC::Detail::TaskDesc{}, filters, "K", "LastChunkMove",
-                                              0, "req1"));
+    EXPECT_TRUE(engine->SubmitUCMTokenLoadLeg(UC::Detail::TaskDesc{}, filters, "K",
+                                              "LastChunkMove", 0, "req1"));
     EXPECT_TRUE(store->calls.empty());
 }
 
@@ -687,8 +652,8 @@ TEST_F(PreLogicTest, BuildUCMMergeLoadPlanSkipsUnownedAndNonUcmContexts)
     engine->mSharedVBufferHostPtr[0] = 1;
     std::vector<size_t> ti = {0};
     std::vector<UCMMergeBlockContext> blockContexts = {
-        {&ti, 0, /*isnoUCMblock=*/false, 0, nullptr, nullptr, /*owned=*/false}, // not owned
-        {&ti, 1, /*isnoUCMblock=*/true,  5, nullptr, nullptr, /*owned=*/true }, // non-UCM
+        {&ti, 0, /*isnoUCMblock=*/false, 0, nullptr, nullptr, /*owned=*/false},  // not owned
+        {&ti, 1, /*isnoUCMblock=*/true, 5, nullptr, nullptr, /*owned=*/true},   // non-UCM
     };
     UCMTokenLoadPlan plan;
     EXPECT_TRUE(engine->BuildUCMMergeLoadPlan(plan, blockContexts, 0, 0, reqID, 0));
@@ -913,7 +878,7 @@ TEST_F(PreLogicTest, CopyUCMMergeTokensParallelCopiesTokensToSharedBuffers)
     }
     std::vector<size_t> ti0 = {0}, ti1 = {1}, ti2 = {2}, ti3 = {3};
     std::vector<UCMMergeBlockContext> blockContexts = {
-        {&ti0, 0, /*isnoUCMblock=*/true,  0, kSrc, vSrc, /*owned=*/true},
+        {&ti0, 0, /*isnoUCMblock=*/true, 0, kSrc, vSrc, /*owned=*/true},
         {&ti1, 1, /*isnoUCMblock=*/false, 1, kSrc, vSrc, /*owned=*/true},
         {&ti2, 2, /*isnoUCMblock=*/false, 2, kSrc, vSrc, /*owned=*/true},
         {&ti3, 3, /*isnoUCMblock=*/false, 3, kSrc, vSrc, /*owned=*/true},
@@ -1158,8 +1123,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseOnInvalidBlockCount)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(
-        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
+    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
+                                                  plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenBlockTableTooSmall)
@@ -1171,8 +1136,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenBlockTableTooSmall)
     std::vector<int> blockTable;
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(
-        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
+    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
+                                                  plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenHbmSlotOutOfRange)
@@ -1184,8 +1149,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenHbmSlotOutOfRange)
     std::vector<int> blockTable = {-1};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(
-        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
+    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
+                                                  plan));
 }
 
 TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenNoNonUcmBlockMap)
@@ -1205,8 +1170,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesReturnsFalseWhenNoNonUcmBlockMap)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_FALSE(
-        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
+    EXPECT_FALSE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
+                                                  plan));
     std::free(kDst);
     std::free(vDst);
 }
@@ -1229,8 +1194,8 @@ TEST_F(PreLogicTest, PrepareLastChunkSourcesBuildsUcmShards)
     std::vector<int> blockTable = {0};
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
-    EXPECT_TRUE(
-        engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks, plan));
+    EXPECT_TRUE(engine->PrepareLastChunkSources(0, "req1", moveMap, blockTable, sourceBlocks,
+                                                 plan));
     /* The whole UCM block is one shard per leg: the shard's single address is
      * the block's dst-window base (kDst + firstDst * kTokenBytes, firstDst=0),
      * and each of the 4 tokens adds one K / V TokenRange. */
@@ -1285,9 +1250,9 @@ TEST_F(PreLogicTest, BuildLastChunkSourcesHandlesNonUcmBlock)
     std::vector<LastChunkSourceBlock> sourceBlocks;
     UCMTokenLoadPlan plan;
     EXPECT_TRUE(engine->BuildLastChunkSources(0, "req1", moveMap, sourceBlocks, plan));
-    EXPECT_TRUE(plan.kTask.empty());     // non-UCM -> no LoadOnToken shard
-    EXPECT_TRUE(plan.vTask.empty());     // (and no V shard)
-    ASSERT_GE(sourceBlocks.size(), 6u);  // resized to blockIdx+1=6
+    EXPECT_TRUE(plan.kTask.empty());      // non-UCM -> no LoadOnToken shard
+    EXPECT_TRUE(plan.vTask.empty());      // (and no V shard)
+    ASSERT_GE(sourceBlocks.size(), 6u);   // resized to blockIdx+1=6
     EXPECT_NE(sourceBlocks[5].kBase, nullptr);
     EXPECT_NE(sourceBlocks[5].vBase, nullptr);
     std::free(kDst);
@@ -1461,7 +1426,7 @@ TEST_F(PreLogicTest, CopyLastChunkTokensSkipsUcmBlocksPlacedByLoadOnToken)
     // Block 0: UCM (no source); block 1: non-UCM (with sources).
     std::vector<int> moveMap = {0, 1, 2, 3, 4, 5, 6, 7};
     std::vector<LastChunkSourceBlock> sourceBlocks = {
-        {nullptr,   nullptr  },
+        {nullptr, nullptr},
         {kSrcBlock, vSrcBlock},
     };
     engine->CopyLastChunkTokens(0, "req1", moveMap, sourceBlocks);

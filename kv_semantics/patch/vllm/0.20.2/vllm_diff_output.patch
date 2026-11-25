@@ -3813,7 +3813,7 @@ new file mode 100644
 index 0000000000..5aae0cc175
 --- /dev/null
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/od_kv_storage/worker.py
-@@ -0,0 +1,1045 @@
+@@ -0,0 +1,1069 @@
 +import asyncio
 +import collections
 +import math
@@ -4711,24 +4711,48 @@ index 0000000000..5aae0cc175
 +            self._send_save_complete_layer_to_scheduler(req_ids, idx, connector_metadata)
 +
 +
-+    def _sync_and_submit_save(self,end_event, layer_idx:int, connector_metadata: OdKvStorageConnectorMetadata):
-+        with get_module().stream(self._store_stream):
-+            target_npu_stream = self._store_stream.npu_stream
-+            ret = acl.rt.stream_wait_event(target_npu_stream, end_event)
-+            if ret != 0:
-+                raise RuntimeError(f"acl.rt.stream_wait_event failed: {ret}")
++    def _sync_and_submit_save(
++        self,
++        end_event,
++        layer_idx: int,
++        connector_metadata: OdKvStorageConnectorMetadata,
++    ):
++        try:
++            with get_module().stream(self._store_stream):
++                target_npu_stream = self._store_stream.npu_stream
 +
-+            for io_metadata in self._store_input[layer_idx]:
-+                ret = self._storage_interface.xds_put(
-+                    req_id=io_metadata.batch_io_name,
-+                    mr_id_list=io_metadata.mr_id_list,
-+                    block_hash_list=io_metadata.block_hash_list,
-+                    hbm_addr_list=io_metadata.hbm_addr_list,
-+                    storage_offset_list=io_metadata.storage_offset_list,
-+                    length_list=io_metadata.length_list,
-+                    stream_id=self._store_stream_id,
++                # 等模型 stream 完成本层 KV 写入
++                ret = acl.rt.stream_wait_event(target_npu_stream, end_event)
++                if ret != 0:
++                    raise RuntimeError(
++                        f"acl.rt.stream_wait_event failed: {ret}"
++                    )
++
++                for io_metadata in self._store_input[layer_idx]:
++                    ret = self._storage_interface.xds_put(
++                        req_id=io_metadata.batch_io_name,
++                        mr_id_list=io_metadata.mr_id_list,
++                        block_hash_list=io_metadata.block_hash_list,
++                        hbm_addr_list=io_metadata.hbm_addr_list,
++                        storage_offset_list=io_metadata.storage_offset_list,
++                        length_list=io_metadata.length_list,
++                        stream_id=self._store_stream_id,
++                    )
++                    if ret != 0:
++                        raise RuntimeError(
++                            f"xds_put failed: "
++                            f"io={io_metadata.batch_io_name}, ret={ret}"
++                        )
++
++                self._save_layer_wait_task(layer_idx, connector_metadata)
++
++        finally:
++            destroy_ret = acl.rt.destroy_event(end_event)
++            if destroy_ret != 0:
++                logger.error(
++                    "acl.rt.destroy_event failed: event=%s, ret=%s",
++                    end_event, destroy_ret
 +                )
-+            self._save_layer_wait_task(layer_idx, connector_metadata)
 +
 +
 +    @timeit

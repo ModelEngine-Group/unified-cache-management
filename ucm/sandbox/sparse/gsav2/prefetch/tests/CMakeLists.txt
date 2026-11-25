@@ -26,6 +26,13 @@ set(PREFETCH_SOURCES
 find_package(Threads REQUIRED)
 find_package(OpenMP REQUIRED)
 
+# kvcache_pre.h pulls in pybind11 transitively, so the test binary references
+# the CPython API (PyType_FromSpec, ...). Link libpython when available.
+find_package(Python COMPONENTS Interpreter Development)
+if(Python_LIBRARIES)
+    list(APPEND TEST_LINK_LIBS ${Python_LIBRARIES})
+endif()
+
 # Locate PyTorch for at::Tensor / torch::Tensor used by TaskManager and the
 # engine surface. Reuse the same discovery the main build uses.
 execute_process(
@@ -107,7 +114,13 @@ endif()
 # fmt is required by ucm/shared/infra/status/status.h.
 get_target_property(FMT_INCLUDE_DIRS fmt INTERFACE_INCLUDE_DIRECTORIES)
 if(FMT_INCLUDE_DIRS)
-    target_include_directories(gsa_prefetch_tests PRIVATE ${FMT_INCLUDE_DIRS})
+    # BEFORE: torch bundles its own (differently-versioned) fmt headers; the
+    # test binary must compile against the fmt it links.
+    target_include_directories(gsa_prefetch_tests BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
+endif()
+if(TARGET fmt)
+    # status.h uses fmt::vformat; link the vendored/fetched fmt target.
+    target_link_libraries(gsa_prefetch_tests PRIVATE fmt)
 endif()
 
 target_link_directories(gsa_prefetch_tests PRIVATE
@@ -124,6 +137,7 @@ target_link_libraries(gsa_prefetch_tests PRIVATE
     pthread
     ${CMAKE_DL_LIBS}
     rt
+    ${TEST_LINK_LIBS}
 )
 
 if(OpenMP_CXX_FOUND)

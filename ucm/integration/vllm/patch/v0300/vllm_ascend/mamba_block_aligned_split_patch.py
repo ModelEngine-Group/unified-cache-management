@@ -127,4 +127,3 @@ def patch_mamba_block_aligned_split(mod):
     patch_or_inject(
         mod.Scheduler, "_mamba_block_aligned_split", mamba_block_aligned_split
     )
-    logger.info("UCM Ascend 0.30.0 chunked-prefill alignment patch applied")

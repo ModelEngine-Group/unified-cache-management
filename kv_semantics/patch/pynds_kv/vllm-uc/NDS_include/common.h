@@ -84,7 +84,7 @@ typedef enum __attribute__((aligned(2))) {
     KV_WRITE,     // NPU 写存储kvcache
     KV_LOAD_BATCH,
     KV_WRITE_BATCH,
-    HEARTBEAT,          // 心跳检测
+    HEARBEAT,           // 心跳检测；保留历史拼写，避免与 HEARTBEAT 重名。 // codespell:ignore
     INIT_COMM_LINK,     // 初始化通信链路
     DISTROY_COMM_LINK,  // 断开通信链路
     IS_EXIST,           // 查询命中指令

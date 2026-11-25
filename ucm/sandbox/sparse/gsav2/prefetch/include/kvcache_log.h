@@ -22,7 +22,9 @@ public:
     {
         if (enable) {
             mLogFile.open(fileName, std::ios::app);
-            if (mLogFile.is_open()) {
+            /* 仅在真实打开失败时打印；此后 log() 因 !is_open() 判别
+             * 自动降级为 no-op。 */
+            if (!mLogFile.is_open()) {
                 std::cerr << "|KVCache Prefetch| Fail to open log file: " << fileName << std::endl;
             }
         }
@@ -36,6 +38,13 @@ public:
     }
 
     void SetLevel(LogLevel level) { mMinLevel = level; }
+
+    /* 调用方在构造昂贵日志实参（如 O(n) 聚合、字符串拼接）前判别，避免
+     * 实参求值开销；判别条件与 log() 的早退条件完全一致。 */
+    bool enabledFor(LogLevel level) const
+    {
+        return mEnable && mLogFile.is_open() && level >= mMinLevel;
+    }
 
     void log(LogLevel level, const char* format, ...)
     {
