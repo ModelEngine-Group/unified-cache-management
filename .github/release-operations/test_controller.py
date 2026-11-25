@@ -1572,11 +1572,30 @@ class RepositoryOperations(unittest.TestCase):
         _, report = self.controller.release_check(1)
         self.assertNotIn(99, report["open_issues"])
 
+    def test_bug_keeps_fixing_without_a_pull_request(self):
+        state = self.initialize()
+        self.api.items[8] = self.api.make_issue(
+            8, "Bug", "Observed failure.", ["bug", "status:triage", "status:fixing"]
+        )
+        self.api.parents[8] = state["archive"]
+
+        self.controller.reconcile(1)
+
+        self.assertEqual(
+            self.api.items[8]["labels"], [{"name": "bug"}, {"name": "status:fixing"}]
+        )
+        project_item = self.api.projects["I_8"]["P_BUG"]
+        self.assertEqual(self.api.project_statuses[project_item]["name"], "In progress")
+
     def test_bug_status_matches_merge_and_issue_state(self):
         self.assertEqual(
-            bug_progress(False, {"9"}, True), ("status:verification", "In review")
+            bug_progress(False, {"9"}, True, already_fixing=True),
+            ("status:verification", "In review"),
         )
-        self.assertEqual(bug_progress(True, {"9"}, True), ("status:verified", "Done"))
+        self.assertEqual(
+            bug_progress(True, {"9"}, True, already_fixing=True),
+            ("status:verified", "Done"),
+        )
 
 
 if __name__ == "__main__":

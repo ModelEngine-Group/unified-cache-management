@@ -49,12 +49,14 @@ def has_label(issue, label):
     return any(item["name"] == label for item in issue.get("labels", []))
 
 
-def bug_progress(closed: bool, merged: set[str], has_pr: bool) -> tuple[str, str]:
+def bug_progress(
+    closed: bool, merged: set[str], has_pr: bool, *, already_fixing: bool
+) -> tuple[str, str]:
     if closed:
         return "status:verified", "Done"
     if merged:
         return "status:verification", "In review"
-    if has_pr:
+    if has_pr or already_fixing:
         return "status:fixing", "In progress"
     return "status:triage", "Ready"
 
@@ -602,14 +604,16 @@ class Controller(
             self.prefetch_memberships(state["bugs"].values())
         for number, bug in state["bugs"].items():
             related = rows.get(int(number), [])
+            labels = [entry["name"] for entry in bug["labels"]]
+            status_labels = {entry for entry in labels if entry.startswith("status:")}
             label, project_status = bug_progress(
                 bug["state"] == "closed",
                 {pr["number"] for pr in related if pr["merged_at"]},
                 bool(related),
+                already_fixing="status:fixing" in status_labels,
             )
-            labels = [entry["name"] for entry in bug["labels"]]
-            if label not in labels or "bug" not in labels:
-                desired = [entry for entry in labels if not entry.startswith("status:")]
+            if status_labels != {label} or "bug" not in labels:
+                desired = [entry for entry in labels if entry not in status_labels]
                 if "bug" not in desired:
                     desired.append("bug")
                 self.api.rest(
