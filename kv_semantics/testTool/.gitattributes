@@ -5,7 +5,4 @@
 *.sh text eol=lf
 *.conf text eol=lf
 *.txt text eol=lf
-# Dockerfile 的 RUN 续行符与 yum repo 配置对行尾敏感（\r 会破坏 docker build 续行、
-# 混入 repo 变量值），一并强制 LF 落盘
-Dockerfile* text eol=lf
 *.repo text eol=lf

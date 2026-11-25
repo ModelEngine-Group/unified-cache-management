@@ -44,6 +44,17 @@ std::int64_t CurrentNs()
         .count();
 }
 
+/** 从 CacheKey 读回低 64 位（二进制 key 的前 8 字节小端解释；非二进制形态返回 0，
+ *  仅用于请求明细日志显示，与调度侧 FromBytes 构造时填入的 keyLow64 对应） */
+std::uint64_t ExtractKeyLow64(const kv::CacheKey &key)
+{
+    const kv::BinaryKey *bytes = key.TryGetBinaryKey();
+    if (bytes == nullptr) { return 0; }
+    std::uint64_t value = 0;
+    std::memcpy(&value, bytes->data(), sizeof(value));
+    return value;
+}
+
 /** 打印任务结果的异常明细：任务级与逐 entry 非 OK 项逐条告警 */
 void LogTaskResult(const kv::TaskResult &result, const char *opName)
 {
@@ -293,9 +304,7 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
 
         // key 分量显示：input 原文 key 与 key_low / key_high 十进制分开
         std::uint64_t keyLow = 0;
-        if (i < request.keys.size()) {
-            std::memcpy(&keyLow, request.keys[i].data(), sizeof(keyLow));
-        }
+        if (i < request.keys.size()) { keyLow = ExtractKeyLow64(request.keys[i]); }
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");
@@ -371,8 +380,7 @@ void Executor::WriteExistLog(const Request &request, const kv::TaskResult &resul
     // 任务级单值，逐行重复保持行自包含）；exist 无 value 载荷，不读回缓冲
     // （调用侧已保证 queryResult 有值且 exists 尺寸与 keys 匹配）
     for (std::size_t i = 0; i < request.keys.size(); ++i) {
-        std::uint64_t keyLow = 0;
-        std::memcpy(&keyLow, request.keys[i].data(), sizeof(keyLow));
+        const std::uint64_t keyLow = ExtractKeyLow64(request.keys[i]);
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");
@@ -402,8 +410,7 @@ void Executor::WriteDeleteLog(const Request &request, const kv::TaskResult &resu
         const int entryCode = (i < result.entryStatus.size())
                                   ? static_cast<int>(result.entryStatus[i].code)
                                   : batchCode;
-        std::uint64_t keyLow = 0;
-        std::memcpy(&keyLow, request.keys[i].data(), sizeof(keyLow));
+        const std::uint64_t keyLow = ExtractKeyLow64(request.keys[i]);
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");

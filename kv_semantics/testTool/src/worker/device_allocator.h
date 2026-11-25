@@ -63,16 +63,13 @@ public:
 
 /**
  * 主机内存分配器：malloc/free + memcpy。
- * deviceSemantics=true 时按 device 语义分配（对齐到 kv::kAlignmentBytes，
- * IsDeviceMemory 返回 true，注册按 MemoryType::DEVICE），用于：
- * ① buffertype=cpu 的常规主机内存（deviceSemantics=false）；
- * ② 未编入设备 SDK（TESTTOOL_ENABLE_CUDA / TESTTOOL_ENABLE_ASCEND）时
- *    gpu/npu 以主机内存模拟 device 语义走完整链路。
+ * 仅服务 buffertype=cpu（注册 MemoryType::HOST，IsDeviceMemory 恒为 false）；
+ * gpu/npu 未编入设备 SDK 时不做主机内存模拟，直接报错退出（模拟会产生
+ * "以为测通了实际没测通"的假阳性结果）。
  */
 class HostAllocator : public DeviceAllocator {
 public:
-    /** @param deviceSemantics true 时按 device 语义分配（地址对齐、注册类型提示） */
-    explicit HostAllocator(bool deviceSemantics);
+    HostAllocator() = default;
 
     bool Allocate(std::size_t size, std::uint64_t &addr, std::string &err) override;
     void Deallocate(std::uint64_t addr) override;
@@ -80,18 +77,14 @@ public:
                std::string &err) override;
     bool Read(void *hostData, std::uint64_t addr, std::size_t size, std::string &err) override;
     bool IsDeviceMemory() const override;
-
-private:
-    /** 是否按 device 语义分配（地址对齐与注册类型提示） */
-    const bool deviceSemantics_;
 };
 
 /**
  * 按值缓冲类型创建分配器（GPU/NPU 真实现类在 .cc 内宏隔离，头文件零 SDK 依赖）：
  * cpu 为主机内存（MemoryType::HOST）；gpu 为 CUDA 显存、npu 为 ACL NPU 内存
  * （均 MemoryType::DEVICE；真实现分别经预处理宏 TESTTOOL_ENABLE_CUDA /
- * TESTTOOL_ENABLE_ASCEND 编入，未编入时以主机内存模拟 device 语义——memoryType
- * 仍按 DEVICE 注册走完整链路，并打醒目提示日志）
+ * TESTTOOL_ENABLE_ASCEND 编入）。未编入对应 SDK 时直接报错返回 nullptr
+ * （不做主机内存模拟——避免无设备环境下误判链路已测通）
  * @param bufferType conf 的 buffertype 值（cpu / gpu / npu），非法值报错可感知
  * @param deviceId conf 的 deviceid 值（gpu/npu 时须非负，作为 CUDA device / ACL device 编号）
  */

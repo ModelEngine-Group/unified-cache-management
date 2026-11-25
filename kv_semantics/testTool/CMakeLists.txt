@@ -1,7 +1,8 @@
 # ============================================================================
 # testTool — kv_semantics 测试工具
-# 构建（Docker 开发容器内，工作目录为 testTool/）：
-#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+# 构建（在 testTool/ 目录下执行；缺省 Release——产物随时可用于性能测试，
+# 调试构建需显式 -DCMAKE_BUILD_TYPE=Debug）：
+#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build -j
 #   ./build/testTool
 # ============================================================================
@@ -85,7 +86,7 @@ endif()
 
 # ---------- kv client 依赖：头文件取自 ../include，库取自 kv client 顶层预构建产物 ----------
 # 前提：先独立构建 kv client 库（FAKE provider 默认编入，产物为 libkv_client.so / libkv_transport.so）：
-#   cmake -S .. -B ../build-kv -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Debug
+#   cmake -S .. -B ../build-kv -DRUNTIME_ENVIRONMENT=simu -DCMAKE_BUILD_TYPE=Release
 #   cmake --build ../build-kv --target kv_client -j
 # KV_CLIENT_LIB_DIR 可在配置时 -D 覆盖，指向其他预构建目录——例如低版本编译器（GCC 8）
 # 验证环境中链接与本机 libstdc++/glibc ABI 一致的 kv client 库；缺省取 ../build-kv/src
@@ -103,3 +104,53 @@ target_link_libraries(testTool
     PRIVATE
         kv_client
 )
+
+# ---------- NPU 支持开关：TESTTOOL_ENABLE_ASCEND（缺省 OFF——CPU 构建零感知，设备能力经接口抽象隔离） ----------
+# ON 时三联动：编译宏 TESTTOOL_ENABLE_ASCEND + CANN 头文件路径 + libascendcl 显式链接。
+# 链接必须显式给出：device_allocator.cc 直接引用 aclrt* 符号，仅靠 libkv_transport.so 的
+# 间接依赖无法解析（现代 ld 对直接引用要求命令行显式带库，报 DSO missing from command line）。
+option(TESTTOOL_ENABLE_ASCEND "真 NPU 内存分配（ACL 设备内存路径，需 CANN 环境）；OFF 时 npu 类型回退主机内存模拟" OFF)
+if(TESTTOOL_ENABLE_ASCEND)
+    # ---- CANN 根目录：-DTESTTOOL_ASCEND_ROOT 显式传参优先，其次环境变量
+    # ASCEND_HOME_PATH → ASCEND_ROOT（与 kv client 顶层 CMake 的探测顺序一致）----
+    if(NOT DEFINED TESTTOOL_ASCEND_ROOT)
+        if(DEFINED ENV{ASCEND_HOME_PATH})
+            set(TESTTOOL_ASCEND_ROOT "$ENV{ASCEND_HOME_PATH}")
+        elseif(DEFINED ENV{ASCEND_ROOT})
+            set(TESTTOOL_ASCEND_ROOT "$ENV{ASCEND_ROOT}")
+        else()
+            message(FATAL_ERROR
+                "TESTTOOL_ENABLE_ASCEND=ON 需要 CANN 根目录：配置时 -DTESTTOOL_ASCEND_ROOT=<CANN 目录>，"
+                "或设置环境变量 ASCEND_HOME_PATH / ASCEND_ROOT（CANN 官方 set_env.sh 会设置前者）")
+        endif()
+    endif()
+    # ---- 头文件目录：include / aarch64-linux/include 两种布局取实际命中者（与 build-kv-link.sh 预检查同逻辑）----
+    set(TESTTOOL_CANN_INC_DIR "${TESTTOOL_ASCEND_ROOT}/include")
+    if(NOT EXISTS "${TESTTOOL_CANN_INC_DIR}/acl/acl.h")
+        if(EXISTS "${TESTTOOL_ASCEND_ROOT}/aarch64-linux/include/acl/acl.h")
+            set(TESTTOOL_CANN_INC_DIR "${TESTTOOL_ASCEND_ROOT}/aarch64-linux/include")
+        else()
+            message(FATAL_ERROR
+                "CANN 根目录下未找到 acl/acl.h（include 与 aarch64-linux/include 两种布局均未命中）：${TESTTOOL_ASCEND_ROOT}")
+        endif()
+    endif()
+    # ---- libascendcl 探测：候选布局对齐 kv client 顶层 CMake 的六种库布局，不做系统默认路径搜索 ----
+    find_library(TESTTOOL_ASCENDCL_LIB
+        NAMES ascendcl
+        HINTS
+            ${TESTTOOL_ASCEND_ROOT}/lib64
+            ${TESTTOOL_ASCEND_ROOT}/lib
+            ${TESTTOOL_ASCEND_ROOT}/runtime/lib64
+            ${TESTTOOL_ASCEND_ROOT}/runtime/lib
+            ${TESTTOOL_ASCEND_ROOT}/aarch64-linux/lib64
+            ${TESTTOOL_ASCEND_ROOT}/aarch64-linux/lib
+        NO_DEFAULT_PATH
+    )
+    if(NOT TESTTOOL_ASCENDCL_LIB)
+        message(FATAL_ERROR
+            "CANN 根目录下未找到 libascendcl（lib64 / lib / runtime / aarch64-linux 布局均未命中）：${TESTTOOL_ASCEND_ROOT}")
+    endif()
+    target_compile_definitions(testTool PRIVATE TESTTOOL_ENABLE_ASCEND)
+    target_include_directories(testTool PRIVATE ${TESTTOOL_CANN_INC_DIR})
+    target_link_libraries(testTool PRIVATE ${TESTTOOL_ASCENDCL_LIB})
+endif()
