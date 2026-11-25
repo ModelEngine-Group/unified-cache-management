@@ -28,6 +28,7 @@ def _load_apply_patch_module():
         {"ucm": ucm_module, "ucm.logger": logger_module},
     ):
         spec.loader.exec_module(module)
+    module.import_module = MagicMock()
     return module, logger
 
 
@@ -161,6 +162,7 @@ def test_mamba_split_patch_is_scoped_to_0300(
         ("0.30.0", None, True, True),
         ("0.30.0", "0.30.0", False, False),
         ("0.31.0", "0.31.0", True, True),
+        ("0.32.0", "0.32.0", True, True),
         ("0.34.0", None, True, True),
     ],
 )
@@ -171,6 +173,8 @@ def test_multi_connector_handshake_patch_routing(
     imported = []
     original_import = __import__
     prefix = "ucm.integration.vllm.patch."
+    target = "vllm.distributed.kv_transfer.kv_connector.v1.multi_connector"
+    module.import_module.side_effect = imported.append
 
     def capture_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name.startswith(prefix):
@@ -188,7 +192,11 @@ def test_multi_connector_handshake_patch_routing(
     ):
         module.apply_all_patches()
 
-    assert (prefix + "v0300.multi_connector_handshake_patch" in imported) is expected
+    handshake_patch = prefix + "v0300.multi_connector_handshake_patch"
+    assert (handshake_patch in imported) is expected
+    assert (target in imported) is expected
+    if expected:
+        assert imported[-2:] == [handshake_patch, target]
 
 
 @pytest.mark.parametrize(
