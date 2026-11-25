@@ -88,6 +88,14 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
                 f"Invalid worker local rank for NUMA fallback: local_rank={local_rank}, "
                 f"local_dp_rank={local_dp_rank}, workers_per_dp={local_workers}."
             )
+    elif (
+        getattr(parallel, "data_parallel_size", None) == 1
+        and getattr(parallel, "local_world_size", parallel.world_size)
+        < parallel.world_size
+    ):
+        # Each host slices its own NUMA nodes when a single DP group spans hosts.
+        rank = local_rank
+        count = cache_rank_count(parallel)
     else:
         model_size = parallel.pipeline_parallel_size * parallel.tensor_parallel_size
         if model_size <= 0:

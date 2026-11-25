@@ -329,6 +329,28 @@ def test_affinity_works_without_worker_geometry():
 
 
 @pytest.mark.parametrize("affinity", [None, 6])
+@pytest.mark.parametrize("global_rank,local_rank", [(0, 0), (1, 1), (2, 0), (3, 1)])
+def test_cross_host_tp_numa_uses_local_worker_rank(affinity, global_rank, local_rank):
+    geometry = parallel(
+        data_parallel_size=1,
+        data_parallel_index=0,
+        data_parallel_rank_local=None,
+        tensor_parallel_size=4,
+        world_size=4,
+        local_world_size=2,
+        rank=global_rank,
+    )
+    config = {}
+    cache_config.configure_cache_numa(
+        config, NS(get_numa_node=lambda _: affinity), local_rank, geometry, local_rank
+    )
+
+    assert config.get("cache_detected_numa_node") == affinity
+    assert config["cache_fallback_numa_rank"] == local_rank
+    assert config["cache_fallback_numa_rank_count"] == 2
+
+
+@pytest.mark.parametrize("affinity", [None, 6])
 @pytest.mark.parametrize("rank_has_dp_offset", [False, True])
 @pytest.mark.parametrize("workers_per_dp", [2, 8])
 def test_dp_isolation_does_not_restart_numa_slices(
