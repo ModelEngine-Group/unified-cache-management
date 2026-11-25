@@ -297,6 +297,42 @@ def test_configure_pp_store_splits_budget_per_stage():
     assert config["local_rank_size"] == 4
 
 
+@pytest.mark.parametrize(
+    "node_rank,pp_rank,local_stage_ranks", [(0, 0, 4), (0, 1, 2), (1, 1, 2), (1, 2, 4)]
+)
+def test_configure_pp_store_counts_only_stage_workers_on_the_node(
+    node_rank, pp_rank, local_stage_ranks
+):
+    cls, _, _ = _load_connector_class()
+    conn = _make_connector(cls, pp_size=3, world_size=6, tp_size=2)
+    parallel = conn._vllm_config.parallel_config
+    parallel.prefill_context_parallel_size = 2
+    parallel.distributed_executor_backend = "mp"
+    parallel.nnodes_within_dp = 2
+    parallel.node_rank_within_dp = node_rank
+    config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
+
+    conn._configure_pp_store(config, pp_rank, pp_rank * 4, 4)
+
+    assert config["local_rank_size"] == local_stage_ranks
+    assert config["cache_buffer_capacity_gb"] == 64
+
+
+def test_configure_pp_store_splits_budget_across_all_stages_on_middle_node():
+    cls, _, _ = _load_connector_class()
+    conn = _make_connector(cls, pp_size=5, world_size=10, tp_size=6, buffer_gb=120)
+    parallel = conn._vllm_config.parallel_config
+    parallel.distributed_executor_backend = "mp"
+    parallel.nnodes_within_dp = 3
+    parallel.node_rank_within_dp = 1
+    config = copy.deepcopy(conn.connector_configs[0]["ucm_connector_config"])
+
+    conn._configure_pp_store(config, 2, 8, 4)
+
+    assert config["local_rank_size"] == 6
+    assert config["cache_buffer_capacity_gb"] == 40
+
+
 def test_configure_pp_store_namespaces_cache_id_by_layer_allocation():
     cls, _, _ = _load_connector_class()
     conn = _make_connector(cls)
