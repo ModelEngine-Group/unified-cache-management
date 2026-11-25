@@ -49,7 +49,8 @@ struct Task {
           type{other.type},
           desc{std::move(other.desc)},
           filter{std::move(other.filter)},
-          failureStatus{other.failureStatus.load()}
+          failureStatus{other.failureStatus.load()},
+          slotWaitTimedOut{other.slotWaitTimedOut.load()}
     {
     }
 
@@ -58,6 +59,7 @@ struct Task {
     Detail::TaskDesc desc;
     std::vector<Detail::TokenFilter> filter;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    std::atomic_bool slotWaitTimedOut{false};
 
     void Fail(const Status& status)
     {

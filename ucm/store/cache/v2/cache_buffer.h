@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -94,7 +95,8 @@ public:
                 buf_->Release(slotIdx_);
             }
         }
-        // Accessors require a handle that has not been moved from.
+        bool Valid() const { return buf_ != nullptr; }
+        // Slot accessors require a valid handle.
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
         size_t SlotIndex() const { return slotIdx_; }
@@ -186,7 +188,7 @@ public:
     }
 
     // Requires successful worker-side Setup; observers must not call Get.
-    // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
+    // Waits up to 30 seconds for a slot reference. A valid handle may still be Loading.
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
                size_t preferredRank = kInvalid)
     {
@@ -197,13 +199,20 @@ public:
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
                             ? std::numeric_limits<size_t>::max()
                             : 2 * usable;
-        for (;;) {
-            bool owner = false;
-            auto slot =
-                TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
-            if (slot != kInvalid) { return Handle{this, slot, owner}; }
-            std::this_thread::yield();
+        bool owner = false;
+        auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
+        if (slot == kInvalid) {
+            using Clock = std::chrono::steady_clock;
+            const auto deadline = Clock::now() + std::chrono::seconds(30);
+            while (slot == kInvalid) {
+                std::this_thread::yield();
+                if (Clock::now() >= deadline) { break; }
+                slot =
+                    TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
+            }
         }
+        if (slot == kInvalid) { return Handle{nullptr, kInvalid, false}; }
+        return Handle{this, slot, owner};
     }
 
     void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
@@ -229,17 +238,18 @@ public:
         if (iNode != kInvalid) {
             bool owner = false;
             if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, false)) {
+                const bool ready = GetState(iNode) == State::Ready;
                 Release(iNode);
-                return true;
+                return ready;
             }
         }
         auto* lock = layout.LockOf(iBucket);
         lock->Lock();
         iNode = Lookup(layout, iBucket, blockId, offset);
-        auto found = iNode != kInvalid;
-        if (found) { layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed); }
+        const bool ready = iNode != kInvalid && GetState(iNode) == State::Ready;
+        if (ready) { layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed); }
         lock->Unlock();
-        return found;
+        return ready;
     }
 
     void Touch(const Detail::BlockId* blocks, size_t num)

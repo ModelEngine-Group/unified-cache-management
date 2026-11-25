@@ -66,7 +66,7 @@ public:
         Handle(FakeBuffer* buf, size_t slotIdx, bool owner, bool hostAccessible)
             : buf_{buf}, slotIdx_{slotIdx}, owner_{owner}, hostAccessible_{hostAccessible}
         {
-            buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed);
+            if (buf_ != nullptr) { buf_->liveHandles_.fetch_add(1, std::memory_order_relaxed); }
         }
         Handle(const Handle&) = delete;
         Handle& operator=(const Handle&) = delete;
@@ -93,6 +93,7 @@ public:
         {
             if (buf_ != nullptr) { buf_->liveHandles_.fetch_sub(1, std::memory_order_relaxed); }
         }
+        bool Valid() const { return buf_ != nullptr; }
         bool Owner() const { return owner_; }
         bool HostAccessible() const { return hostAccessible_; }
         size_t Segment() const { return buf_->SegmentOf(slotIdx_); }
@@ -145,6 +146,7 @@ public:
                size_t preferredRank = UC::Cache2::kInvalid)
     {
         getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank});
+        if (getCalls_.size() == timeoutOnGet_) { return Handle{nullptr, 0, false, true}; }
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) { return Handle{this, it->second, false, HostAccessibleOf(key)}; }
@@ -157,6 +159,7 @@ public:
     {
         preallocCalls_.push_back(PreallocCall{blockId, offset, allowReserved, preferredRank});
     }
+    void TimeoutOnGet(size_t call) { timeoutOnGet_ = call; }
     void SetHostAccessible(bool accessible) { defaultHostAccessible_ = accessible; }
     void SetHostAccessible(const UC::Detail::BlockId& block, bool accessible, size_t offset = 0)
     {
@@ -200,6 +203,7 @@ private:
     std::array<std::atomic<SlotState>, 64> slotStates_{};
     std::array<size_t, 64> slotSegments_{};
     size_t nextSlotIdx_{0};
+    size_t timeoutOnGet_{0};
     std::atomic<size_t> liveHandles_{0};
     std::atomic<size_t> markedReady_{0};
     std::atomic<size_t> markedFailed_{0};
@@ -612,6 +616,50 @@ TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendSubmitFails)
     const auto& counters = std::get<0>(stats);
     EXPECT_EQ(counters.at("cache_backend_load_submit_errors_total"), 1);
     EXPECT_EQ(counters.at("cache_load_failed_shards_total"), 1);
+}
+
+TEST_F(UCCache2LoadQueueTest, SlotTimeoutDrainsAcceptedReadsAndReleasesDispatcher)
+{
+    buffer_.TimeoutOnGet(3);
+    const auto firstHandle = NextBackendHandle();
+    const auto secondHandle = NextBackendHandle();
+    UC::Latch firstReadStarted;
+    firstReadStarted.Set(1);
+    UC::Latch finishFirstRead;
+    finishFirstRead.Set(1);
+    EXPECT_CALL(backend_, Load)
+        .WillOnce([firstHandle](UC::Detail::TaskDesc) {
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Detail::TaskHandle{firstHandle});
+        })
+        .WillOnce([secondHandle](UC::Detail::TaskDesc) {
+            return UC::Expected<UC::Detail::TaskHandle>(UC::Detail::TaskHandle{secondHandle});
+        });
+    EXPECT_CALL(backend_, Wait(firstHandle)).WillOnce([&](UC::Detail::TaskHandle) {
+        firstReadStarted.Done();
+        EXPECT_TRUE(finishFirstRead.WaitForDuration(kWaitMs));
+        return UC::Status::OK();
+    });
+    EXPECT_CALL(backend_, Wait(secondHandle)).WillOnce(testing::Return(UC::Status::OK()));
+
+    auto desc = MakeDesc(TypesHelper::MakeBlockIdRandomly());
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x2000)}});
+    desc.push_back({TypesHelper::MakeBlockIdRandomly(), 0, {reinterpret_cast<void*>(0x3000)}});
+    auto [task, waiter] = SubmitOne(std::move(desc));
+    EXPECT_TRUE(firstReadStarted.WaitForDuration(kWaitMs));
+    EXPECT_TRUE(AwaitTrue([&] { return failureSet_.Contains(task->id); }));
+    EXPECT_FALSE(waiter->WaitForDuration(20));
+    EXPECT_EQ(buffer_.LiveHandles(), 2);
+    finishFirstRead.Done();
+
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
+
+    const auto ready = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(ready);
+    auto [next, nextWaiter] = SubmitOne(MakeDesc(ready));
+    ASSERT_TRUE(nextWaiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(next->id));
 }
 
 TEST_F(UCCache2LoadQueueTest, LoadFailsWhenBackendWaitFails)

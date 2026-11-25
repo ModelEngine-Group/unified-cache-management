@@ -159,7 +159,7 @@ TEST_F(Cache2BufferTest, LayerwisePreallocAndHitsRetainDistinctSlots)
     std::vector<size_t> slots;
     for (size_t layer = 0; layer < kLayers; ++layer) {
         buffer_.Prealloc(block, layer);
-        ASSERT_TRUE(buffer_.Exist(block, layer));
+        EXPECT_FALSE(buffer_.Exist(block, layer));
         EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, layer), 0);
         auto handle = buffer_.Get(block, layer);
         EXPECT_TRUE(handle.Owner());
@@ -287,7 +287,7 @@ TEST_F(Cache2BufferTest, ExistDoesNotStealPreallocatedOwner)
 {
     auto block = MakeBlockId(2);
     buffer_.Prealloc(block, 0);
-    ASSERT_TRUE(buffer_.Exist(block, 0));
+    EXPECT_FALSE(buffer_.Exist(block, 0));
     EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
 
     auto owner = buffer_.Get(block, 0);
@@ -307,6 +307,7 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
             EXPECT_FALSE(reader->Owner());
         }
         EXPECT_EQ(reader->GetState(), CtrlLayout::SlotMeta::State::Failed);
+        EXPECT_FALSE(buffer_.Exist(block, 0));
     }
 
     auto retry = buffer_.Get(block, 0);
@@ -314,6 +315,7 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Loading);
     retry.MarkReady();
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Ready);
+    EXPECT_TRUE(buffer_.Exist(block, 0));
 }
 
 TEST_F(Cache2BufferTest, MoveTransfersReferenceWithoutAbandoningOwner)
@@ -378,6 +380,7 @@ TEST_F(Cache2BufferTest, GetWaitsForPinnedSlotAndReturnsAnAcquiredHandle)
     pinned.pop_back();
 
     auto handle = pending.get();
+    ASSERT_TRUE(handle.Valid());
     EXPECT_EQ(handle.SlotIndex(), releasedSlot);
     EXPECT_TRUE(handle.Owner());
     EXPECT_EQ(handle.GetState(), CtrlLayout::SlotMeta::State::Loading);
