@@ -94,15 +94,8 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     auto it = config_.attrs.find("localIp");
     if (it != config_.attrs.end()) { localIp = it->second; }
 
-    std::uint32_t timeout = 5000;
-    auto tit = config_.attrs.find("timeout");
-    if (tit != config_.attrs.end()) {
-        timeout = static_cast<std::uint32_t>(std::stoul(tit->second));
-    }
-
     connManager_.reset();
-    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
-                                                       config_.maxErrorCount);
+    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, config_);
 
     const std::uint32_t qp_num = config_.qpNum;
     KV_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
@@ -233,6 +226,25 @@ Status AsuTransportImpl::CheckHealth()
         return Status::Error(StatusCode::NOT_INITIALIZED, "transport worker is not running");
     }
     return Status::OK();
+}
+
+Status AsuTransportImpl::GetConnectionHealth(NodeHealthSnapshot& snapshot)
+{
+    if (!connManager_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+    }
+    connManager_->GetHealthSnapshot(snapshot);
+    return Status::OK();
+}
+
+Status AsuTransportImpl::UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
+                                         const std::vector<NodeEndpoint>& toRemove,
+                                         UpdateResult& result)
+{
+    if (!connManager_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+    }
+    return connManager_->UpdateGroups(toAdd, toRemove, result);
 }
 
 Status AsuTransportImpl::Submit(const TransportTaskPtr& task)
