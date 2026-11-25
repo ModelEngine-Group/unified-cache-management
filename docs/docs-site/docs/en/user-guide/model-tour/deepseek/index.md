@@ -64,7 +64,8 @@
           use_gdr: false
 
     enable_event_sync: true
-    use_layerwise: true
+    use_layerwise: false
+    load_tokens_threshold: 2048
     enable_record_traces: false
     use_lite: false
     persist_token_threshold: 0
@@ -211,7 +212,8 @@
           use_gdr: false
 
     enable_event_sync: true
-    use_layerwise: true
+    use_layerwise: false
+    load_tokens_threshold: 2048
     enable_record_traces: false
     use_lite: false
     persist_token_threshold: 0
