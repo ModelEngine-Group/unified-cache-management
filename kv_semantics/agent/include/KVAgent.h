@@ -23,6 +23,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "AgentLogger.h"
@@ -61,12 +62,16 @@ KV_AGENT_EXPORT int32_t kv_agent_init(kv_agent_handle* agent, const kv_osd_agent
                                       uint32_t abi_version, size_t config_size,
                                       const char* log_dir);
 KV_AGENT_EXPORT int32_t kv_agent_is_initialized(kv_agent_handle* agent);
+KV_AGENT_EXPORT int32_t kv_agent_is_online(kv_agent_handle* agent);
 // Starts the asynchronous heartbeat timer and returns immediately.
 KV_AGENT_EXPORT int32_t kv_agent_start_heartbeat(kv_agent_handle* agent);
 // 主动停止发心跳: 仅停MOSDBeacon发送并将状态置为down
 // 保留通信层与句柄, 可再次kv_agent_start_heartbeat恢复
 KV_AGENT_EXPORT int32_t kv_agent_stop_heartbeat(kv_agent_handle* agent);
 KV_AGENT_EXPORT void kv_agent_destroy(kv_agent_handle* agent);
+
+KV_AGENT_EXPORT int32_t kv_agent_set_timeout_down_callback(kv_agent_handle* agent,
+                                                           void (*callback)(void));
 
 /*
  * 异步回调API —— agent内部用线程池执行mon命令
@@ -99,6 +104,14 @@ KV_AGENT_EXPORT int32_t kv_agent_create_ceph_pool_async(kv_agent_handle* agent, 
 KV_AGENT_EXPORT int32_t kv_agent_delete_ceph_pool_async(kv_agent_handle* agent, char* kvnsName,
                                                         uint32_t nameLen, kv_agent_async_cb cb,
                                                         void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_osd_out_async(kv_agent_handle* agent, kv_agent_async_cb cb,
+                                               void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_osd_crush_rm_async(kv_agent_handle* agent, kv_agent_async_cb cb,
+                                                    void* user_data);
+KV_AGENT_EXPORT int32_t kv_agent_is_crush_root_empty_async(kv_agent_handle* agent, char* kvPoolName,
+                                                           uint32_t nameLen, bool* isEmpty,
+                                                           kv_agent_async_cb cb, void* user_data);
+
 #ifdef __cplusplus
 }
 #endif

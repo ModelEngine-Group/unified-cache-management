@@ -32,7 +32,7 @@
 #include <string>
 #include "AgentLogger.h"
 
-#define KV_AGENT_MON_AUTH_TIMEOUT_SECONDS 20U
+#define KV_AGENT_MON_AUTH_TIMEOUT_SECONDS 10U
 
 namespace agent {
 
@@ -49,11 +49,16 @@ struct KVAgentConfig {
     std::string addrs;
 };
 
+// agent 持续断连超阈值触发终极停止+清理后调用，由盘框侧(KVService)注入
+using KVAgentTimeoutDownCb = void (*)(void);
+
 class KVAgentImpl {
 public:
     virtual ~KVAgentImpl() = default;
     virtual int init(const KVAgentConfig& config, AgentLogger* logger) = 0;
+    virtual void set_timeout_down_callback(KVAgentTimeoutDownCb callback) = 0;
     virtual bool is_initialized() const = 0;
+    virtual bool kv_agent_is_online() = 0;
     virtual int start_heartbeat() = 0;
     // 异步 API: 内部线程池执行 mon 命令, 完成后回调 cb. 返回 0 表示已投递.
     // 主动停止发心跳 (轻量软停): 仅停 MOSDBeacon 发送并将状态回置 DOWN,
@@ -71,6 +76,11 @@ public:
                                                     KVAgentAsyncCallback cb, void* user_data) = 0;
     virtual int32_t kv_agent_delete_ceph_pool_async(char* kvnsName, uint32_t nameLen,
                                                     KVAgentAsyncCallback cb, void* user_data) = 0;
+    virtual int32_t kv_agent_osd_out_async(KVAgentAsyncCallback cb, void* user_data) = 0;
+    virtual int32_t kv_agent_osd_crush_rm_async(KVAgentAsyncCallback cb, void* user_data) = 0;
+    virtual int32_t kv_agent_is_crush_root_empty_async(char* kvPoolName, uint32_t nameLen,
+                                                       bool* isEmpty, KVAgentAsyncCallback cb,
+                                                       void* user_data) = 0;
 };
 
 std::unique_ptr<KVAgentImpl> create_kv_osd_agent();
