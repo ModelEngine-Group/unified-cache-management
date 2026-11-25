@@ -8,7 +8,6 @@ on:
       - .github/ISSUE_TEMPLATE/400-bug-report.yml
       - .github/PULL_REQUEST_TEMPLATE.md
       - .github/workflows/release-operations*.yml
-      - .github/workflows/release-delivery-status.yml
       - .github/workflows/release-tag.yml
       - .github/workflows/release-ucm.yml
 

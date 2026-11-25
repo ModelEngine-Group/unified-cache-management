@@ -48,9 +48,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           UCM_PROJECT_TOKEN: ${{ secrets.UCM_PROJECT_TOKEN }}
         run: python .github/release-operations/controller.py
-      - name: Finalize operation status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          UCM_JOB_STATUS: ${{ job.status }}
-        run: python .github/release-operations/controller.py --finalize

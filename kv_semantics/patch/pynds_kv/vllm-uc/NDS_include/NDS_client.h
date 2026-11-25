@@ -30,6 +30,7 @@
 #include <setjmp.h>
 #include <signal.h>
 #include <zlib.h>  // 需要安装 zlib-devel
+#include "IPC_message_interface.h"
 #include "NDS_message_interface.h"
 #include "log.h"
 #include "xrt_rdma_neg_msg.h"

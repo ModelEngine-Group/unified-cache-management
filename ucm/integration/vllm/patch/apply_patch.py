@@ -416,9 +416,10 @@ def apply_all_patches() -> None:
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
             case "0.30.0":
-                logger.info(
-                    "UCM patching vllm-ascend 0.30.0 for chunked-prefill alignment..."
-                )
+                logger.info("UCM patching vllm-ascend for chunked-prefill alignment...")
+                import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
+            case "0.32.0":
+                logger.info("UCM patching vllm-ascend for chunked-prefill alignment...")
                 import ucm.integration.vllm.patch.v0300.vllm_ascend.mamba_block_aligned_split_patch
             case _:
                 pass
@@ -436,18 +437,7 @@ def apply_all_patches() -> None:
         # start_load_kv, overwriting UCM-loaded data. @when_imported is
         # self-guarding (only fires when the module exists).
         import ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch
-
-        # Fix: vLLM >= 0.27.0 Kimi-K3's MLA bypasses @maybe_transfer_kv_layer,
-        # so wait_for_layer_load/save_kv_layer are never called. @when_imported
-        # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
-        import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
         import ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch
-
-        # GDN/KDA (hybrid linear-attention) forwards never receive
-        # @maybe_transfer_kv_layer; wire the per-layer KV hooks in for the
-        # layerwise v2 connector. @when_imported is self-guarding (only fires
-        # when the GDN modules exist).
-        import ucm.integration.vllm.patch.v0300.mamba_layer_hooks_patch
 
         logger.info("UCM patch initialization completed!")
 

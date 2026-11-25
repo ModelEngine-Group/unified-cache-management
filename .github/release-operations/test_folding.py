@@ -84,8 +84,7 @@ class FoldingContracts(unittest.TestCase):
             x.api.items[1]["body"][:begin] + x.api.items[1]["body"][end:]
         )
         x.controller.initialize_or_update(1, "update")
-        self.assertIsNone(x.api.items[5]["milestone"])
-        self.assertEqual(x.controller.load(1)[1]["revision"], 3)
+        self.assertEqual(x.api.items[5]["milestone"]["number"], 1)
 
     def test_conversion_preserves_scope_and_is_idempotent(self):
         body = fold_requirements(fixtures.PLAN, fixtures.REPOSITORY)
@@ -172,7 +171,6 @@ class FoldingContracts(unittest.TestCase):
         )
         x.controller.initialize_or_update(1, "update")
         self.assertEqual(len(x.api.items), 4)
-        self.assertEqual(x.controller.load(1)[1]["revision"], 1)
 
     def test_migration_preserves_initialized_scope_and_objects(self):
         x = fixtures.RepositoryOperations()
@@ -182,9 +180,8 @@ class FoldingContracts(unittest.TestCase):
             x.api.items[1]["body"], fixtures.REPOSITORY
         )
         x.controller.initialize_or_update(1, "update")
-        after = x.controller.load(1)[1]
+        after = x.controller.reconcile(1)
         self.assertEqual(after["scope"], before["scope"])
-        self.assertEqual(after["revision"], before["revision"])
         self.assertEqual(len(x.api.items), 4)
 
     def test_lost_creation_response_is_recovered(self):

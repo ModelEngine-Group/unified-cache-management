@@ -3,7 +3,7 @@
 import re
 from html import escape, unescape
 
-from syntax import OperationError, mask_bot_regions, sections
+from syntax import OperationError, mask_bot_regions, render_pull_request_lines, sections
 
 ISSUE_STATE_RE = re.compile(
     r"\s*<!-- ucm-issue-state:(?:open|closed) -->\s*(?:🟢 open|🟣 closed)\s*$"
@@ -177,19 +177,10 @@ def patch_pull_requests(body, rows, repository):
     if len(records) != len(entries):
         raise OperationError("Requirement card count does not match parsed entries")
     for card, entry in reversed(list(zip(records, entries))):
-        suffix = []
-        for pr in sorted(rows.get(entry["number"], []), key=lambda p: p["number"]):
-            status = (
-                "merged"
-                if pr.get("merged_at")
-                else (
-                    "closed"
-                    if pr["state"] == "closed"
-                    else "draft" if pr.get("draft") else "open"
-                )
-            )
-            suffix.append(f"  - #{pr['number']} | {status}")
-        lines[card["fields"]["pull_requests"][0] + 1 : card["close"]] = suffix + [""]
+        first, end = card["fields"]["pull_requests"][0] + 1, card["close"]
+        lines[first:end] = render_pull_request_lines(
+            lines[first:end], rows.get(entry["number"], []), repository, "  "
+        )
     return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
 
 

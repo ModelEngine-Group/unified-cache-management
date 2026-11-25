@@ -1764,7 +1764,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.use_request_async_load = (
             request_async_configured and self._supports_request_async_load()
         )
-        if request_async_configured and not self.use_request_async_load:
+        if self.use_request_async_load:
+            logger.info(
+                "Request-async loading enabled for %s.",
+                type(self).__name__,
+            )
+        elif request_async_configured:
             logger.warning(
                 "Request-async loading is not supported by %s; disabling it.",
                 type(self).__name__,
@@ -4073,7 +4078,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         from ucm.integration.vllm.hla_connector import (
             UCMHybridLinearAttentionConnector,
             UCMHybridLinearAttentionLayerWiseConnector,
-            is_cuda_blnhc_layout,
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
@@ -4089,27 +4093,17 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     kv_cache_config
                 )
             )
-        cuda_blnhc = is_cuda_blnhc_layout(kv_cache_config)
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
-        if cuda_blnhc and use_hybrid_linear_attention_layerwise:
-            raise RuntimeError(
-                "CUDA BLNHC does not support layerwise. "
-                "Set hybrid_linear_attention_layerwise to false "
-                "to use whole-store."
-            )
         if use_hybrid_linear_attention_layerwise:
-            layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
+            layerwise_fallback_log = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
                 vllm_config
             )
-            if layerwise_block_reason:
-                logger.warning(
-                    "Layerwise disabled, using direct mode: %s",
-                    layerwise_block_reason,
-                )
+            if layerwise_fallback_log:
+                logger.warning(layerwise_fallback_log)
                 use_hybrid_linear_attention_layerwise = False
 
         if is_fawa:

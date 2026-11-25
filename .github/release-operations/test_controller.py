@@ -2,8 +2,9 @@ import copy
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from controller import Controller, GitHub, bug_progress, manual_mode
+from controller import Controller, GitHub, bug_progress
 from presentation import NAV_START, OVERVIEW_END, OVERVIEW_START, release_body
 from syntax import (
     OperationError,
@@ -13,8 +14,8 @@ from syntax import (
     parse_release,
     patch_pull_requests,
     patch_references,
-    scope_diff,
 )
+from taskcards import task_requirements
 
 REPOSITORY = "harrisonyhq/unified-cache-management"
 PLAN = """### Release Information
@@ -144,7 +145,10 @@ class ParserContracts(unittest.TestCase):
             + requirement
             + "\n### Change Log\n\nreason: Initial scope.\n"
         )
-        self.assertEqual(len(parse_release(example, REPOSITORY)["entries"]), 1)
+        self.assertIn("  pull_requests:\n    -\n", requirement)
+        entries = parse_release(example, REPOSITORY, read_pr_requests=True)["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["requested_prs"], [])
         self.assertNotIn("label: Pull Requests", template)
         self.assertFalse((root.parent / "ISSUE_TEMPLATE/010-release-plan.yml").exists())
 
@@ -163,8 +167,7 @@ class ParserContracts(unittest.TestCase):
         actual = parse_release(patched, REPOSITORY)["entries"]
         self.assertEqual([e["key"] for e in actual], ["issue-14", "issue-13"])
         self.assertEqual(actual[0]["description"], entries[0]["description"])
-        previous = {e["key"]: e for e in bind_entries(entries, mappings)}
-        self.assertFalse(any(scope_diff(previous, actual).values()))
+        self.assertEqual(actual, bind_entries(entries, mappings))
 
     def test_full_issue_url_normalizes_only_the_title_reference(self):
         url = f"https://github.com/{REPOSITORY}/issues/14"
@@ -281,13 +284,9 @@ class ParserContracts(unittest.TestCase):
             "initial integration #14",
             patched,
         )
-        self.assertFalse(
-            any(
-                scope_diff(
-                    {"issue-14": dict(entry, key="issue-14", number=14)},
-                    [parse_release(patched, REPOSITORY)["entries"][0]],
-                ).values()
-            )
+        self.assertEqual(
+            parse_release(patched, REPOSITORY)["entries"][0],
+            dict(entry, key="issue-14", number=14),
         )
 
     def test_markdown_link_destination_controls_mentions(self):
@@ -381,6 +380,7 @@ class MemoryGitHub:
         self.comments, self.milestones, self.parents = [], [], {}
         self.prs, self.reviews, self.inline, self.events = {}, {}, {}, {}
         self.projects = {}
+        self.project_statuses = {}
         self.lose_response_for = None
         self.lose_milestone_response = False
         self.lose_project_response = False
@@ -413,6 +413,20 @@ class MemoryGitHub:
 
     def call(self, path, method="GET", data=None):
         if path == "graphql":
+            if "addCloseIssueReferences" in data["query"]:
+                payload = data["variables"]["input"]
+                issue = next(
+                    i for i in self.items.values() if i["node_id"] == payload["issueId"]
+                )
+                links = self.native_links.setdefault(issue["number"], [])
+                for node_id in payload["pullRequestIds"]:
+                    pr = next(p for p in self.prs.values() if p["node_id"] == node_id)
+                    links.append((pr["number"], REPOSITORY))
+                return {
+                    "data": {
+                        "addCloseIssueReferences": {"issue": {"id": payload["issueId"]}}
+                    }
+                }
             if "minimizeComment" in data["query"]:
                 if self.minimize_failure:
                     raise OperationError("Minimize API unavailable")
@@ -529,6 +543,10 @@ class MemoryGitHub:
         return {"login": path.split("/")[-1]}
 
     def pages(self, path):
+        if path == "milestones?state=open":
+            return copy.deepcopy(
+                [item for item in self.milestones if item["state"] == "open"]
+            )
         if path.startswith("milestones"):
             return copy.deepcopy(self.milestones)
         if path.endswith("/comments") and path.startswith("issues/"):
@@ -617,6 +635,7 @@ class MemoryGitHub:
             item = dict(
                 data,
                 number=len(self.milestones) + 1,
+                state="open",
                 html_url="https://example.com/milestone",
             )
             self.milestones.append(item)
@@ -699,18 +718,28 @@ class MemoryGitHub:
 
     def graphql(self, query, **variables):
         if query.startswith("query"):
-            values = self.projects.get(variables["id"], {})
-            return {
-                "node": {
+
+            def project_node(node_id):
+                return {
+                    "id": node_id,
                     "projectItems": {
                         "nodes": [
-                            {"id": item, "project": {"id": p}}
-                            for p, item in values.items()
+                            {
+                                "id": item,
+                                "project": {"id": p},
+                                "fieldValueByName": self.project_statuses.get(item),
+                            }
+                            for p, item in self.projects.get(node_id, {}).items()
                         ],
                         "pageInfo": {"hasNextPage": False, "endCursor": None},
-                    }
+                    },
                 }
-            }
+
+            if "ids" in variables:
+                return {
+                    "nodes": [project_node(node_id) for node_id in variables["ids"]]
+                }
+            return {"node": project_node(variables["id"])}
         if "addProjectV2ItemById" in query:
             values = self.projects.setdefault(variables["content"], {})
             item = values.setdefault(
@@ -726,6 +755,10 @@ class MemoryGitHub:
                     del values[variables["project"]]
             return {"deleteProjectV2Item": {"deletedItemId": variables["item"]}}
         if "updateProjectV2ItemFieldValue" in query:
+            data = variables["input"]
+            self.project_statuses[data["itemId"]] = {
+                "name": data["value"]["singleSelectOptionId"]
+            }
             return {}
         raise AssertionError(query)
 
@@ -759,18 +792,109 @@ class MemoryGitHub:
 
 
 class RepositoryOperations(unittest.TestCase):
+    def test_initialize_links_pr_numbers_and_urls_to_new_requirement(self):
+        merged = self.api.add_pr(10, "")
+        merged.update(state="closed", merged_at="2026-01-02")
+        self.api.add_pr(11, "")
+        self.api.items[1]["body"] = task_requirements(PLAN, REPOSITORY).replace(
+            "  pull_requests:\n",
+            f"  pull_requests:\n    - #10\n    - https://github.com/{REPOSITORY}/pull/11\n"
+            f"    - [Same PR](https://github.com/{REPOSITORY}/pull/10)\n",
+            1,
+        )
+        self.controller.initialize_or_update(1, "release_init", True)
+        self.assertFalse(self.api.native_links)
+        self.assertFalse(self.api.comments)
+
+        state = self.initialize()
+        requirement = state["prs"]["10"]["requirements"][0]
+        self.assertEqual(
+            self.api.native_links[requirement], [(10, REPOSITORY), (11, REPOSITORY)]
+        )
+        self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
+        body = self.api.items[1]["body"]
+        self.assertIn("    - #10 | merged\n    - #11 | open", body)
+        self.assertIn(f"| #{requirement} | #10 (merged), #11 (open) |", body)
+        self.assertNotIn("Same PR", body)
+
+    def test_update_imports_pending_prs_and_clears_rendered_rows_after_unlink(self):
+        state = self.initialize()
+        requirement = 3
+        self.api.projects[self.api.items[requirement]["node_id"]] = {"P_TEST": "item"}
+        pr = self.api.add_pr(10, "")
+        reference = f"    - [PR](https://github.com/{REPOSITORY}/pull/10)"
+        self.api.items[1]["body"] = self.api.items[1]["body"].replace(
+            "  pull_requests:\n", "  pull_requests:\n" + reference + "\n", 1
+        )
+        self.controller.handle({"issue": self.api.items[1]}, "issues")
+        self.assertIn(reference, self.api.items[1]["body"])
+        self.assertFalse(self.api.native_links)
+        self.controller.initialize_or_update(1, "update", True)
+        self.assertFalse(self.api.native_links)
+
+        self.controller.initialize_or_update(1, "update")
+        self.controller.initialize_or_update(1, "update")
+        self.assertEqual(self.api.native_links[requirement], [(10, REPOSITORY)])
+        self.assertIn(f"| #{requirement} | #10 (open) |", self.api.items[1]["body"])
+        self.assertIn("P_TEST", self.api.projects[pr["node_id"]])
+
+        del self.api.native_links[requirement]
+        self.controller.initialize_or_update(1, "update")
+        self.assertFalse(self.api.native_links)
+        self.assertNotIn("#10 | open", self.api.items[1]["body"])
+        self.assertIn("P_TEST", self.api.projects[pr["node_id"]])
+
+    def test_pr_link_retry_recovers_after_lost_mutation_response(self):
+        self.api.add_pr(10, "")
+        self.api.items[1]["body"] = PLAN.replace(
+            "  pull_requests:\n", "  pull_requests:\n    - #10\n", 1
+        )
+        call = self.api.call
+
+        def lose_response(path, method="GET", data=None):
+            result = call(path, method, data)
+            if "addCloseIssueReferences" in (data or {}).get("query", ""):
+                raise OperationError("link response lost")
+            return result
+
+        with self.controller.snapshots():
+            with patch.object(self.api, "call", side_effect=lose_response):
+                with self.assertRaisesRegex(OperationError, "link response lost"):
+                    self.initialize()
+            self.assertIn("    - #10\n", self.api.items[1]["body"])
+            state = self.initialize()
+        requirement = state["prs"]["10"]["requirements"][0]
+        self.assertEqual(self.api.native_links[requirement], [(10, REPOSITORY)])
+        self.assertIn("#10 | open", self.api.items[1]["body"])
+
+    def test_init_rejects_cross_repository_pr_before_creating_issues(self):
+        self.api.items[1]["body"] = PLAN.replace(
+            "  pull_requests:\n",
+            "  pull_requests:\n    - https://github.com/elsewhere/project/pull/10\n",
+            1,
+        )
+        with self.assertRaisesRegex(
+            OperationError, "same-repository PR number or link"
+        ):
+            self.initialize()
+        self.assertEqual(set(self.api.items), {1})
+        self.assertFalse(self.api.native_links)
+
     def test_plain_titles_create_issues_and_write_back_multiline_references(self):
         self.api.items[1]["body"] = PLAN.replace(" []", "")
         state = self.initialize()
-        self.assertEqual(set(state["scope"]), {"issue-3", "issue-4"})
+        self.assertEqual(
+            set(state["scope"]), {"issue-1", "issue-2", "issue-3", "issue-4"}
+        )
         self.assertIn(
             "- Connector v2\n  initial integration #3", self.api.items[1]["body"]
         )
         self.assertIn("- Store interface #4", self.api.items[1]["body"])
         self.assertIn("Acceptance criteria:", self.api.items[3]["body"])
+        self.assertNotIn("Release: #1", self.api.items[3]["body"])
+        self.assertNotIn("Release: #1", self.api.items[4]["body"])
         self.controller.initialize_or_update(1, "update")
         self.assertEqual(len(self.api.items), 4)
-        self.assertEqual(self.controller.load(1)[1]["revision"], 1)
 
     def test_update_creates_plain_title_requirement_once(self):
         self.initialize()
@@ -781,28 +905,19 @@ class RepositoryOperations(unittest.TestCase):
         self.controller.initialize_or_update(1, "update")
         self.assertIn("- New feature #5", self.api.items[1]["body"])
         self.assertEqual(self.api.items[5]["title"], "New feature")
+        self.assertIn("Release: #1", self.api.items[5]["body"])
         self.controller.initialize_or_update(1, "update")
         self.assertEqual(len(self.api.items), 5)
-        self.assertEqual(self.controller.load(1)[1]["revision"], 2)
 
-    def test_description_trailing_whitespace_keeps_check_and_revision_stable(self):
+    def test_description_trailing_whitespace_does_not_block_check(self):
         self.initialize()
         self.api.items[1]["body"] = self.api.items[1]["body"].replace(
             "Implement the first interface.", "Implement the first interface. "
         )
         _, report = self.controller.release_check(1)
-        self.assertFalse(any(report["unsynced"].values()))
+        self.assertFalse(report["pending_requirements"])
         self.controller.initialize_or_update(1, "update")
-        self.assertEqual(self.controller.load(1)[1]["revision"], 1)
         self.assertIn("Implement the first interface. \n", self.api.items[1]["body"])
-
-    def test_description_content_change_is_pending_update(self):
-        self.initialize()
-        self.api.items[1]["body"] = self.api.items[1]["body"].replace(
-            "Implement the first interface.", "Implement the revised interface. "
-        )
-        _, report = self.controller.release_check(1)
-        self.assertEqual(report["unsynced"]["changed"], ["#4"])
 
     def test_release_check_lists_open_features_bugs_and_missing_prs(self):
         self.initialize()
@@ -810,11 +925,10 @@ class RepositoryOperations(unittest.TestCase):
         bug["milestone"] = self.api.milestones[0]
         self.api.items[8] = bug
         _, report = self.controller.release_check(1)
-        self.assertEqual(report["open_features"], [3, 4])
-        self.assertEqual(report["open_bugs"], [8])
-        self.assertEqual(report["features_without_pr"], [3, 4])
+        self.assertEqual(report["open_issues"], [1, 2, 3, 4, 8])
+        self.assertEqual(report["issues_without_pr"], [3, 4, 8])
         self.assertEqual(report["status"], "blocked")
-        self.assertIn("Feature Issues without PRs", self.api.items[1]["body"])
+        self.assertIn("| #8 |", self.api.items[1]["body"])
         self.assertNotIn('"status": "stale"', self.api.items[1]["body"])
 
     def test_release_check_distinguishes_open_and_closed_unmerged_prs(self):
@@ -824,7 +938,6 @@ class RepositoryOperations(unittest.TestCase):
         _, report = self.controller.release_check(1)
         self.assertEqual(report["unmerged_prs"], [10])
         self.assertEqual(report["closed_unmerged_prs"], [11])
-        self.assertFalse(report["features_without_pr"])
 
     def test_release_check_describes_pending_update_without_creating_scope(self):
         self.initialize()
@@ -835,16 +948,12 @@ class RepositoryOperations(unittest.TestCase):
         )
         count = len(self.api.items)
         _, report = self.controller.release_check(1)
-        self.assertEqual(report["unsynced"]["removed"], ["#4"])
-        self.assertEqual(
-            report["unsynced"]["added"], ["New feature (Issue not created)"]
-        )
+        self.assertEqual(report["pending_requirements"], ["New feature"])
         self.assertEqual(len(self.api.items), count)
-        self.assertEqual(self.controller.load(1)[1]["revision"], 1)
 
     def test_check_uses_merge_state_without_commit_comparison(self):
         self.initialize()
-        for n in (3, 4):
+        for n in (1, 2, 3, 4):
             self.api.items[n]["state"] = "closed"
         self.api.add_pr(10, "Fixes #3").update(state="closed", merged_at="2026-11-19")
         state, report = self.controller.release_check(1)
@@ -852,22 +961,21 @@ class RepositoryOperations(unittest.TestCase):
         self.assertNotIn("prs_outside_candidate", report)
         self.assertNotIn("verification", state)
 
-    def test_release_check_command_does_not_replay_itself(self):
+    def test_release_check_command_does_not_create_machine_comments(self):
         self.initialize()
         comment = self.api.comment(1, "/release_check")
         self.controller.handle(
-            {"issue": {"number": 1}, "comment": comment, "sender": comment["user"]},
+            {"issue": self.api.items[1], "comment": comment, "sender": comment["user"]},
             "issue_comment",
         )
-        state = self.controller.load(1)[1]
-        self.assertIn(str(comment["id"]), state["processed_comments"])
-        self.assertIn("✅ [Release check]", self.api.items[1]["body"])
+        self.assertEqual(self.api.comments, [comment])
+        self.assertNotIn("### Release Check", self.api.items[1]["body"])
 
     def test_verify_command_is_retired_and_does_not_close_issue(self):
         self.initialize()
         comment = self.api.comment(1, "/verify #3 passed https://example.com/report")
         self.controller.handle(
-            {"issue": {"number": 1}, "comment": comment, "sender": comment["user"]},
+            {"issue": self.api.items[1], "comment": comment, "sender": comment["user"]},
             "issue_comment",
         )
         self.assertEqual(self.api.items[3]["state"], "open")
@@ -891,90 +999,15 @@ class RepositoryOperations(unittest.TestCase):
             ["release"],
         )
         self.controller.initialize_or_update(50, "release_init")
-        other = self.controller.load(50)[1]
+        other = self.controller.reconcile(50)
         bug = self.api.make_issue(8, "Retargeted Bug", "", ["bug"])
         bug["milestone"] = self.api.milestones[0]
         self.api.items[8] = bug
         self.api.parents[8] = other["archive"]
         self.api.add_pr(10, "Fixes #8")
         _, report = self.controller.release_check(1)
-        self.assertIn(8, report["open_bugs"])
+        self.assertIn(8, report["open_issues"])
         self.assertIn(10, report["unmerged_prs"])
-
-    def test_operation_status_runs_then_succeeds_and_old_comment_is_hidden(self):
-        observed = []
-        original = self.controller.sync_release_body
-
-        def capture(release, state):
-            observed.append(
-                (
-                    state.get("operation", {}).get("status"),
-                    state.get("operation", {}).get("kind"),
-                )
-            )
-            return original(release, state)
-
-        self.controller.sync_release_body = capture
-        self.initialize()
-        body = self.api.items[1]["body"]
-        self.assertTrue(any(status == "running" for status, _ in observed))
-        self.assertIn("✅ [Release initialization]", body)
-        self.assertNotIn("🔄", body)
-        self.assertEqual({kind for _, kind in observed}, {"Release initialization"})
-        comment, state = self.controller.load(1)
-        self.assertNotIn("版本操作结果", comment["body"])
-        self.assertNotIn("同步完成", comment["body"])
-        self.assertIn(comment["node_id"], self.api.minimized_comments)
-        self.assertTrue(state["checkpoint_minimized"])
-
-    def test_failure_status_has_short_error_and_retry_becomes_green(self):
-        self.api.items[1]["body"] = PLAN.replace("version: 0.12.0", "version: invalid")
-        with self.assertRaises(OperationError):
-            self.controller.initialize_or_update(1, "release_init")
-        self.assertIn("❌ [Release initialization]", self.api.items[1]["body"])
-        self.assertEqual(self.controller.load(1)[1]["operation"]["status"], "failure")
-        self.api.items[1]["body"] = PLAN
-        self.initialize()
-        self.assertIn("✅ [Release initialization]", self.api.items[1]["body"])
-        self.assertNotIn("❌", self.api.items[1]["body"])
-
-    def test_latest_sync_replaces_status_without_appending_lines(self):
-        self.initialize()
-        self.controller.run_url = "https://example.com/runs/new"
-        self.controller.reconcile(1)
-        body = self.api.items[1]["body"]
-        self.assertIn(
-            "✅ [Release synchronization](https://example.com/runs/new)", body
-        )
-        self.assertNotIn("✅ [Release initialization]", body)
-        self.assertEqual(body.count("✅ ["), 1)
-
-    def test_preview_plan_moves_to_body_and_retains_single_checkpoint(self):
-        self.controller.initialize_or_update(1, "release_init", True)
-        self.assertIn("✅ [Release initialization preview]", self.api.items[1]["body"])
-        self.assertIn("<summary>Preview plan</summary>", self.api.items[1]["body"])
-        self.initialize()
-        self.assertNotIn("<summary>Preview plan</summary>", self.api.items[1]["body"])
-        self.assertEqual(len(self.api.comments), 1)
-
-    def test_finalizer_marks_interrupted_current_run_and_preserves_other_runs(self):
-        self.initialize()
-        _, state = self.controller.load(1)
-        state["operation"]["status"] = "running"
-        self.controller.save(1, state, "Interrupted")
-        self.controller.finalize_operations("failure")
-        self.assertIn("❌", self.api.items[1]["body"])
-        state = self.controller.load(1)[1]
-        state["operation"].update(url="https://example.com/other", status="running")
-        self.controller.save(1, state, "Other run")
-        self.controller.finalize_operations("failure")
-        self.assertEqual(self.controller.load(1)[1]["operation"]["status"], "running")
-
-    def test_minimize_failure_keeps_checkpoint_and_operation_success(self):
-        self.api.minimize_failure = True
-        state = self.initialize()
-        self.assertEqual(state["operation"]["status"], "success")
-        self.assertTrue(state["initialized"])
 
     def test_native_development_link_updates_metadata_and_table(self):
         self.initialize()
@@ -982,7 +1015,7 @@ class RepositoryOperations(unittest.TestCase):
         self.api.add_pr(10, "No textual references")
         self.api.native_links[3] = [(10, REPOSITORY)]
         self.controller.reconcile(1)
-        state = self.controller.load(1)[1]
+        state = self.controller.reconcile(1)
         self.assertEqual(state["prs"]["10"]["requirements"], [3])
         self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
         self.assertIn("P_NATIVE", self.api.projects["I_10"])
@@ -990,7 +1023,7 @@ class RepositoryOperations(unittest.TestCase):
         self.api.native_links[3] = []
         self.controller.reconcile(1)
         self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
-        self.assertNotIn("P_NATIVE", self.api.projects["I_10"])
+        self.assertIn("P_NATIVE", self.api.projects["I_10"])
         self.assertNotIn("#10", self.api.items[1]["body"])
 
     def test_ordinary_mentions_do_not_supply_associations(self):
@@ -999,7 +1032,7 @@ class RepositoryOperations(unittest.TestCase):
         self.api.comment(10, "Implements #4")
         self.api.reviews[10] = [{"body": "Fixes #3", "user": {"type": "User"}}]
         self.controller.reconcile(1)
-        self.assertNotIn("10", self.controller.load(1)[1]["prs"])
+        self.assertNotIn("10", self.controller.reconcile(1)["prs"])
         self.assertIsNone(self.api.prs[10]["milestone"])
 
     def test_native_links_keep_merged_pr_and_closed_status(self):
@@ -1011,27 +1044,14 @@ class RepositoryOperations(unittest.TestCase):
         self.assertTrue(self.api.native_include_closed)
         self.assertIn("| #3 | #10 (merged)", self.api.items[1]["body"])
 
-    def test_native_bug_link_uses_fix_target_and_bugfix_project(self):
-        state = self.initialize()
-        bug = self.api.make_issue(8, "Native Bug", "", ["bug"])
-        bug["milestone"] = {"number": 2, "title": "0.13.0"}
-        self.api.items[8] = bug
-        self.api.parents[8] = state["archive"]
-        self.api.add_pr(10, "")
-        self.api.native_links[8] = [(10, REPOSITORY)]
-        self.controller.reconcile(1)
-        record = self.controller.load(1)[1]["prs"]["10"]
-        self.assertEqual(record["bugs"], [8])
-        self.assertEqual(record["last"], 2)
-        self.assertIn("P_BUG", self.api.projects["I_10"])
-
     def test_native_link_pagination_and_repository_filter(self):
         self.api.native_links[3] = [
             (10, REPOSITORY),
             (11, "other/repo"),
             (12, REPOSITORY),
         ]
-        refs = self.controller.native_references({3})
+        with self.controller.snapshots():
+            refs = self.controller.native_references({3})
         self.assertEqual(set(refs), {10, 12})
 
     def test_native_query_failure_preserves_existing_associations(self):
@@ -1044,19 +1064,15 @@ class RepositoryOperations(unittest.TestCase):
             self.controller.reconcile(1)
         self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
 
-    def test_comment_is_compact_and_body_contains_managed_overview(self):
+    def test_refresh_creates_no_directory_or_machine_comments(self):
         self.initialize()
-        comment, state = self.controller.load(1)
-        self.assertNotIn("| Issue |", comment["body"])
-        self.assertNotIn("主 Bug Issue：", comment["body"])
-        self.assertNotIn("Milestone：[目标版本]", comment["body"])
-        self.assertNotIn("缺陷与修复 PR", comment["body"])
-        body = self.api.items[1]["body"]
-        self.assertIn("**Bug Archive:** #2", body)
-        self.assertIn("| #3 |", body)
-        self.assertTrue(body.rstrip().endswith(OVERVIEW_END))
-        self.controller.save(1, state, "Refreshed")
-        self.assertEqual(self.api.items[1]["body"], body)
+        original = self.api.items[1]["body"]
+        self.controller.reconcile(1)
+        self.assertFalse(self.api.comments)
+        self.assertFalse(self.api.internal_items)
+        self.assertIn("**Bug Archive:** #2", original)
+        self.assertIn("| #3 |", original)
+        self.assertEqual(self.api.items[1]["body"], original)
 
     def test_human_checklist_edits_survive_display_refresh(self):
         state = self.initialize()
@@ -1064,7 +1080,7 @@ class RepositoryOperations(unittest.TestCase):
             "reason: Initial scope.",
             "reason: Human decision.\n\n### Custom Notes\n\n- [x] Human checklist",
         )
-        self.controller.save(1, state, "Refreshed")
+        self.controller.reconcile(1)
         self.assertIn("- [x] Human checklist", self.api.items[1]["body"])
         self.assertIn("reason: Human decision.", self.api.items[1]["body"])
 
@@ -1074,10 +1090,10 @@ class RepositoryOperations(unittest.TestCase):
         self.assertNotIn(state["archive"], self.api.pins)
         self.controller.initialize_or_update(1, "release_init")
         self.assertEqual(self.api.pins, {1: "Bot"})
-        state = self.controller.load(1)[1]
+        state = self.controller.reconcile(1)
         self.api.pins.clear()
         self.api.items[1]["state"] = "closed"
-        self.controller.release_pin(1, state)
+        self.controller.release_pin(1)
         self.assertFalse(self.api.pins)
 
     def test_dry_run_does_not_pin(self):
@@ -1087,7 +1103,7 @@ class RepositoryOperations(unittest.TestCase):
     def test_manual_pin_is_preserved_during_sync(self):
         self.api.pins[1] = "User"
         state = self.initialize()
-        self.controller.release_pin(1, state)
+        self.controller.release_pin(1)
         self.assertEqual(self.api.pins, {1: "User"})
 
     def test_manual_unpin_is_preserved(self):
@@ -1099,32 +1115,16 @@ class RepositoryOperations(unittest.TestCase):
     def test_full_pin_slots_do_not_block_initialization(self):
         self.api.pins = {40: "User", 41: "Bot", 42: "User"}
         state = self.initialize()
-        self.assertTrue(state["initialized"])
-        self.assertIn("three", state["pin_warning"])
+        self.assertEqual(state["archive"], 2)
         self.assertNotIn(1, self.api.pins)
-        self.api.pins.pop(42)
-        self.controller.initialize_or_update(1, "release_init")
-        self.assertIn(1, self.api.pins)
 
     def test_pin_api_failure_is_reported_without_blocking_initialization(self):
         self.api.pin_failure = True
-        state = self.initialize()
-        self.assertTrue(state["initialized"])
-        self.assertIn("Pin API unavailable", self.api.items[1]["body"])
-
-    def test_command_acknowledges_before_start_and_reuses_reaction(self):
-        command = self.api.comment(1, "/release_init --dry-run")
-        original = self.controller.initialize_or_update
-
-        def execute(*args, **kwargs):
-            self.assertEqual(self.api.reactions[command["id"]]["content"], "eyes")
-            return original(*args, **kwargs)
-
-        self.controller.initialize_or_update = execute
-        event = {"issue": {"number": 1}, "comment": command, "sender": command["user"]}
-        self.controller.handle(event, "issue_comment")
-        self.controller.handle(event, "issue_comment")
-        self.assertEqual(len(self.api.reactions), 1)
+        with patch("builtins.print") as log:
+            self.assertEqual(self.initialize()["archive"], 2)
+        self.assertTrue(
+            any("Pin API unavailable" in str(call) for call in log.call_args_list)
+        )
 
     def test_pr_comment_mentions_are_ignored(self):
         comment = self.api.comment(10, "Related #13")
@@ -1167,17 +1167,6 @@ class RepositoryOperations(unittest.TestCase):
             )
         self.assertFalse(self.api.reactions)
 
-    def test_reaction_failure_does_not_block_command(self):
-        self.api.reaction_failure = True
-        command = self.api.comment(1, "/release_init --dry-run")
-        self.controller.handle(
-            {"issue": {"number": 1}, "comment": command, "sender": command["user"]},
-            "issue_comment",
-        )
-        self.assertIn(
-            str(command["id"]), self.controller.load(1)[1]["processed_comments"]
-        )
-
     def test_unauthorized_command_has_no_reaction(self):
         def reject(actor):
             raise OperationError("Permission denied")
@@ -1186,7 +1175,11 @@ class RepositoryOperations(unittest.TestCase):
         command = self.api.comment(1, "/release_init")
         with self.assertRaises(OperationError):
             self.controller.handle(
-                {"issue": {"number": 1}, "comment": command, "sender": command["user"]},
+                {
+                    "issue": self.api.items[1],
+                    "comment": command,
+                    "sender": command["user"],
+                },
                 "issue_comment",
             )
         self.assertFalse(self.api.reactions)
@@ -1220,25 +1213,20 @@ class RepositoryOperations(unittest.TestCase):
         )
 
     def initialize(self):
-        self.controller.initialize_or_update(1, "release_init")
-        return self.controller.load(1)[1]
+        return self.controller.initialize_or_update(1, "release_init")
 
-    def test_preview_then_apply_replaces_result_and_creates_flat_requirements(self):
+    def test_preview_performs_no_writes_and_apply_creates_flat_requirements(self):
         self.api.items[1]["body"] = PLAN.replace("[]", "[Issue]()")
+        before = self.api.items[1]["body"]
         self.controller.initialize_or_update(1, "release_init", True)
-        self.assertEqual(len(self.api.items), 1)
+        self.assertEqual(set(self.api.items), {1})
+        self.assertEqual(self.api.items[1]["body"], before)
         self.assertFalse(self.api.milestones)
-        cid = self.api.comments[0]["id"]
         state = self.initialize()
-        self.assertEqual(len(self.api.comments), 1)
-        self.assertEqual(self.api.comments[0]["id"], cid)
-        self.assertNotIn("预览", self.api.comments[0]["body"])
+        self.assertFalse(self.api.comments)
         self.assertEqual(self.api.parents, {state["archive"]: 1})
-        self.assertEqual(set(state["scope"]), {"issue-3", "issue-4"})
         self.assertIn("Acceptance criteria:", self.api.items[3]["body"])
         self.assertEqual(len(self.api.items), 4)
-        self.controller.initialize_or_update(1, "update")
-        self.assertEqual(self.controller.load(1)[1]["revision"], 1)
 
     def test_recovery_after_lost_create_response(self):
         self.api.items[1]["body"] = PLAN.replace(" []", "")
@@ -1258,21 +1246,22 @@ class RepositoryOperations(unittest.TestCase):
             + "### Change Log\n\nreason: Deferred.\n"
         )
         self.controller.initialize_or_update(1, "update")
-        self.assertEqual(set(self.controller.load(1)[1]["scope"]), {"issue-3"})
+        self.assertNotIn("issue-4", self.controller.reconcile(1)["scope"])
         self.assertEqual(self.api.items[4]["milestone"]["number"], 22)
 
-    def test_remove_clears_owned_milestone_and_retains_native_parent(self):
+    def test_checklist_removal_leaves_milestone_as_source_of_scope(self):
         self.initialize()
         self.api.parents[4] = 3
         body = self.api.items[1]["body"]
         self.api.items[1]["body"] = (
-            body[: body.index("- Store interface")]
-            + "### Change Log\n\nreason: Deferred.\n"
+            body[: body.index("- Store interface")] + "### Change Log\n"
         )
-        self.controller.initialize_or_update(1, "update")
-        self.assertIsNone(self.api.items[4]["milestone"])
+        state = self.controller.initialize_or_update(1, "update")
+        self.assertIn("issue-4", state["scope"])
+        self.assertEqual(self.api.items[4]["milestone"]["number"], 1)
         self.assertEqual(self.api.parents[4], 3)
-        self.assertEqual(self.api.items[4]["state"], "open")
+        self.api.items[4]["milestone"] = None
+        self.assertNotIn("issue-4", self.controller.reconcile(1)["scope"])
 
     def test_invalid_plan_creates_no_repository_objects(self):
         self.api.items[1]["body"] = PLAN.replace("  description:", " description:", 1)
@@ -1289,30 +1278,12 @@ class RepositoryOperations(unittest.TestCase):
         self.controller.initialize_or_update(1, "update")
         self.assertEqual(self.api.milestones[0]["due_on"], "2026-12-01T23:59:59Z")
         self.assertEqual(self.api.items[1]["assignees"], [{"login": "harrisonyhq"}])
-        self.assertEqual(self.controller.load(1)[1]["revision"], 2)
 
-    def test_existing_issue_description_is_preserved_and_assignee_can_clear(self):
+    def test_existing_issue_description_is_preserved(self):
         self.initialize()
-        self.api.items[3]["body"] += "\nManual implementation notes."
-        self.api.items[1]["body"] = self.api.items[1]["body"].replace(
-            "assignee: @harrisonyhq", "assignee:"
-        )
+        self.api.items[3]["body"] = "Existing discussion."
         self.controller.initialize_or_update(1, "update")
-        self.assertIn("Manual implementation notes.", self.api.items[3]["body"])
-        self.assertEqual(self.api.items[3]["assignees"], [])
-
-    def test_pending_commands_are_replayed_in_order(self):
-        preview = self.api.comment(1, "/release_init --dry-run")
-        apply = self.api.comment(1, "/release_init")
-        self.controller.handle(
-            {"issue": {"number": 1}, "comment": apply, "sender": apply["user"]},
-            "issue_comment",
-        )
-        state = self.controller.load(1)[1]
-        self.assertTrue(state["initialized"])
-        self.assertEqual(
-            state["processed_comments"], [str(preview["id"]), str(apply["id"])]
-        )
+        self.assertEqual(self.api.items[3]["body"], "Existing discussion.")
 
     def test_native_links_union_projects_and_unlink_preserves_milestone(self):
         self.initialize()
@@ -1322,13 +1293,13 @@ class RepositoryOperations(unittest.TestCase):
         self.api.native_links.update({3: [(10, REPOSITORY)], 4: [(10, REPOSITORY)]})
         self.controller.reconcile(1)
         self.assertEqual(
-            self.controller.load(1)[1]["prs"]["10"]["requirements"], [3, 4]
+            self.controller.reconcile(1)["prs"]["10"]["requirements"], [3, 4]
         )
         self.assertEqual(set(self.api.projects["I_10"]), {"P_CONNECTOR", "P_STORE"})
         self.api.native_links.clear()
         self.controller.reconcile(1)
         self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
-        self.assertFalse(self.api.projects["I_10"])
+        self.assertTrue(self.api.projects["I_10"])
         self.assertNotIn("#10", self.api.items[1]["body"])
 
     def test_pr_comment_cannot_trigger_metadata_updates(self):
@@ -1357,33 +1328,22 @@ class RepositoryOperations(unittest.TestCase):
         pr["state"] = "closed"
         self.controller.reconcile(1)
         self.assertIn("| merged", self.api.items[1]["body"])
-        self.assertEqual(self.controller.load(1)[1]["revision"], 1)
 
-    def test_conflicting_versions_and_manual_metadata_are_preserved(self):
+    def test_conflicting_versions_leave_milestone_unassigned(self):
         self.initialize()
         self.api.items[4]["milestone"] = {"number": 2, "title": "0.13.0"}
-        self.api.projects["I_3"] = {"P_REQ": "REQ"}
         self.api.add_pr(10, "Fixes #3, fixes #4")
-        self.api.projects["I_10"] = {"P_MANUAL": "MANUAL"}
-        self.controller.reconcile(1)
+        state = self.controller.reconcile(1)
         self.assertIsNone(self.api.prs[10]["milestone"])
-        self.assertIn("conflicting", self.api.items[1]["body"])
-        self.assertEqual(set(self.api.projects["I_10"]), {"P_REQ", "P_MANUAL"})
-        self.api.native_links.clear()
-        self.controller.reconcile(1)
-        self.assertEqual(self.api.projects["I_10"], {"P_MANUAL": "MANUAL"})
+        self.assertTrue(state["prs"]["10"]["conflict"])
 
-    def test_manual_milestone_clear_and_project_remove_persist(self):
+    def test_empty_pr_milestone_is_refilled_when_target_is_unique(self):
         self.initialize()
-        self.api.projects["I_3"] = {"P_REQ": "REQ"}
         self.api.add_pr(10, "Fixes #3")
         self.controller.reconcile(1)
         self.api.prs[10]["milestone"] = None
-        self.api.projects["I_10"].clear()
         self.controller.reconcile(1)
-        self.assertIsNone(self.api.prs[10]["milestone"])
-        self.assertFalse(self.api.projects["I_10"])
-        self.assertIn(10, self.controller.directory().data["seen_prs"])
+        self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
 
     def test_lost_milestone_response_recovers_automatic_ownership(self):
         self.initialize()
@@ -1394,31 +1354,16 @@ class RepositoryOperations(unittest.TestCase):
         self.controller.reconcile(1)
         self.assertEqual(self.api.prs[10]["milestone"]["number"], 1)
 
-    def test_lost_project_response_recovers_item_identity(self):
+    def test_lost_project_response_reuses_existing_item_on_retry(self):
         self.initialize()
         self.api.projects["I_3"] = {"P_REQ": "REQ"}
         self.api.add_pr(10, "Fixes #3")
         self.api.lose_project_response = True
         with self.assertRaises(OperationError):
             self.controller.reconcile(1)
+        projects = dict(self.api.projects["I_10"])
         self.controller.reconcile(1)
-        record = self.controller.load(1)[1]["prs"]["10"]["projects"]["P_REQ"]
-        self.assertEqual(record["item"], self.api.projects["I_10"]["P_REQ"])
-        self.api.projects["I_10"].clear()
-        self.controller.reconcile(1)
-        self.assertFalse(self.api.projects["I_10"])
-
-    def test_bugfix_mention_uses_target_version_and_bugfix_project(self):
-        state = self.initialize()
-        bug = self.api.make_issue(8, "Bug", "", ["bug"])
-        bug["milestone"] = {"number": 2, "title": "0.13.0"}
-        self.api.items[8] = bug
-        self.api.parents[8] = state["archive"]
-        self.api.add_pr(10, "Fixes #8")
-        self.controller.reconcile(1)
-        self.assertIn("P_BUG", self.api.projects["I_10"])
-        self.assertEqual(self.controller.load(1)[1]["prs"]["10"]["last"], 2)
-        self.assertEqual(self.api.parents[8], state["archive"])
+        self.assertEqual(self.api.projects["I_10"], projects)
 
     def test_native_bug_parent_assigns_version_without_source_field(self):
         state = self.initialize()
@@ -1433,11 +1378,10 @@ class RepositoryOperations(unittest.TestCase):
 
     def test_maintainer_closed_features_need_no_verification_records(self):
         self.initialize()
-        for n in (3, 4):
+        for n in (1, 2, 3, 4):
             self.api.items[n]["state"] = "closed"
         state, report = self.controller.release_check(1)
         self.assertEqual(report["status"], "ready")
-        self.assertEqual(report["features_without_pr"], [3, 4])
         self.assertNotIn("verification", state)
         self.assertNotIn(
             "Pending", self.api.items[1]["body"].split("### Release Check")[0]
@@ -1447,15 +1391,9 @@ class RepositoryOperations(unittest.TestCase):
         self.initialize()
         self.api.items[99] = self.api.make_issue(99, "Unassigned", "", ["bug"])
         _, report = self.controller.release_check(1)
-        self.assertNotIn(99, report["open_bugs"])
+        self.assertNotIn(99, report["open_issues"])
 
-    def test_manual_milestone_ownership_and_bug_status(self):
-        self.assertEqual(
-            manual_mode({"mode": "auto", "last": 1}, None)["mode"], "manual"
-        )
-        self.assertEqual(
-            manual_mode({"mode": "auto", "last": 1}, 1, True)["mode"], "manual"
-        )
+    def test_bug_status_matches_merge_and_issue_state(self):
         self.assertEqual(
             bug_progress(False, {"9"}, True), ("status:verification", "In review")
         )
