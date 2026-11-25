@@ -112,6 +112,7 @@ def test_cache_names_across_layouts(policy, layout, cuda, name, expected):
     platform.is_cuda.return_value = cuda
     config = {"use_layerwise": True}
     apply(config, cache_config(layout, name))
+    expected = expected or len(cache_config(layout, name).kv_cache_groups) > 1
     assert config["use_layerwise"] == (not (cuda and expected))
     if cuda and expected:
         assert config["use_request_async_load"] is True
@@ -283,3 +284,65 @@ def test_empty_layer_names_falls_back_to_specs(policy, name, expected):
     config = {"use_layerwise": True}
     apply(config, SimpleNamespace(kv_cache_groups=[group]))
     assert config["use_layerwise"] is (not expected)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        SimpleNamespace(cache_role="indexer"),
+        type("MambaSpec", (), {})(),
+        SimpleNamespace(model_version="deepseek_v4"),
+    ],
+)
+def test_cuda_specialized_specs_force_request_async(policy, spec):
+    apply, _ = policy
+    config = {"use_layerwise": True}
+    cache = SimpleNamespace(
+        kv_cache_groups=[SimpleNamespace(kv_cache_specs={"layer": spec})]
+    )
+    assert apply(config, cache)[0]
+    assert config == {"use_layerwise": False, "use_request_async_load": True}
+
+
+def test_standard_single_group_swa_keeps_layerwise(policy):
+    apply, _ = policy
+    config = {"use_layerwise": True}
+    cache = SimpleNamespace(
+        kv_cache_groups=[
+            SimpleNamespace(
+                kv_cache_specs={"layer": SimpleNamespace(sliding_window=128)}
+            )
+        ]
+    )
+    assert apply(config, cache) == (False, False)
+    assert config == {"use_layerwise": True}
+
+
+@pytest.mark.parametrize("specialized", ["hla", "fawa", None])
+def test_cuda_hybrid_requires_compatible_connector(connector_selection, specialized):
+    from ucm.integration.vllm.hla_connector import UCMHybridLinearAttentionConnector
+    from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+    connector, direct, layerwise = connector_selection
+    hla = UCMHybridLinearAttentionConnector
+    fawa = UCMFAWAConnector
+    hla.supports_kv_cache_layout.return_value = specialized == "hla"
+    fawa.can_handle_kv_cache_config.return_value = specialized == "fawa"
+    config = {"use_layerwise": True, "use_request_async_load": False}
+    vllm_config = SimpleNamespace(
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
+        scheduler_config=SimpleNamespace(),
+        kv_transfer_config=SimpleNamespace(engine_id="test", config=config),
+    )
+    cache = cache_config("merged")
+    if specialized is None:
+        with pytest.raises(RuntimeError, match="no compatible request-async connector"):
+            connector(vllm_config, "scheduler", cache)
+    else:
+        instance = connector(vllm_config, "scheduler", cache)
+        selected = {"hla": hla, "fawa": fawa}[specialized]
+        selected.assert_called_once_with(vllm_config, "scheduler", cache)
+        assert instance.connector is selected.return_value
+        assert config == {"use_layerwise": False, "use_request_async_load": True}
+    direct.assert_not_called()
+    layerwise.assert_not_called()
