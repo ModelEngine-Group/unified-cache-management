@@ -1165,6 +1165,31 @@ Status KvKeepAliveProtocol::ValidateRequest(const KvKeepAliveRequest& r) const
     return Status::OK();
 }
 
+Status KvKeepAliveProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
+                                     KvResponse& out) const
+{
+    if (data == nullptr) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "KeepAlive CQE: null response data");
+    }
+    if (batch_number > 1) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "KeepAlive CQE: batch_number(" + std::to_string(batch_number) +
+                                 ") must be 0 or 1");
+    }
+    UnpackCqeBase(data, out);
+    // opcode 回显校验：data[0] 低 16 位必须回显 KeepAlive opcode。
+    // 收到任意 CQE 不足以判 SUCCESS——opcode/CID/result 校验必须通过。
+    const auto opcodeEcho = data[0] & 0xFFFF;
+    if (opcodeEcho != static_cast<std::uint32_t>(KvOpcode::KeepAlive)) {
+        return Status::Error(StatusCode::CQE_INVALID_COMMAND_OPCODE,
+                             "KeepAlive CQE: opcode mismatch, got " +
+                                 std::to_string(opcodeEcho));
+    }
+    // result 校验：非 0 状态按原始值保留（由上层结论解释）。
+    return Status::OK();
+}
+
 Status KvKeepAliveProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
 {
     constexpr std::size_t kExpectedLength = kSqeDwordCount * sizeof(std::uint32_t);

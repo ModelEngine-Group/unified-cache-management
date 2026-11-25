@@ -34,13 +34,14 @@
 #include "conn/connection_manager.h"
 #include "kv_transport.h"
 #include "spsc_ring_queue.h"
+#include "task/probe_scheduler.h"
 #include "task/trans_task_executor.h"
 #include "task/trans_task_manager.h"
 #include "trans_provider.h"
 
 namespace kv {
 
-class AsuTransportImpl final : public AsuTransport {
+class AsuTransportImpl final : public AsuTransport, public IProbingTransport {
 public:
     AsuTransportImpl();
     ~AsuTransportImpl() override;
@@ -63,7 +64,22 @@ public:
                            const std::vector<NodeEndpoint>& toRemove,
                            UpdateResult& result) override;
 
+    // IProbingTransport：ClientProbeScheduler 经此注册目标（探针被动驱动）。
+    ProbeTarget* GetProbeTarget() override;
+
 private:
+    // 探针提交适配：KeepAlive TransportTask 路径（origin=PROBE，指定 QP）。
+    class TransportProbeSubmitter final : public IProbeSubmitter {
+    public:
+        explicit TransportProbeSubmitter(AsuTransportImpl& owner);
+
+        Status SubmitProbe(const std::shared_ptr<ConnectionChannel>& channel,
+                           std::shared_ptr<ProbeTaskLease> lease) override;
+
+    private:
+        AsuTransportImpl& owner_;
+    };
+
     Status SubmitTask(const TransportTaskPtr& task);
     void WorkerLoop();
     void CompletionLoop();
@@ -84,6 +100,11 @@ private:
     std::thread completionWorker_;
     std::atomic_bool stopWorker_{false};
     std::atomic_bool stopCompletionWorker_{false};
+
+    // KeepAlive 共享探针家族（被动目标；调度由 ClientProbeScheduler 驱动）。
+    std::unique_ptr<ProbeBudget> probeBudget_;
+    std::unique_ptr<TransportProbeSubmitter> probeSubmitter_;
+    std::unique_ptr<ProbeTarget> probeTarget_;
 };
 
 }  // namespace kv

@@ -45,6 +45,24 @@ std::chrono::steady_clock::time_point TaskDeadline(std::uint64_t timeoutMs)
     return std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 }
 
+// 探针结论映射：探针任务终态 -> KeepAlive 三值结论。
+// SUCCESS 仅代表 KeepAlive 通路往返（不证明下游业务能力恢复）。
+ProbeResult ProbeConclusionFromTaskResult(const TaskResult& result)
+{
+    switch (result.status.code) {
+        case StatusCode::OK:
+            return ProbeResult::SUCCESS;
+        case StatusCode::CQE_IO_TIMEOUT:
+        case StatusCode::TIMEOUT:
+            return ProbeResult::TIMEOUT;
+        case StatusCode::CONNECTION_ERROR:
+            // Send 同步返回 flush（QP 硬件 ERROR）。
+            return ProbeResult::FLUSH;
+        default:
+            return ProbeResult::INCONCLUSIVE;
+    }
+}
+
 }  // namespace
 
 AsuTransportImpl::AsuTransportImpl() = default;
@@ -161,9 +179,44 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     stopCompletionWorker_.store(false, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
     completionWorker_ = std::thread(&AsuTransportImpl::CompletionLoop, this);
+
+    // KeepAlive 共享探针目标（无线程；由 ClientProbeScheduler 驱动 RunOnce，
+    // 探针结果由 Executor::Poll 完成路径经 HandleProbeResult 回灌）。
+    probeBudget_ = std::make_unique<ProbeBudget>(config_.probe.DerivedInFlightLimit());
+    probeSubmitter_ = std::make_unique<TransportProbeSubmitter>(*this);
+    probeTarget_ = std::make_unique<ProbeTarget>(*connManager_, *probeSubmitter_, config_.probe,
+                                                 probeBudget_.get());
     KV_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
     return Status::OK();
 }
+
+AsuTransportImpl::TransportProbeSubmitter::TransportProbeSubmitter(AsuTransportImpl& owner)
+    : owner_(owner)
+{
+}
+
+Status AsuTransportImpl::TransportProbeSubmitter::SubmitProbe(
+    const std::shared_ptr<ConnectionChannel>& channel, std::shared_ptr<ProbeTaskLease> lease)
+{
+    auto task = std::make_shared<TransportTask>();
+    task->opType = AsuOpType::KEEP_ALIVE;
+    task->origin = TaskOrigin::PROBE;
+    task->probeChannel = channel;
+    task->probeLease = std::move(lease);
+
+    auto* target = owner_.probeTarget_.get();
+    std::weak_ptr<ConnectionChannel> weakChannel{channel};
+    task->onComplete = [target, weakChannel](TaskResult result) {
+        auto locked = weakChannel.lock();
+        if (locked == nullptr || target == nullptr) { return; }
+        target->HandleProbeResult(locked, ProbeConclusionFromTaskResult(result),
+                                  std::chrono::steady_clock::now());
+    };
+
+    return owner_.Submit(task);
+}
+
+ProbeTarget* AsuTransportImpl::GetProbeTarget() { return probeTarget_.get(); }
 
 Status AsuTransportImpl::Shutdown()
 {
@@ -210,6 +263,12 @@ Status AsuTransportImpl::Shutdown()
         }
     }
 
+    // 探针家族：提交器/目标先于 ConnectionManager 释放（在途探针由
+    // 任务销毁路径幂等释放租约）。
+    probeSubmitter_.reset();
+    probeTarget_.reset();
+    probeBudget_.reset();
+
     if (connManager_) {
         auto status = connManager_->Shutdown();
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
@@ -252,9 +311,11 @@ Status AsuTransportImpl::Submit(const TransportTaskPtr& task)
     if (!task) { return Status::Error(StatusCode::INVALID_ARGUMENT, "transport task is null"); }
     const auto entryCount = IsEntryBatchOp(task->opType) ? task->entries.size() : task->keys.size();
     task->entryStatus.assign(entryCount, Status::OK());
-    // The task total deadline comes from the structured RetryConfig section;
-    // the client Wait timeout is a separate concept.
-    task->deadline = TaskDeadline(config_.retry.taskTimeoutMs);
+    // 任务总 Deadline：业务走结构化 RetryConfig；探针走 probeTimeoutMs。
+    const auto deadlineMs = task->origin == TaskOrigin::PROBE
+                                 ? config_.probe.probeTimeoutMs
+                                 : config_.retry.taskTimeoutMs;
+    task->deadline = TaskDeadline(deadlineMs);
     return SubmitTask(task);
 }
 

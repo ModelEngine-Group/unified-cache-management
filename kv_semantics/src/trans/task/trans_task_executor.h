@@ -90,7 +90,8 @@ private:
                                     TransportSubBatchContext& subBatchContext);
     Status SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext);
 
-    Status AssignSubBatchConnections(std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status AssignSubBatchConnections(const TransportTask& task,
+                                     std::vector<TransportSubBatchContext>& subBatchContexts);
     void BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
                                   std::vector<TransProvider::SendIoBatch>& ioBatches);
     void SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,

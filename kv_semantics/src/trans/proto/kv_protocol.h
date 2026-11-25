@@ -349,6 +349,10 @@ public:
     {
         return kSqeDwordCount * sizeof(std::uint32_t);
     }
+    // KeepAlive CQE 解包：cid/status 走标准布局，data[0] 低 16 位回显 opcode。
+    // opcode 不匹配视为非 KeepAlive CQE（收到任意 CQE 不足以判 SUCCESS）。
+    Status UnpackCqe(const std::uint32_t* data, std::uint16_t batch_number,
+                     KvResponse& out) const override;
     Status VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const override;
 
 private:

@@ -33,6 +33,7 @@
 #include <vector>
 #include "kv_client.h"
 #include "kv_types.h"
+#include "probe_scheduler.h"
 #include "spsc_ring_queue.h"
 #include "task/task_manager.h"
 #include "view/view_server.h"
@@ -188,6 +189,9 @@ private:
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports_;
     // Worker used for non-blocking refresh requests.
     std::thread refreshThread_;
+    // Client 级共享探针调度器：每 Client 至多 1 个探针线程，
+    // 跨全部 Transport 共享全局在途预算。
+    std::unique_ptr<ClientProbeScheduler> probeScheduler_;
 };
 
 }  // namespace kv

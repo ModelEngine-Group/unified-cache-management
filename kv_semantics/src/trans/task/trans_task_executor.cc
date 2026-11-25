@@ -295,8 +295,27 @@ std::uint16_t TransportTaskExecutor::AllocateRequestCid()
 }
 
 Status TransportTaskExecutor::AssignSubBatchConnections(
-    std::vector<TransportSubBatchContext>& subBatchContexts)
+    const TransportTask& task, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
+    // PROBE 任务指定 QP：固定路由到探针目标 Channel（业务 SelectConnection
+    // 不参与；probeInFlight 已由 AcquireProbe 占位，不占业务 inflight）。
+    if (task.origin == TaskOrigin::PROBE) {
+        for (auto& subBatchContext : subBatchContexts) {
+            if (task.probeChannel == nullptr) {
+                const auto subBatchStatus =
+                    Status::Error(StatusCode::CONNECTION_ERROR, "probe channel is missing");
+                std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                          subBatchStatus);
+                subBatchContext.state = TransportSubBatchState::COMPLETED;
+                subBatchContext.status = subBatchStatus;
+                return subBatchStatus;
+            }
+            subBatchContext.channel = task.probeChannel;
+            subBatchContext.group = task.probeChannel->LockGroup();
+        }
+        return Status::OK();
+    }
+
     for (auto& subBatchContext : subBatchContexts) {
         auto channel = connManager_->SelectConnection();
         if (!channel) {
@@ -330,7 +349,7 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     std::vector<TransportSubBatchContext> subBatchContexts;
     auto status = PrepareTaskSubBatches(*task, subBatchContexts);
 
-    if (status.ok()) { status = AssignSubBatchConnections(subBatchContexts); }
+    if (status.ok()) { status = AssignSubBatchConnections(*task, subBatchContexts); }
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     if (status.ok()) { BuildSubBatchSendBuffers(subBatchContexts, ioBatches); }
@@ -528,12 +547,16 @@ std::chrono::steady_clock::time_point TransportTaskExecutor::ComputeAttemptDeadl
     const TransportTask& task) const
 {
     const auto now = std::chrono::steady_clock::now();
+    // PROBE 任务：per-attempt deadline = min(probeTimeoutMs, 剩余总时间)。
+    const auto attemptTimeoutMs =
+        task.origin == TaskOrigin::PROBE ? config_.probe.probeTimeoutMs
+                                         : config_.retry.attemptTimeoutMs;
     // per-attempt deadline = min(attemptTimeoutMs, 剩余总时间)。
     const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                  task.deadline - now)
                                  .count();
     const auto attemptMs = std::min<std::int64_t>(
-        static_cast<std::int64_t>(config_.retry.attemptTimeoutMs),
+        static_cast<std::int64_t>(attemptTimeoutMs),
         std::max<std::int64_t>(remainingMs, 0));
     return now + std::chrono::milliseconds(attemptMs);
 }
@@ -578,6 +601,9 @@ bool TransportTaskExecutor::RouteSubBatchFailure(TransportTask& task,
     const auto now = std::chrono::steady_clock::now();
     // 总Deadline到期：不再启动新 attempt。
     if (now >= task.deadline) { return false; }
+    // PROBE 任务不走业务重试：探针的 m 轮重试由 ProbeTarget 驱动
+    //（TIMEOUT 重提报），业务换链/原链退避不适用于探针。
+    if (task.origin == TaskOrigin::PROBE) { return false; }
 
     switch (decision.retryAction) {
         case RetryAction::RETRY_SAME_CHANNEL: {

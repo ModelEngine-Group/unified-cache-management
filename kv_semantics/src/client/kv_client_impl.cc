@@ -163,6 +163,11 @@ Status KvClientImpl::Init(const KvClientConfig& config)
     worker_ = std::thread(&KvClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
+
+    // Client 级共享探针调度器：每 Client <= 1 个探针线程，与 Transport 数无关。
+    if (probeScheduler_ != nullptr && config.transportConfigs.front().probe.probeEnabled) {
+        probeScheduler_->Start();
+    }
     return Status::OK();
 }
 
@@ -174,6 +179,8 @@ Status KvClientImpl::Shutdown()
         initialized_ = false;
         waitTimeoutMs = config_.defaultWaitTimeoutMs;
     }
+    // 先停探针线程（每 Client <= 1 个），在途探针由任务路径幂等释放。
+    if (probeScheduler_ != nullptr) { probeScheduler_->Stop(); }
     {
         std::lock_guard<std::mutex> lock{producerMu_};
         stopWorker_.store(true, std::memory_order_release);
@@ -684,6 +691,18 @@ Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
     }
     if (!createdProvider) {
         transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
+        // 共享 provider 路径同样注册探针目标。
+        if (auto* probingTransport = dynamic_cast<IProbingTransport*>(transport.get())) {
+            auto* probeTarget = probingTransport->GetProbeTarget();
+            if (probeTarget != nullptr) {
+                if (probeScheduler_ == nullptr) {
+                    probeScheduler_ = std::make_unique<ClientProbeScheduler>(config.probe);
+                }
+                probeScheduler_->RegisterTarget(probeTarget);
+                // 注册时目标自动重绑 Client 级共享在途预算（见
+                // ClientProbeScheduler::RegisterTarget）。
+            }
+        }
         return Status::OK();
     }
 
@@ -707,6 +726,19 @@ Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
     }
     providerMemoryStates_.emplace_back(std::move(providerState));
     transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
+
+    // 注册探针目标：ClientProbeScheduler 共享驱动（每 Client <= 1 线程）。
+    if (auto* probingTransport = dynamic_cast<IProbingTransport*>(transport.get())) {
+        auto* probeTarget = probingTransport->GetProbeTarget();
+        if (probeTarget != nullptr) {
+            if (probeScheduler_ == nullptr) {
+                probeScheduler_ =
+                    std::make_unique<ClientProbeScheduler>(config.probe);
+            }
+            // 注册时目标重绑 Client 级共享在途预算（见 ClientProbeScheduler::RegisterTarget）。
+                probeScheduler_->RegisterTarget(probeTarget);
+        }
+    }
     return Status::OK();
 }
 

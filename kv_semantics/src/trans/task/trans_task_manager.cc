@@ -2,6 +2,7 @@
 #include <chrono>
 #include <utility>
 #include "kv_metrics/metrics.h"
+#include "probe_scheduler.h"
 #include "utils/trans_task_utils.h"
 
 namespace kv {
@@ -14,6 +15,12 @@ void FillEntryStatusFromCqeResult(const KvResponse& response,
 }
 
 TransportTask::TransportTask() : subBatchContexts(std::make_shared<TransportSubBatchList>()) {}
+
+TransportTask::~TransportTask()
+{
+    // 探针租约兜底释放（提交失败/取消/丢弃路径；Release 幂等）。
+    if (probeLease) { probeLease->Release(); }
+}
 
 bool TransportTask::Done() const
 {

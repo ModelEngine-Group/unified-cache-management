@@ -2584,5 +2584,61 @@ TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseMrKey)
     EXPECT_NE(s.message.find("rflag"), std::string::npos);
 }
 
+
+// ─── Shard 4: KeepAlive CQE 解包（opcode/CID/result 校验） ───
+
+TEST_F(KvProtocolPackTest, KeepAliveUnpackCqeAcceptsLegalEcho)
+{
+    // 合法 KeepAlive CQE：opcode 回显 + CID + result 全部校验通过。
+    KvResponse resp;
+    std::uint32_t cqe_data[4] = {0, 0, 0, 0};
+    cqe_data[0] = static_cast<std::uint32_t>(KvOpcode::KeepAlive);
+    cqe_data[3] = 0x1234 | (0 << 17);
+
+    KvKeepAliveProtocol proto;
+    auto status = proto.UnpackCqe(cqe_data, 1, resp);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(resp.cid, 0x1234);
+    EXPECT_EQ(resp.status, 0);
+}
+
+TEST_F(KvProtocolPackTest, KeepAliveUnpackCqeCarriesNonZeroResult)
+{
+    KvResponse resp;
+    std::uint32_t cqe_data[4] = {0, 0, 0, 0};
+    cqe_data[0] = static_cast<std::uint32_t>(KvOpcode::KeepAlive);
+    cqe_data[3] = 0x777 | (0x716U << 17);  // CQE_IO_TIMEOUT
+
+    KvKeepAliveProtocol proto;
+    auto status = proto.UnpackCqe(cqe_data, 1, resp);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(resp.cid, 0x777);
+    EXPECT_EQ(resp.status, 0x716U);
+}
+
+TEST_F(KvProtocolPackTest, KeepAliveUnpackCqeRejectsOpcodeMismatch)
+{
+    // 收到任意 CQE 不足以判 SUCCESS：opcode 不匹配按校验失败拒绝。
+    KvResponse resp;
+    std::uint32_t cqe_data[4] = {0, 0, 0, 0};
+    cqe_data[0] = static_cast<std::uint32_t>(KvOpcode::Store);  // 错误 opcode
+    cqe_data[3] = 0x1234 | (0 << 17);
+
+    KvKeepAliveProtocol proto;
+    const auto status = proto.UnpackCqe(cqe_data, 1, resp);
+    EXPECT_EQ(status.code, StatusCode::CQE_INVALID_COMMAND_OPCODE);
+}
+
+TEST_F(KvProtocolPackTest, KeepAliveUnpackCqeRejectsInvalidBatchNumber)
+{
+    KvKeepAliveProtocol proto;
+    KvResponse resp;
+    std::uint32_t cqe_data[4] = {static_cast<std::uint32_t>(KvOpcode::KeepAlive), 0, 0, 0};
+
+    const auto status = proto.UnpackCqe(cqe_data, 2, resp);
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(proto.UnpackCqe(nullptr, 1, resp).code, StatusCode::INVALID_ARGUMENT);
+}
+
 }  // namespace
 }  // namespace kv::test

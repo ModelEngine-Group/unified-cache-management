@@ -41,6 +41,8 @@ namespace kv {
 class AsuTransport;
 struct TransportSubBatchContext;
 struct ViewSnapshot;
+class ProbeTaskLease;
+class ConnectionChannel;
 
 enum class ClientTaskState {
     PENDING = 0,
@@ -93,6 +95,7 @@ using TransportSubBatchList = std::vector<TransportSubBatchContext>;
 
 struct TransportTask {
     TransportTask();
+    ~TransportTask();  // 兜底释放探针租约（幂等）
 
     NodeId nodeId{0};
     TaskId taskId{kInvalidTaskId};
@@ -107,6 +110,11 @@ struct TransportTask {
     // Cancellation is best-effort: set by Cancel, checked by the executor
     // between attempts (no new attempt starts after a cancel request).
     std::atomic<bool> cancelRequested{false};
+
+    // 探针指定 QP：PROBE 任务固定路由到该 Channel（业务 SelectConnection 不参与）。
+    std::shared_ptr<ConnectionChannel> probeChannel;
+    // 探针租约（预算 + Channel probeInFlight 的幂等释放）。
+    std::shared_ptr<ProbeTaskLease> probeLease;
 
     std::shared_ptr<TransportSubBatchList> subBatchContexts;
     std::uint32_t remainingSubBatchCount{0};
