@@ -142,7 +142,7 @@ if [ "${MODE}" = "cpu" ]; then
 else
     if ! grep -q "BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE" "${KV_SEMANTICS_ROOT}/CMakeLists.txt"; then
         echo "[FAIL] 当前代码不含 HCCP provider 构建开关（${KV_SEMANTICS_ROOT}/CMakeLists.txt）"
-        echo "       请切换到含 HCCP provider 的分支（feature_26A_kvclient / PR #1698 合入分支）后重跑"
+        echo "       请切换到含 HCCP provider 的分支（如 feature_26A_kvclient）后重跑"
         exit 1
     fi
     # 三 provider 共存后 npu 模式同时编入 RoCE：CMake 对未定义 option 的传参不报错，
