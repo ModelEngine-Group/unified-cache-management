@@ -5,6 +5,7 @@ import unittest
 
 from controller import Controller
 from delivery import PUBLISHED_START, TRACKING_START
+from presentation import COMMAND_END, checklist_region, command_feedback
 from syntax import OperationError
 from test_controller import PLAN, REPOSITORY, MemoryGitHub
 
@@ -25,6 +26,19 @@ class DeliveryGitHub(MemoryGitHub):
         self.tag_sha = SHA
         self.receipts = {}
         self.artifacts = []
+        self.workflow_run = {
+            "id": 100,
+            "run_attempt": 1,
+            "path": ".github/workflows/release-tag.yml",
+            "event": "push",
+            "head_repository": {"full_name": REPOSITORY},
+            "head_branch": RUN["tag"],
+            "head_sha": SHA,
+            "status": "in_progress",
+            "conclusion": None,
+            "updated_at": "2026-11-25T10:00:00Z",
+        }
+        self.jobs = []
         self.published = {
             "id": 9,
             "tag_name": RUN["tag"],
@@ -34,6 +48,10 @@ class DeliveryGitHub(MemoryGitHub):
         }
 
     def rest(self, path, method="GET", data=None):
+        if path == "actions/runs/100":
+            return copy.deepcopy(self.workflow_run)
+        if path.startswith("actions/runs/100/attempts/") and "/jobs?" in path:
+            return {"jobs": copy.deepcopy(self.jobs)}
         if path.startswith("actions/runs/") and "/artifacts?" in path:
             return {"artifacts": copy.deepcopy(self.artifacts)}
         if path.startswith("milestones/") and method == "GET":
@@ -85,9 +103,19 @@ class DeliveryContracts(unittest.TestCase):
     def test_gate_finds_closed_checklist_and_verifies_closed_archive(self):
         self.controller.delivery_gate(RUN)
         self.assertFalse(self.api.comments)
+        _, delivery = checklist_region(self.api.items[1]["body"], "delivery")
+        _, check = checklist_region(self.api.items[1]["body"], "check")
+        self.assertIn("**v0.12.0 · Publishing**", delivery)
+        self.assertIn(f"Candidate `v0.12.0` · `{SHA}`", check)
+        self.assertIn("**Ready**", check)
+        self.assertNotIn("Pending `/update`", check)
         self.api.items[2]["state"] = "open"
         with self.assertRaisesRegex(OperationError, "blocked"):
             self.controller.delivery_gate(RUN)
+        _, check = checklist_region(self.api.items[1]["body"], "check")
+        self.assertIn("**Blocked**", check)
+        self.assertIn("Open Checklist or Bug Archive · #2", check)
+        self.assertIn("**v0.12.0 · Failed**", self.api.items[1]["body"])
         self.assertEqual(self.api.milestones[0]["state"], "open")
 
     def test_gate_counts_manually_added_unlabeled_issues(self):
@@ -108,6 +136,17 @@ class DeliveryContracts(unittest.TestCase):
             self.controller.delivery_gate(RUN)
         self.assertEqual(len(self.api.items), 4)
 
+    def test_scope_diff_is_visible_without_changing_the_milestone_gate(self):
+        body = self.api.items[1]["body"]
+        self.api.items[1]["body"] = body.replace(
+            "release_date: TBD", "release_date: 2026-12-01"
+        )
+        self.controller.delivery_gate(RUN)
+        _, check = checklist_region(self.api.items[1]["body"], "check")
+        self.assertIn("**Ready**", check)
+        self.assertIn("Edited release fields · release_date", check)
+        self.assertIsNone(self.api.milestones[0]["due_on"])
+
     def test_missing_duplicate_and_uninitialized_versions_fail_gate(self):
         with self.assertRaisesRegex(OperationError, "Expected one Milestone"):
             self.controller.delivery_gate(dict(RUN, tag="v0.13.0", version="0.13.0"))
@@ -122,6 +161,10 @@ class DeliveryContracts(unittest.TestCase):
             self.controller.delivery_gate(RUN)
 
     def test_receipt_required_before_closing_milestone(self):
+        checklist = self.api.items[1]
+        checklist["body"] = command_feedback(
+            checklist["body"], "/release_check", "Succeeded", "", None, None
+        )
         with self.assertRaisesRegex(OperationError, "receipt is unavailable"):
             self.controller.delivery_finished(RUN, "success")
         self.assertEqual(self.api.milestones[0]["state"], "open")
@@ -135,6 +178,8 @@ class DeliveryContracts(unittest.TestCase):
         self.assertEqual(self.api.published["body"].count(TRACKING_START), 1)
         self.assertEqual(self.api.items[1]["body"].count(PUBLISHED_START), 1)
         self.assertIn(self.api.published["html_url"], self.api.items[1]["body"])
+        self.assertIn("**v0.12.0 · Delivered**", self.api.items[1]["body"])
+        self.assertTrue(self.api.items[1]["body"].rstrip().endswith(COMMAND_END))
         self.assertFalse(self.api.comments)
 
     def test_wrong_receipt_or_retargeted_tag_cannot_close_milestone(self):
@@ -159,6 +204,50 @@ class DeliveryContracts(unittest.TestCase):
         self.assertEqual(self.api.milestones[0]["state"], "open")
         self.assertEqual(self.api.published["body"], before)
         self.assertFalse(self.api.comments)
+
+    def observe(self, attempt=1):
+        self.controller.observe_delivery(
+            {"workflow_run": {"id": 100, "run_attempt": attempt}}
+        )
+
+    def test_observer_records_failed_jobs_and_a_cancelled_retry(self):
+        self.observe()
+        self.assertIn("**v0.12.0 · Checking**", self.api.items[1]["body"])
+        self.controller.delivery_gate(RUN)
+        self.observe()
+        self.assertIn("**v0.12.0 · Publishing**", self.api.items[1]["body"])
+        self.api.workflow_run.update(status="completed", conclusion="failure")
+        self.api.jobs = [{"name": "Wheel · CUDA", "conclusion": "failure"}]
+        self.observe()
+        self.assertIn("**v0.12.0 · Failed**", self.api.items[1]["body"])
+        self.assertIn("Failed jobs · Wheel · CUDA", self.api.items[1]["body"])
+        self.api.workflow_run.update(
+            run_attempt=2, status="in_progress", conclusion=None
+        )
+        self.observe(attempt=2)
+        self.assertIn("**v0.12.0 · Publishing**", self.api.items[1]["body"])
+        self.assertIn("Attempt 2", self.api.items[1]["body"])
+        self.api.workflow_run.update(status="completed", conclusion="cancelled")
+        self.observe(attempt=2)
+        cancelled = self.api.items[1]["body"]
+        self.assertIn("**v0.12.0 · Cancelled**", cancelled)
+        self.assertIn("Finished 2026-11-25T10:00:00Z", cancelled)
+        self.observe()
+        self.controller.write_delivery(1, RUN, "failed", error="Older result")
+        self.assertEqual(self.api.items[1]["body"], cancelled)
+        self.assertEqual(self.api.milestones[0]["state"], "open")
+        self.assertFalse(self.api.comments)
+
+    def test_observer_checks_source_and_ignores_nonformal_tags(self):
+        self.api.workflow_run["head_repository"]["full_name"] = "other/repository"
+        with self.assertRaisesRegex(OperationError, "Unexpected release workflow"):
+            self.observe()
+        self.api.workflow_run["head_repository"]["full_name"] = REPOSITORY
+        original = self.api.items[1]["body"]
+        for tag in ("draft/v0.12.0", "nightly/v0.12.0-20261125-1"):
+            self.api.workflow_run["head_branch"] = tag
+            self.observe()
+        self.assertEqual(self.api.items[1]["body"], original)
 
 
 if __name__ == "__main__":

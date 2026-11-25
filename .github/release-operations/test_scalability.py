@@ -139,9 +139,14 @@ class NativeStateContracts(unittest.TestCase):
         pr = self.api.add_pr(10, "Fixes #3, fixes #4")
         self.controller.reconcile(1)
         self.assertIsNone(pr["milestone"])
+        self.assertIn(
+            "PR #10 has linked Issues in different Milestones",
+            self.api.items[1]["body"],
+        )
         self.api.native_links[4] = []
         self.controller.reconcile(1)
         self.assertEqual(pr["milestone"]["number"], 1)
+        self.assertNotIn("Attention required", self.api.items[1]["body"])
 
     def test_native_pagination_is_complete_on_both_sides(self):
         self.api.page_size = 2
@@ -217,6 +222,11 @@ class NativeStateContracts(unittest.TestCase):
             ):
                 self.controller.handle({}, "schedule")
         self.assertIn("| #52 | - | @harrisonyhq | closed", self.api.items[50]["body"])
+        self.assertIn(
+            "Synchronization failed · archive unavailable", self.api.items[1]["body"]
+        )
+        self.controller.handle({}, "schedule")
+        self.assertNotIn("Attention required", self.api.items[1]["body"])
 
     def test_budget_stops_before_extra_request(self):
         api = GitHub(REPOSITORY)

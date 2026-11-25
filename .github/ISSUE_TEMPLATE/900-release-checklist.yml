@@ -11,6 +11,8 @@ body:
         Fill in the release version and other release information. Every Issue assigned to the version Milestone is in scope.
         Close those Issues, the Release Checklist, and the Bug Archive before publishing the release.
         The bot closes the Milestone after successful delivery.
+        For a preview, comment with /release_init --dry-run or /update --dry-run.
+        The bot acknowledges the comment and writes the result at the bottom of this Checklist and in Actions.
       value: |
         <!-- ucm-release-navigation:start -->
         Version links will appear after initialization.
