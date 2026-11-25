@@ -148,6 +148,79 @@ enum class Protocol {
 
 enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 
+// Channel selection policy used by the connection manager.
+enum class SelectionPolicy : std::uint8_t {
+    ROUND_ROBIN = 0,
+    LEAST_LOADED = 1,
+};
+
+// Per-attempt retry routing knobs. busyRetryCount (M) bounds same-channel busy
+// retries and failoverRetryCount (N) bounds link-failure failovers. The k-th
+// busy backoff is min(busyRetryBackoffMaxMs, busyRetryBackoffBaseMs * 2^(k-1));
+// failover and ENTRY_RETRY_ADVISED retries switch channels immediately without
+// backoff and without jitter.
+struct RetryConfig {
+    std::uint32_t busyRetryCount{2};  // M, valid range 0..16
+    std::uint32_t busyRetryBackoffBaseMs{1};
+    std::uint32_t busyRetryBackoffMaxMs{100};
+    std::uint32_t failoverRetryCount{2};  // N, valid range 0..16
+    std::uint64_t taskTimeoutMs{100};     // > 0, task total deadline
+    std::uint32_t attemptTimeoutMs{100};  // > 0, per-attempt deadline is
+                                          // min(attemptTimeoutMs, remaining)
+    Status Validate() const;
+};
+
+// Endpoint-level connection recovery knobs shared by Init and runtime
+// recovery. Each round tries 1+K connection attempts with connectTimeoutMs;
+// failures double the backoff capped at recoverMaxBackoffMs and a successful
+// round resets the backoff to the initial value.
+struct RecoveryConfig {
+    std::uint32_t connectTimeoutMs{5000};
+    std::uint32_t connectRetryPerRound{2};  // K, valid range 0..16
+    std::uint32_t recoverInitialBackoffMs{100};
+    std::uint32_t recoverMaxBackoffMs{5000};
+    std::uint32_t recoverCheckIntervalMs{100};
+    Status Validate() const;
+};
+
+// KeepAlive probe knobs. The global in-flight limit is derived as
+// maxConcurrentTransports * maxChannelsPerTransport (4*16=64 by default); it
+// is not independently configurable and is capped at 1024*4096.
+struct ProbeConfig {
+    bool probeEnabled{true};
+    std::uint32_t probePeriodMs{1000};
+    std::uint32_t probeRetryCount{0};  // m, valid range 0..16 (target is 1)
+    std::uint32_t probeRetryBackoffMs{5};
+    std::uint32_t probeTimeoutMs{1000};
+    std::uint32_t maxConcurrentTransports{4};    // 1..1024
+    std::uint32_t maxChannelsPerTransport{16};   // 1..4096
+
+    std::uint64_t DerivedInFlightLimit() const
+    {
+        return static_cast<std::uint64_t>(maxConcurrentTransports) *
+               static_cast<std::uint64_t>(maxChannelsPerTransport);
+    }
+    Status Validate() const;
+};
+
+// Group dynamic flow control knobs. busyFloor must stay below the effective
+// per-channel ioQueueDepth, otherwise Init rejects the configuration.
+struct FlowControlConfig {
+    bool flowControlEnabled{false};
+    std::uint32_t maxInflightPerChannel{256};
+    std::uint32_t busyFloor{32};  // 0 < busyFloor < maxInflightPerChannel
+    std::uint64_t stableSuccessMs{60000};
+    Status Validate() const;
+};
+
+// Connection state machine knobs. X=1 means a single consecutive link failure
+// drains the channel; a valid response resets the consecutive failure count.
+struct ConnectionConfig {
+    SelectionPolicy selectionPolicy{SelectionPolicy::ROUND_ROBIN};
+    std::uint32_t maxErrorCount{1};  // X >= 1, consecutive failure threshold
+    Status Validate() const;
+};
+
 struct NodeEndpoint {
     std::string ip;
     std::uint16_t port{0};
@@ -180,6 +253,14 @@ struct TransportConfig {
     std::uint64_t timeoutMs{100};
     std::uint32_t maxErrorCount{2};
     std::size_t completionPollSpinLimit{16};
+
+    // Connection reliability configuration sections (validated at Init;
+    // illegal values return INVALID_ARGUMENT instead of silent fallback).
+    RetryConfig retry;
+    RecoveryConfig recovery;
+    ProbeConfig probe;
+    FlowControlConfig flowControl;
+    ConnectionConfig connection;
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};

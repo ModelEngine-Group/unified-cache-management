@@ -259,4 +259,255 @@ NodeEndpoint ParseTransportEndpoint(const std::string& value)
     return endpoint;
 }
 
+namespace {
+
+// Marker used when a recognized numeric config value cannot be parsed. The
+// value is out of every legal range, so Validate() rejects it with
+// INVALID_ARGUMENT at Init time instead of silently falling back.
+constexpr std::uint32_t kInvalidConfigMarker = 0xFFFFFFFFu;
+
+std::uint32_t ParseStrictUint32(const std::string& value)
+{
+    const auto parsed = ParseConfigUint64(value, std::numeric_limits<std::uint64_t>::max());
+    if (parsed == std::numeric_limits<std::uint64_t>::max() ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return kInvalidConfigMarker;
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+std::uint64_t ParseStrictUint64(const std::string& value)
+{
+    return ParseConfigUint64(value, std::numeric_limits<std::uint64_t>::max());
+}
+
+}  // namespace
+
+Status RetryConfig::Validate() const
+{
+    if (busyRetryCount > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_count must be in 0..16");
+    }
+    if (failoverRetryCount > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.failover_retry_count must be in 0..16");
+    }
+    if (busyRetryBackoffBaseMs == 0 || busyRetryBackoffBaseMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_backoff_base_ms must be greater than 0");
+    }
+    if (busyRetryBackoffMaxMs == 0 || busyRetryBackoffMaxMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_backoff_max_ms must be greater than 0");
+    }
+    if (taskTimeoutMs == 0 || taskTimeoutMs == std::numeric_limits<std::uint64_t>::max()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.task_timeout_ms must be greater than 0");
+    }
+    if (attemptTimeoutMs == 0 || attemptTimeoutMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.attempt_timeout_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+Status RecoveryConfig::Validate() const
+{
+    if (connectTimeoutMs == 0 || connectTimeoutMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.connect_timeout_ms must be greater than 0");
+    }
+    if (connectRetryPerRound > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.connect_retry_per_round must be in 0..16");
+    }
+    if (recoverInitialBackoffMs == 0 || recoverInitialBackoffMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_initial_backoff_ms must be greater than 0");
+    }
+    if (recoverMaxBackoffMs == 0 || recoverMaxBackoffMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_max_backoff_ms must be greater than 0");
+    }
+    if (recoverCheckIntervalMs == 0 || recoverCheckIntervalMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_check_interval_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+Status ProbeConfig::Validate() const
+{
+    if (maxConcurrentTransports == 0 || maxConcurrentTransports > 1024 ||
+        maxConcurrentTransports == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.max_concurrent_transports must be in 1..1024");
+    }
+    if (maxChannelsPerTransport == 0 || maxChannelsPerTransport > 4096 ||
+        maxChannelsPerTransport == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.max_channels_per_transport must be in 1..4096");
+    }
+    if (probeRetryCount > 16 || probeRetryCount == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.retry_count must be in 0..16");
+    }
+    if (probePeriodMs == 0 || probePeriodMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.period_ms must be greater than 0");
+    }
+    if (probeRetryBackoffMs == 0 || probeRetryBackoffMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.retry_backoff_ms must be greater than 0");
+    }
+    if (probeTimeoutMs == 0 || probeTimeoutMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "probe.timeout_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+Status FlowControlConfig::Validate() const
+{
+    if (maxInflightPerChannel == 0 || maxInflightPerChannel == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "flow_control.max_inflight_per_channel must be greater than 0");
+    }
+    if (busyFloor == 0 || busyFloor >= maxInflightPerChannel ||
+        busyFloor == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "flow_control.busy_floor must be in 0 < busy_floor < "
+                             "max_inflight_per_channel");
+    }
+    if (stableSuccessMs == 0 || stableSuccessMs == std::numeric_limits<std::uint64_t>::max()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "flow_control.stable_success_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+Status ConnectionConfig::Validate() const
+{
+    if (maxErrorCount == 0 || maxErrorCount == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "connection.max_error_count (X) must be greater than 0");
+    }
+    return Status::OK();
+}
+
+bool ApplyTransportRetryConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value)
+{
+    if (key == "retry.busyRetryCount" || key == "retry.busy_retry_count") {
+        config.retry.busyRetryCount = ParseStrictUint32(value);
+    } else if (key == "retry.busyRetryBackoffBaseMs" ||
+               key == "retry.busy_retry_backoff_base_ms") {
+        config.retry.busyRetryBackoffBaseMs = ParseStrictUint32(value);
+    } else if (key == "retry.busyRetryBackoffMaxMs" ||
+               key == "retry.busy_retry_backoff_max_ms") {
+        config.retry.busyRetryBackoffMaxMs = ParseStrictUint32(value);
+    } else if (key == "retry.failoverRetryCount" || key == "retry.failover_retry_count") {
+        config.retry.failoverRetryCount = ParseStrictUint32(value);
+    } else if (key == "retry.taskTimeoutMs" || key == "retry.task_timeout_ms") {
+        config.retry.taskTimeoutMs = ParseStrictUint64(value);
+    } else if (key == "retry.attemptTimeoutMs" || key == "retry.attempt_timeout_ms") {
+        config.retry.attemptTimeoutMs = ParseStrictUint32(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportRecoveryConfigField(TransportConfig& config, const std::string& key,
+                                      const std::string& value)
+{
+    if (key == "recovery.connectTimeoutMs" || key == "recovery.connect_timeout_ms") {
+        config.recovery.connectTimeoutMs = ParseStrictUint32(value);
+    } else if (key == "recovery.connectRetryPerRound" ||
+               key == "recovery.connect_retry_per_round") {
+        config.recovery.connectRetryPerRound = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverInitialBackoffMs" ||
+               key == "recovery.recover_initial_backoff_ms") {
+        config.recovery.recoverInitialBackoffMs = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverMaxBackoffMs" ||
+               key == "recovery.recover_max_backoff_ms") {
+        config.recovery.recoverMaxBackoffMs = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverCheckIntervalMs" ||
+               key == "recovery.recover_check_interval_ms") {
+        config.recovery.recoverCheckIntervalMs = ParseStrictUint32(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportProbeConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value)
+{
+    if (key == "probe.enabled" || key == "probe.probeEnabled") {
+        const auto normalized = ToLower(value);
+        config.probe.probeEnabled = normalized != "false" && normalized != "0" &&
+                                    normalized != "off" && normalized != "no";
+    } else if (key == "probe.periodMs" || key == "probe.period_ms") {
+        config.probe.probePeriodMs = ParseStrictUint32(value);
+    } else if (key == "probe.retryCount" || key == "probe.retry_count") {
+        config.probe.probeRetryCount = ParseStrictUint32(value);
+    } else if (key == "probe.retryBackoffMs" || key == "probe.retry_backoff_ms") {
+        config.probe.probeRetryBackoffMs = ParseStrictUint32(value);
+    } else if (key == "probe.timeoutMs" || key == "probe.timeout_ms") {
+        config.probe.probeTimeoutMs = ParseStrictUint32(value);
+    } else if (key == "probe.maxConcurrentTransports" ||
+               key == "probe.max_concurrent_transports") {
+        config.probe.maxConcurrentTransports = ParseStrictUint32(value);
+    } else if (key == "probe.maxChannelsPerTransport" ||
+               key == "probe.max_channels_per_transport") {
+        config.probe.maxChannelsPerTransport = ParseStrictUint32(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportFlowControlConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value)
+{
+    if (key == "flowControl.enabled" || key == "flow_control.enabled") {
+        const auto normalized = ToLower(value);
+        config.flowControl.flowControlEnabled =
+            normalized == "true" || normalized == "1" || normalized == "on" ||
+            normalized == "yes";
+    } else if (key == "flowControl.maxInflightPerChannel" ||
+               key == "flow_control.max_inflight_per_channel") {
+        config.flowControl.maxInflightPerChannel = ParseStrictUint32(value);
+    } else if (key == "flowControl.busyFloor" || key == "flow_control.busy_floor") {
+        config.flowControl.busyFloor = ParseStrictUint32(value);
+    } else if (key == "flowControl.stableSuccessMs" || key == "flow_control.stable_success_ms") {
+        config.flowControl.stableSuccessMs = ParseStrictUint64(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportConnectionConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value)
+{
+    if (key == "connection.selectionPolicy" || key == "connection.selection_policy") {
+        const auto normalized = ToLower(value);
+        config.connection.selectionPolicy = normalized == "least_loaded"
+                                                ? SelectionPolicy::LEAST_LOADED
+                                                : SelectionPolicy::ROUND_ROBIN;
+    } else if (key == "connection.maxErrorCount" || key == "connection.max_error_count") {
+        config.connection.maxErrorCount = ParseStrictUint32(value);
+        // Keep the legacy mirror field in sync for compatibility consumers.
+        if (config.connection.maxErrorCount != kInvalidConfigMarker) {
+            config.maxErrorCount = config.connection.maxErrorCount;
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
 }  // namespace kv
