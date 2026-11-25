@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -30,10 +31,24 @@
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
 #include "kv_transport.h"
+#include "proto/kv_protocol.h"
 #include "task_context.h"
 #include "task_manager_base.h"
 
 namespace kv {
+
+// Pending retry category of a sub-batch. NONE doubles as the "no pending
+// retry" flag (no separate retryPending boolean); the derived attempt states
+// are READY (no in-flight slots, NONE), SENDING (inside the Send call),
+// WAITING_RESPONSE (slots allocated, NONE, awaiting adjudication), and
+// RETRY_BACKOFF (!= NONE).
+enum class RetryCategory : std::uint8_t {
+    NONE = 0,
+    BUSY = 1,
+    LINK_FAILURE = 2,
+};
+
+class ConnectionGroup;
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
@@ -45,6 +60,38 @@ struct TransportSubBatchContext {
     ScatterGatherEntry sendSge;
     ScatterGatherEntry flagBuffer;
     std::vector<Status> entryStatus;
+
+    // ---- Retry routing state (Shard 3) ----
+    // Per-attempt deadline: now + min(attemptTimeoutMs, remaining task time).
+    std::chrono::steady_clock::time_point attemptDeadline{};
+    // Consecutive same-channel busy retries (<= busyRetryCount M).
+    std::uint32_t busyRetries{0};
+    // Pending retry category; LINK_FAILURE also books ENTRY_RETRY_ADVISED
+    // failovers (shared FAILOVER mechanics, no independent count).
+    RetryCategory pendingRetryCategory{RetryCategory::NONE};
+    // Channels already attempted; object identity, used for failover
+    // exclusion and the failover budget (failoverAttempts = size()).
+    std::vector<ConnectionChannel*> attemptedChannels;
+    // Earliest time a new attempt may start (BUSY backoff; failover is now).
+    std::chrono::steady_clock::time_point retryAt{};
+    // Group lease held across locks (禁跨锁裸指针).
+    std::shared_ptr<ConnectionGroup> group;
+    // Retained request object so PrepareRetryRequest can re-pack the SQE with
+    // a fresh CID and response buffer/MR.
+    std::shared_ptr<SqeRequest> request;
+
+    // Derived attempt state helpers.
+    bool InFlight() const
+    {
+        return state != TransportSubBatchState::COMPLETED &&
+               pendingRetryCategory == RetryCategory::NONE &&
+               (sendSge.slot_index != UINT32_MAX || flagBuffer.slot_index != UINT32_MAX);
+    }
+    bool RetryPending() const
+    {
+        return state != TransportSubBatchState::COMPLETED &&
+               pendingRetryCategory != RetryCategory::NONE;
+    }
 };
 
 void FillEntryStatusFromCqeResult(const KvResponse& response,

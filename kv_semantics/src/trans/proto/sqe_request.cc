@@ -80,7 +80,7 @@ std::size_t GetFlagBufferSize(KvOpcode opcode, std::size_t batchNum)
     }
 }
 
-Status AllocateSubBatchFlagBuffer(KvOpcode opcode, std::size_t batchNum,
+Status AllocateSubBatchFlagBufferImpl(KvOpcode opcode, std::size_t batchNum,
                                   BufferManager& flagBufferManager,
                                   TransportSubBatchContext& subBatchContext)
 {
@@ -128,7 +128,8 @@ Status PrepareSubBatchRequest(AsuOpType opType, KvOpcode opcode, std::uint16_t c
 {
     subBatchContext.opType = opType;
     subBatchContext.cid = cid;
-    auto status = AllocateSubBatchFlagBuffer(opcode, batchNum, flagBufferManager, subBatchContext);
+    auto status = AllocateSubBatchFlagBufferImpl(opcode, batchNum, flagBufferManager,
+                                              subBatchContext);
     if (!status.ok()) {
         SetSubBatchBuildFailed(subBatchContext, status);
         return status;
@@ -305,7 +306,7 @@ KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherE
     return request;
 }
 
-std::unique_ptr<SqeRequest> BuildSqeRequest(
+std::shared_ptr<SqeRequest> BuildSqeRequest(
     KvOpcode opcode, const SubBatchRequestSource& source,
     const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
     const ScatterGatherEntry& flagBuffer, TransportSubBatchContext& subBatchContext)
@@ -348,6 +349,13 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 
 }  // namespace
 
+Status AllocateSubBatchFlagBuffer(KvOpcode opcode, std::size_t batchNum,
+                                  BufferManager& flagBufferManager,
+                                  TransportSubBatchContext& subBatchContext)
+{
+    return AllocateSubBatchFlagBufferImpl(opcode, batchNum, flagBufferManager, subBatchContext);
+}
+
 Status TransportTaskExecutor::BuildEntrySubBatchRequest(
     AsuOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
     TransportSubBatchContext& subBatchContext)
@@ -369,6 +377,7 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
+    subBatchContext.request = request;
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -387,6 +396,7 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
+    subBatchContext.request = request;
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -404,6 +414,7 @@ Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& s
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
+    subBatchContext.request = request;
     return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }

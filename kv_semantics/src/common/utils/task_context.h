@@ -58,6 +58,13 @@ enum class AsuOpType {
     KEEP_ALIVE = 6,
 };
 
+// Task origin: business IO or KeepAlive probe. Flow control only counts fully
+// successful BUSINESS sub-batches; probe results never raise the load.
+enum class TaskOrigin : std::uint8_t {
+    BUSINESS = 0,
+    PROBE = 1,
+};
+
 enum class TransportTaskState {
     PENDING = 0,
     INFLIGHT = 1,
@@ -90,12 +97,16 @@ struct TransportTask {
     NodeId nodeId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
+    TaskOrigin origin{TaskOrigin::BUSINESS};
     std::weak_ptr<AsuTransport> transport;
     std::vector<CacheKey> keys;
     std::vector<KVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
+    // Cancellation is best-effort: set by Cancel, checked by the executor
+    // between attempts (no new attempt starts after a cancel request).
+    std::atomic<bool> cancelRequested{false};
 
     std::shared_ptr<TransportSubBatchList> subBatchContexts;
     std::uint32_t remainingSubBatchCount{0};
