@@ -71,11 +71,21 @@ public:
 
     /**
      * 初始化：kv client 建链、值缓冲池分配（buffercount 块 × buffersize 字节，内存类型按
-     * buffertype：cpu 主机内存 / gpu CUDA 显存 / npu ACL NPU 内存）并完成内存注册、创建执行器
+     * buffertype：cpu 主机内存 / gpu CUDA 显存 / npu ACL NPU 内存）并完成内存注册（两模式
+     * 共用，region 注册仅此一次）；IO 执行器不在此创建——执行模式经 PrepareExecutors 单独准备
      * @param config 测试配置（取 buffersize / buffercount / buffertype / deviceid）
      */
     bool initializeAndRegister(const std::string &confPath, const ConfigUtil &config,
                                std::string &err);
+
+    /**
+     * IO 执行准备：创建执行器并绑定 client 与分配器（每 worker 一个执行器：独立埋点，指标
+     * 汇总时求和）；同时缓存 worker 数与起始绑核编号（worker i 绑 startcoreid+i）——
+     * 执行器属 IO 工具层，须在 initializeAndRegister 成功后调用；只建链模式
+     * （onlyconnect=on）不调用
+     * @param config 测试配置（取 numjobs / startcoreid）
+     */
+    bool PrepareExecutors(const ConfigUtil &config, std::string &err);
 
     /**
      * 执行 input 任务流：numjobs 个 worker 线程并发执行——任务流按 sleep 步骤切段，段内任务经

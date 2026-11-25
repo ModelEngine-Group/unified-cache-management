@@ -156,6 +156,17 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
     LOG_INFO("Scheduler: {} value buffers registered ({} bytes each, type={})", registered_.size(),
              bufferSize, allocator_->IsDeviceMemory() ? "device" : "host");
 
+    return true;
+}
+
+bool Scheduler::PrepareExecutors(const ConfigUtil &config, std::string &err)
+{
+    // 调用序防御：执行器依赖 initializeAndRegister 建立的 client 与值缓冲分配器
+    if (client_ == nullptr || allocator_ == nullptr) {
+        err = "executors require a successful initializeAndRegister first";
+        return false;
+    }
+
     // 创建执行器并绑定 client 与分配器（每 worker 一个执行器：独立埋点，指标汇总时求和）；
     // 同时缓存 worker 数与起始绑核编号（worker i 绑 startcoreid+i）
     numJobs_ = config.GetNumJobs();
@@ -166,6 +177,7 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
         executors_.back()->SetClient(client_.get());
         executors_.back()->SetAllocator(allocator_.get());
     }
+    LOG_INFO("Scheduler: {} executors prepared (startcoreid={})", executors_.size(), startCoreId_);
     return true;
 }
 

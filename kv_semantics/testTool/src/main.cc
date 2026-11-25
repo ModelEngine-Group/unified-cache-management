@@ -196,6 +196,14 @@ int main(int argc, char *argv[])
             return 1;
         }
 
+        // IO 执行准备：创建执行器并绑定 client 与分配器——执行器属 IO 工具层，不在建链
+        // 注册流程创建（onlyconnect 模式无此步骤，建链验证不需要 IO 工具层）
+        if (!scheduler.PrepareExecutors(config, err)) {
+            LOG_ERROR("executor prepare failed: {}", err);
+            CloseAll(scheduler, 1);
+            return 1;
+        }
+
         // 按任务流执行（重复执行语义，false 仅当工具链失败）
         const bool runOk =
             scheduler.Run(requestManager, testmode, config.GetRuntime(), config.GetLoop(), err);
