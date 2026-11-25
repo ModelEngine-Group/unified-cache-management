@@ -15,6 +15,12 @@ MARKDOWN_LINK_RE = re.compile(
 ISSUE_URL_RE = re.compile(
     r"https://github\.com/[\w.-]+/[\w.-]+/issues/[1-9]\d*(?:[?#][^\s]*)?\Z"
 )
+PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+)/pull/([1-9]\d*)/?(?:[?#]\S*)?\Z",
+    re.I,
+)
+PR_REFERENCE_RE = re.compile(r"(?:(?:([\w.-]+/[\w.-]+))?#)?([1-9]\d*)\Z")
+SYNCED_PR_ROW_RE = re.compile(r"- #[1-9]\d* \| (?:open|draft|closed|merged)\Z")
 
 
 class OperationError(ValueError):
@@ -45,6 +51,49 @@ def issue_reference(value, repository):
     if number <= 0:
         raise OperationError("Issue numbers must be positive")
     return number
+
+
+def pending_pull_request_lines(lines):
+    return [
+        line
+        for line in lines
+        if line.strip() not in ("", "-")
+        and not SYNCED_PR_ROW_RE.fullmatch(line.strip())
+    ]
+
+
+def pull_request_reference(line, repository):
+    value = line.strip().removeprefix("- ").strip()
+    link = MARKDOWN_LINK_RE.fullmatch(value)
+    if link:
+        value = link["url"]
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1]
+    match = PR_URL_RE.fullmatch(value) or PR_REFERENCE_RE.fullmatch(value)
+    if match and (match[1] or repository).lower() == repository.lower():
+        return int(match[2])
+    return None
+
+
+def render_pull_request_lines(lines, prs, repository, indent):
+    confirmed = {pr["number"]: pr for pr in prs}
+    result = [
+        line
+        for line in pending_pull_request_lines(lines)
+        if pull_request_reference(line, repository) not in confirmed
+    ]
+    for number, pr in sorted(confirmed.items()):
+        status = (
+            "merged"
+            if pr.get("merged_at")
+            else (
+                "closed"
+                if pr["state"] == "closed"
+                else "draft" if pr.get("draft") else "open"
+            )
+        )
+        result.append(f"{indent}- #{number} | {status}")
+    return result + [""]
 
 
 def split_requirement_reference(value, repository):
@@ -145,7 +194,7 @@ def blocks(body):
     return lines, result
 
 
-def parse_release(body, repository):
+def parse_release(body, repository, *, read_pr_requests=False):
     from folding import unfold_requirements
 
     body = unfold_requirements(body)
@@ -260,16 +309,25 @@ def parse_release(body, repository):
         if key in keys:
             fail("duplicate Issue reference or new requirement title")
         keys.add(key)
-        entries.append(
-            {
-                "key": key,
-                "number": number,
-                "title": title,
-                "title_text": title,
-                "description": description,
-                "developer": person(fields["assignee"][1], f"Line {owner + 1}"),
-            }
-        )
+        entry = {
+            "key": key,
+            "number": number,
+            "title": title,
+            "title_text": title,
+            "description": description,
+            "developer": person(fields["assignee"][1], f"Line {owner + 1}"),
+        }
+        if read_pr_requests:
+            requested = set()
+            for line in pending_pull_request_lines(lines[prs + 1 : last]):
+                pr = pull_request_reference(line, repository)
+                if pr is None:
+                    fail(
+                        f"{title}: use a same-repository PR number or link: {line.strip()}"
+                    )
+                requested.add(pr)
+            entry["requested_prs"] = sorted(requested)
+        entries.append(entry)
     change_start, change_end = found.get("Change Log", (0, 0))
     return {
         "version": info["version"],
@@ -292,31 +350,6 @@ def bind_entries(entries, objects):
         )
         for e in entries
     ]
-
-
-def scope_diff(previous, entries):
-    def value(entry, name):
-        content = entry.get(name)
-        # Trailing block whitespace has no rendered content; preserve the source.
-        return (
-            content.rstrip()
-            if name == "description" and isinstance(content, str)
-            else content
-        )
-
-    current = {e["key"]: e for e in entries}
-    return {
-        "added": sorted(current.keys() - previous.keys()),
-        "removed": sorted(previous.keys() - current.keys()),
-        "changed": sorted(
-            k
-            for k in current.keys() & previous.keys()
-            if any(
-                value(previous[k], f) != value(current[k], f)
-                for f in ("title", "description", "developer")
-            )
-        ),
-    }
 
 
 def patch_references(body, mappings, repository):
@@ -374,17 +407,7 @@ def patch_pull_requests(body, rows, repository):
         raise OperationError("Requirement block count does not match parsed entries")
     for entry, (start, end) in reversed(list(zip(parsed["entries"], ranges))):
         first = next(i for i in range(start, end) if lines[i] == "  pull_requests:")
-        suffix = []
-        for pr in sorted(rows.get(entry["number"], []), key=lambda p: p["number"]):
-            status = (
-                "merged"
-                if pr.get("merged_at")
-                else (
-                    "closed"
-                    if pr["state"] == "closed"
-                    else "draft" if pr.get("draft") else "open"
-                )
-            )
-            suffix.append(f"    - #{pr['number']} | {status}")
-        lines[first + 1 : end] = suffix + [""]
+        lines[first + 1 : end] = render_pull_request_lines(
+            lines[first + 1 : end], rows.get(entry["number"], []), repository, "    "
+        )
     return "\n".join(lines).rstrip() + "\n"

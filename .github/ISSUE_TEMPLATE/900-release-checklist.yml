@@ -7,13 +7,16 @@ body:
     id: release_information
     attributes:
       label: Release Information
-      description: Complete this section. The bot maintains version links and the bottom overview.
+      description: >-
+        Fill in the release version and other release information. Every Issue assigned to the version Milestone is in scope.
+        Close those Issues, the Release Checklist, and the Bug Archive before publishing the release.
+        The bot closes the Milestone after successful delivery.
       value: |
         <!-- ucm-release-navigation:start -->
         Version links will appear after initialization.
         <!-- ucm-release-navigation:end -->
 
-        version: 0.12.0
+        version:
         branch: develop
         release_manager:
         test_lead:
@@ -24,12 +27,21 @@ body:
     id: requirements
     attributes:
       label: Requirements
-      description: Use a task-list title followed by indented Details. Add an Issue reference to reuse an Issue, or write a title to create one. Indent fields by two spaces and their content by four spaces. The bot maintains pull_requests.
+      description: >-
+        Use a task-list title followed by indented Details. Add an Issue reference to reuse an Issue, or write a title to create one.
+        Indent fields by two spaces. Put description and pull_requests content on the following lines, indented by four spaces.
+        Add one PR number or URL per line under pull_requests to link it in Development.
       value: |
         <!-- ucm-requirement-template
+        To link existing PRs, enter one same-repository PR number or URL per line after the dash.
+        Run /release_init or /update to link them in Development. The bot writes back their status.
+
+          pull_requests:
+            -
+
         Copy the block below outside this comment for each requirement.
         Use a title for a new Issue. Append #number or an Issue URL to reuse an Issue.
-        Keep Details and field indentation unchanged. The bot maintains pull_requests.
+        Keep Details and field indentation unchanged.
 
         - [ ] Requirement title
           Optional title continuation
@@ -46,6 +58,7 @@ body:
             - Describe the expected result.
 
           pull_requests:
+            -
 
           </details>
         -->
