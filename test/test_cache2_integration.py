@@ -329,22 +329,57 @@ def test_affinity_works_without_worker_geometry():
 
 
 @pytest.mark.parametrize("affinity", [None, 6])
-def test_dp_isolation_does_not_restart_numa_slices(affinity):
+@pytest.mark.parametrize("rank_has_dp_offset", [False, True])
+@pytest.mark.parametrize("workers_per_dp", [2, 8])
+def test_dp_isolation_does_not_restart_numa_slices(
+    affinity, rank_has_dp_offset, workers_per_dp
+):
     results = []
     for dp in range(2):
-        for rank in range(8):
+        geometry = parallel(
+            data_parallel_rank_local=dp,
+            data_parallel_size_local=2,
+            tensor_parallel_size=workers_per_dp,
+            world_size=workers_per_dp,
+            local_world_size=workers_per_dp,
+        )
+        for rank in range(workers_per_dp):
+            device_id = dp * workers_per_dp + rank
             config = {}
             cache_config.configure_cache_numa(
                 config,
                 NS(get_numa_node=lambda _: affinity),
-                dp * 8 + rank,
-                parallel(data_parallel_rank_local=dp, data_parallel_size_local=2),
-                rank,
+                device_id,
+                geometry,
+                device_id if rank_has_dp_offset else rank,
             )
             worker = config["cache_fallback_numa_rank"]
             count = config["cache_fallback_numa_rank_count"]
-            results.append(worker * 8 // count)
-    assert results == [n for n in range(8) for _ in range(2)]
+            assert (worker, count) == (device_id, 2 * workers_per_dp)
+            results.append(worker * workers_per_dp // count)
+    assert results == [n for n in range(workers_per_dp) for _ in range(2)]
+
+
+@pytest.mark.parametrize("affinity", [None, 6])
+@pytest.mark.parametrize("dp,local_rank", [(0, 2), (1, -1), (1, 4), (2, 0)])
+def test_invalid_numa_geometry_uses_cache_domain_rank(affinity, dp, local_rank):
+    geometry = parallel(
+        data_parallel_rank_local=dp,
+        data_parallel_size_local=2,
+        tensor_parallel_size=2,
+        world_size=2,
+        local_world_size=2,
+    )
+    config = {"cache_fallback_numa_rank": 4, "cache_fallback_numa_rank_count": 4}
+
+    cache_config.configure_cache_numa(
+        config, NS(get_numa_node=lambda _: affinity), 2, geometry, local_rank
+    )
+
+    assert config == (
+        {} if affinity is None else {"cache_detected_numa_node": affinity}
+    )
+    cache_config.logger.warning.assert_called_once()
 
 
 @pytest.mark.parametrize("worker", [False, True])

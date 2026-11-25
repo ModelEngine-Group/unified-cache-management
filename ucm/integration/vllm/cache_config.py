@@ -76,8 +76,18 @@ def _fallback_numa_geometry(parallel: Any, local_rank: int) -> tuple[int, int]:
     local_dp_size = int(getattr(parallel, "data_parallel_size_local", 0))
     if local_dp_rank is not None and local_dp_size > 0:
         local_workers = cache_rank_count(parallel)
-        rank = int(local_dp_rank) * local_workers + local_rank
+        dp_offset = int(local_dp_rank) * local_workers
         count = local_dp_size * local_workers
+        # CUDA multiprocessing can pass a rank that already includes the DP offset.
+        if dp_offset <= local_rank < dp_offset + local_workers:
+            rank = local_rank
+        elif 0 <= local_rank < local_workers:
+            rank = dp_offset + local_rank
+        else:
+            raise ValueError(
+                f"Invalid worker local rank for NUMA fallback: local_rank={local_rank}, "
+                f"local_dp_rank={local_dp_rank}, workers_per_dp={local_workers}."
+            )
     else:
         model_size = parallel.pipeline_parallel_size * parallel.tensor_parallel_size
         if model_size <= 0:
@@ -104,11 +114,16 @@ def configure_cache_numa(
         config["cache_detected_numa_node"] = node
     try:
         rank, count = _fallback_numa_geometry(parallel, local_rank)
-    except (AttributeError, ValueError):
-        if node is None:
-            raise
-        # A usable affinity needs no rank hint. The native store can fall back
-        # to the Cache-domain rank for callers without worker geometry.
+    except (AttributeError, TypeError, ValueError) as error:
+        # Without node-wide hints, CacheStore can rank-slice within its own domain.
+        config.pop("cache_fallback_numa_rank", None)
+        config.pop("cache_fallback_numa_rank_count", None)
+        logger.warning(
+            "NUMA worker geometry unavailable for device %s, "
+            "using Cache-domain rank when needed: %s",
+            device_id,
+            error,
+        )
         return
     config["cache_fallback_numa_rank"] = rank
     config["cache_fallback_numa_rank_count"] = count
