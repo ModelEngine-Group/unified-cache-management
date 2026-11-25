@@ -24,6 +24,7 @@ from vllm.v1.kv_cache_interface import (
     MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
 )
+from vllm.v1.request import RequestStatus
 
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import RequestHasher
@@ -1845,6 +1846,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     ) -> tuple[int, bool]:
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+        if request.status == RequestStatus.PREEMPTED:
+            # The scheduler may re-admit this request either through
+            # scheduled_cached_reqs (older vLLM) or scheduled_new_reqs (newer,
+            # where CachedRequestData has no resume field). Remember the
+            # preemption edge until that step arrives.
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
         assert self.group_manager is not None, (
             "get_num_new_matched_tokens must be called on the scheduler-side "
             "connector, where the group manager is initialized."
@@ -2221,8 +2231,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         requests_dispatch_meta: dict[str, HLARequestDispatchMeta] = {}
 
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Newer releases no longer flag the resumed request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(scheduler_output.preempted_req_ids or ())
+
         for request in scheduler_output.scheduled_new_reqs:
             request_id = request.req_id
+            # A resumed request is re-admitted here; its complete block table is
+            # already handled by incoming_block_ids_are_full=True. Retire the
+            # record so the next decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta is None:
                 continue
@@ -2240,7 +2261,23 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # resumed (load + dump), decode (no-op).
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         if not isinstance(scheduled_cached_reqs, list):
+            # 0.34+ carries no resume field: a resumed request is re-admitted
+            # through scheduled_new_reqs and handled above. Honour the field
+            # when the scheduler still provides it, otherwise fall back to the
+            # preemption record kept by this connector.
+            resume_flags = getattr(
+                scheduled_cached_reqs, "resumed_from_preemption", None
+            )
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                if resume_flags is not None:
+                    resumed_from_preemption = resume_flags[i]
+                elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                    resumed_from_preemption = (
+                        request_id in scheduled_cached_reqs.resumed_req_ids
+                    )
+                else:
+                    resumed_from_preemption = request_id in resumed_req_ids
+                resumed_req_ids.discard(request_id)
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta is None:
                     continue
@@ -2249,14 +2286,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 new_block_ids = (
                     empty_per_group if raw_new_block_ids is None else raw_new_block_ids
                 )
-                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                    resumed_from_preemption = (
-                        scheduled_cached_reqs.resumed_from_preemption[i]
-                    )
-                else:
-                    resumed_from_preemption = (
-                        request_id in scheduled_cached_reqs.resumed_req_ids
-                    )
                 requests_dispatch_meta[request_id] = self._generate_hla_dispatch_meta(
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
@@ -2287,6 +2316,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}
