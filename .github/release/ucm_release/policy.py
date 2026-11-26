@@ -508,8 +508,12 @@ def resolve(
             "set release_profiles.draft.publish.pypi to false"
         )
     nightly = version_config.Nightly.from_version(Version(version))
-    if nightly and (release_type != "nightly" or normalized_publish["pypi"]["requested"]):
-        raise ValueError("branch Nightly wheels require the Nightly profile with PyPI disabled")
+    if nightly and (
+        release_type != "nightly" or normalized_publish["pypi"]["requested"]
+    ):
+        raise ValueError(
+            "branch Nightly wheels require the Nightly profile with PyPI disabled"
+        )
     selectors = version_authority["supported_runtimes"]
     for product in merged["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -528,7 +532,9 @@ def resolve(
             "ucm_base_version": version_authority["ucm_base_version"],
             "version_authority_sha256": version_authority["authority_sha256"],
             "runtime_selectors": copy.deepcopy(selectors),
-            "release_tag": nightly.tag if nightly else custom_draft_tag or f"v{version}",
+            "release_tag": (
+                nightly.tag if nightly else custom_draft_tag or f"v{version}"
+            ),
             "matrix_limits": copy.deepcopy(_MATRIX_LIMITS),
             "requirements": copy.deepcopy(bundle["requirements"]),
         }

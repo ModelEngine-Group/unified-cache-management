@@ -1,7 +1,7 @@
 """Branch discovery, immutable wheel identity and retention across the cutover."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
