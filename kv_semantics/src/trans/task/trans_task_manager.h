@@ -59,7 +59,7 @@ struct TransportSubBatchContext {
     ScatterGatherEntry flagBuffer;
     std::vector<Status> entryStatus;
 
-    // ---- Retry routing state (Shard 3) ----
+    // ---- Retry routing state ----
     // Per-attempt deadline: now + min(attemptTimeoutMs, remaining task time).
     std::chrono::steady_clock::time_point attemptDeadline{};
     // Consecutive same-channel busy retries (<= busyRetryCount M).
@@ -82,11 +82,6 @@ struct TransportSubBatchContext {
         return state != TransportSubBatchState::COMPLETED &&
                pendingRetryCategory == RetryCategory::NONE &&
                (sendSge.slot_index != UINT32_MAX || flagBuffer.slot_index != UINT32_MAX);
-    }
-    bool RetryPending() const
-    {
-        return state != TransportSubBatchState::COMPLETED &&
-               pendingRetryCategory != RetryCategory::NONE;
     }
 };
 
