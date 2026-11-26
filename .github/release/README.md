@@ -195,7 +195,9 @@ The workflow accepts:
 | `draft/v0.9.0-1` | Draft | `0.9.0.dev1` | `0.9.0-draft.1` | `0.9.0.dev1` | Draft |
 | `draft/v0.9.0-test` | Draft | `0.9.0.dev0+draft.test` | `0.9.0-draft.test` | `0.9.0.dev0.draft.test` | Draft |
 | `draft/v0.9.0-1-test` | Draft | `0.9.0.dev0+draft.1.test` | `0.9.0-draft.1.test` | `0.9.0.dev0.draft.1.test` | Draft |
-| `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | `X.Y.Z.devYYYYMMDDNNN` | public prerelease after success |
+| `nightly/develop-YYYYMMDD[-N]` | Nightly | `X.Y.Z.devYYYYMMDDNNN+develop` | `X.Y.Z-nightly.YYYYMMDD.N.develop` | wheel version with `+` replaced by `.` | public prerelease |
+| `nightly/0.A.B-release-YYYYMMDD[-N]` | Nightly | `X.Y.Z.devYYYYMMDDNNN+release.0.A.B` | `X.Y.Z-nightly.YYYYMMDD.N.release.0.A.B` | wheel version with `+` replaced by `.` | public prerelease |
+| `nightly/vX.Y.Z-YYYYMMDD-N` | Historical Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | `X.Y.Z.devYYYYMMDDNNN` | public prerelease after success |
 
 An omitted Draft suffix still means `.dev0`; a numeric suffix must be a positive
 integer without leading zeros. A named suffix contains lowercase ASCII letters,
@@ -206,8 +208,7 @@ and leading/trailing hyphens are rejected. Inputs are not silently normalized.
 
 The complete named suffix identifies the build. Wheel versions preserve it in
 the `+draft.` local namespace; Chart `appVersion`, Meta/Toolkit versions and exact
-dependencies retain the complete Wheel version. Only these generated named Draft
-local versions are allowed for new releases. Other local forms are not enabled.
+dependencies retain the complete Wheel version. Branch Nightlies also use their own local labels in the table above. Other local forms are not enabled.
 The namespace avoids the known historical `+g<commit>` format, without claiming
 to exclude every manually created historical artifact coordinate.
 
@@ -252,17 +253,15 @@ not imply creation order. Draft retention keeps the existing Release ordering;
 new named Draft cleanup records must match the complete version, while old
 records retain historical local-version read compatibility.
 
-At 02:00 Asia/Shanghai (`18:00` UTC),
-`release-nightly.yml` reads the `X.Y.Z`
-base from `version.ini` and creates the next dated Nightly Tag from `develop`.
-An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
-Scheduled runs are restricted to the official repository. Maintainers can also
-dispatch the workflow on a Fork's `develop` branch to validate the same Nightly
-path; publication scope is derived from the repository and stays `fork` there.
-Because a `GITHUB_TOKEN` Tag creation does not
-recursively trigger another workflow, the same scheduled Run calls the common
-`release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
-same core through `release-tag.yml`.
+At 02:00 Asia/Shanghai, the official scheduler dispatches one run of
+`release-nightly.yml` on `develop` and one on the highest numeric
+`0.x.x-release` branch, including days without new commits. Each run builds
+its own checkout and reads the base version from its own `version.ini`.
+The Git tag and Release title use the branch and Shanghai date. The first
+publication has no suffix. Subsequent publications use `-2`, `-3`, and so on.
+A same-day incomplete tag at the same SHA can be resumed. Each job's summary
+links to its branch run. Dispatch the scheduler manually on a fork to test both
+branches, or dispatch the worker on one branch to rebuild it.
 
 Nightly publishes backend Wheels to GitHub Release, followed by the cleanup
 manifest. It builds directly from digest-pinned upstream Builders without
@@ -613,8 +612,12 @@ After completion, verify all of the following:
 
 `max_count: -1` disables automatic retention. Nightly counts every unique
 Nightly Tag, including successful Releases, failed or cancelled Drafts, legacy
-manifests and orphaned Releases. It keeps the newest configured number by the
-Tag's date and numeric sequence, using the base version as the tie-breaker.
+manifests and orphaned Releases. It keeps the three newest by date and numeric
+sequence for each of develop and the newest maintenance branch. Historical
+version-based nightlies count towards develop. Older maintenance branches retire
+when a newer branch is confirmed; if discovery fails, retirement is skipped.
+Set the repository variable `UCM_NIGHTLY_RETENTION_PREVIEW=true` to preview
+automatic sweeps during rollout. Manual cleanup defaults to a preview.
 Duplicate Releases and run attempts count once. Existing objects determine the
 quota; a current Tag that was never created does not reserve a slot. Active,
 queued and waiting runs are protected even when their version is over quota,
@@ -685,7 +688,7 @@ Preview the configured quota without deleting:
 ```bash
 python .github/release/ucm_release/cleanup.py retention \
   --repository ModelEngine-Group/unified-cache-management \
-  --release-type nightly --max-count 7 --pypi-enabled false \
+  --release-type nightly --max-count 3 --pypi-enabled false \
   --dry-run --report out/cleanup/report.json
 ```
 

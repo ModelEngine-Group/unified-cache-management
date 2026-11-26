@@ -1,0 +1,54 @@
+name: Schedule branch Nightlies
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 02:00 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  branches:
+    if: ${{ github.ref == 'refs/heads/develop' && (github.event_name == 'workflow_dispatch' || github.repository == 'ModelEngine-Group/unified-cache-management') }}
+    runs-on: ubuntu-24.04
+    outputs:
+      latest: ${{ steps.select.outputs.latest }}
+      date: ${{ steps.select.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/branches?per_page=100" --jq '.[].name' >"${RUNNER_TEMP}/branches"
+          latest="$(python3 .github/release/ucm_release/nightly.py <"${RUNNER_TEMP}/branches")"
+          test -n "${latest}" || { echo "::error::No 0.x.x-release branch found"; exit 1; }
+          echo "latest=${latest}" >>"${GITHUB_OUTPUT}"
+          echo "date=$(TZ=Asia/Shanghai date +%Y%m%d)" >>"${GITHUB_OUTPUT}"
+
+  dispatch:
+    needs: branches
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [develop, "${{ needs.branches.outputs.latest }}"]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start branch publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ matrix.branch }}
+          RELEASE_DATE: ${{ needs.branches.outputs.date }}
+        run: |
+          set -euo pipefail
+          url="$(gh api --method POST -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/release-nightly.yml/dispatches" \
+            -f ref="${BRANCH}" -f "inputs[release_date]=${RELEASE_DATE}" --jq .html_url)"
+          test -n "${url}"
+          echo "- [${BRANCH}](${url})" >>"${GITHUB_STEP_SUMMARY}"

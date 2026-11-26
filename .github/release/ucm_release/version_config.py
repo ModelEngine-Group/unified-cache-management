@@ -7,12 +7,12 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 from packaging.version import InvalidVersion, Version
 
+from .nightly import Nightly
 from .runtime import oci_tag_version
 
 UCM_VERSION_KEY = "UCM_VERSION"
@@ -43,7 +43,7 @@ def _draft_label(value: str, context: str) -> str:
 
 
 def release_version(value: object, context: str = "UCM release version") -> str:
-    """Validate a UCM version, allowing local identity only for named Drafts."""
+    """Validate a UCM version, including the supported Draft and branch Nightly identities."""
     if not isinstance(value, str) or not value:
         raise ValueError(f"{context} must be a non-empty version string")
     try:
@@ -56,7 +56,7 @@ def release_version(value: object, context: str = "UCM release version") -> str:
         raise ValueError(f"{context} must not use an epoch")
     if len(parsed.release) != 3:
         raise ValueError(f"{context} must use an X.Y.Z release tuple")
-    if parsed.local is not None:
+    if parsed.local is not None and Nightly.from_version(parsed) is None:
         if (
             parsed.dev != 0
             or parsed.pre is not None
@@ -73,7 +73,7 @@ def release_version(value: object, context: str = "UCM release version") -> str:
 def custom_draft_tag(version: str) -> str | None:
     """Recover a named Draft Tag; ordinary release versions return None."""
     parsed = Version(release_version(version))
-    if parsed.local is None:
+    if not (parsed.local or "").startswith("draft."):
         return None
     suffix = parsed.local.removeprefix("draft.").replace(".", "-")
     return f"draft/v{parsed.base_version}-{suffix}"
@@ -250,6 +250,9 @@ def read_version(path: Path | None = None) -> str:
 
 def derive_chart_version(version: str) -> str:
     parsed = Version(release_version(version))
+    nightly = Nightly.from_version(parsed)
+    if nightly:
+        return f"{parsed.base_version}-nightly.{nightly.date}.{nightly.sequence}.{nightly.label}"
     if parsed.local is not None:
         return f"{parsed.base_version}-draft.{parsed.local.removeprefix('draft.')}"
     if parsed.dev is not None:
@@ -289,12 +292,6 @@ DRAFT_TAG = re.compile(
     + r")(?:-(?P<suffix>[a-z0-9]+(?:-[a-z0-9]+)*))?",
     re.ASCII,
 )
-NIGHTLY_TAG = re.compile(
-    r"nightly/v(?P<base>"
-    + VERSION_TRIPLE_PATTERN
-    + r")-(?P<date>[0-9]{8})-(?P<number>[1-9][0-9]*)",
-    re.ASCII,
-)
 
 
 def canonical_version(value: str) -> str:
@@ -311,18 +308,8 @@ def canonical_version(value: str) -> str:
     return canonical
 
 
-def _validate_nightly_date(value: str) -> str:
-    try:
-        parsed = datetime.strptime(value, "%Y%m%d")
-    except ValueError as error:
-        raise ValueError(f"invalid Nightly date: {value!r}") from error
-    if parsed.strftime("%Y%m%d") != value:
-        raise ValueError(f"invalid Nightly date: {value!r}")
-    return value
-
-
-def version_from_tag(tag: str) -> str:
-    """Translate an exact supported release Tag to its Wheel version."""
+def version_from_tag(tag: str, *, base_version: str | None = None) -> str:
+    """Translate a Tag using the tagged base version for branch Nightlies."""
     draft = DRAFT_TAG.fullmatch(tag)
     if draft is not None:
         suffix = draft.group("suffix")
@@ -332,22 +319,18 @@ def version_from_tag(tag: str) -> str:
             return release_version(f"{draft.group('base')}.dev{suffix}")
         label = _draft_label(suffix, f"Draft Tag {tag!r}").replace("-", ".")
         return release_version(f"{draft.group('base')}.dev0+draft.{label}")
-    nightly = NIGHTLY_TAG.fullmatch(tag)
-    if nightly is not None:
-        release_date = _validate_nightly_date(nightly.group("date"))
-        number = int(nightly.group("number"))
-        return canonical_version(
-            f"{nightly.group('base')}.dev{release_date}{number:03d}"
-        )
+    nightly = Nightly.parse(tag)
+    if nightly:
+        return nightly.version(base_version)
     formal = FORMAL_TAG.fullmatch(tag)
     if formal is not None:
         return canonical_version(formal.group("version"))
     raise ValueError(f"unsupported UCM release tag: {tag!r}")
 
 
-def classify_tag(tag: str) -> dict[str, object]:
+def classify_tag(tag: str, *, base_version: str | None = None) -> dict[str, object]:
     """Return the immutable artifact coordinates and GitHub Release mode for *tag*."""
-    version = version_from_tag(tag)
+    version = version_from_tag(tag, base_version=base_version)
     draft = DRAFT_TAG.fullmatch(tag)
     if draft is not None:
         return {
@@ -360,19 +343,20 @@ def classify_tag(tag: str) -> dict[str, object]:
             "is_prerelease": True,
         }
 
-    nightly = NIGHTLY_TAG.fullmatch(tag)
-    if nightly is not None:
-        release_date = _validate_nightly_date(nightly.group("date"))
-        number = int(nightly.group("number"))
+    nightly = Nightly.parse(tag)
+    if nightly:
+        chart_version = (
+            f"{nightly.legacy_base}-nightly.{nightly.date}.{nightly.sequence}"
+            if nightly.legacy_base
+            else derive_chart_version(version)
+        )
         return {
             "git_tag": tag,
             "release_type": "nightly",
             "release_kind": "publish",
             "version": version,
-            "chart_version": (
-                f"{nightly.group('base')}-nightly.{release_date}.{number}"
-            ),
-            "image_version": version,
+            "chart_version": chart_version,
+            "image_version": oci_tag_version(version),
             "is_prerelease": True,
         }
 
@@ -394,14 +378,21 @@ def classify_tag(tag: str) -> dict[str, object]:
     }
 
 
-def validate_custom_draft_identity(
+def validate_local_release_identity(
     version: str,
     git_tag: object,
     release_type: object,
     *,
     context: str = "release",
 ) -> dict[str, object] | None:
-    """Bind named Draft identities without tightening ordinary release contracts."""
+    """Bind branch Nightlies and named Drafts to their exact package versions."""
+    parsed = Version(release_version(version))
+    nightly = Nightly.from_version(parsed)
+    tag_nightly = Nightly.parse(git_tag) if isinstance(git_tag, str) else None
+    if nightly or (tag_nightly and not tag_nightly.legacy_base):
+        if nightly is None or nightly != tag_nightly or release_type != "nightly":
+            raise ValueError(f"Nightly version differs from {context} identity")
+        return classify_tag(nightly.tag, base_version=parsed.base_version)
     expected_tag = custom_draft_tag(version)
     coordinates = (
         classify_tag(git_tag)
@@ -424,37 +415,62 @@ def validate_custom_draft_identity(
     return coordinates
 
 
+def tag_type(tag: str) -> str:
+    """Classify a tag without needing package coordinates from a checkout."""
+    return "nightly" if Nightly.parse(tag) else str(classify_tag(tag)["release_type"])
+
+
+def _nightlies_for_day(tags: Iterable[str], target: Nightly) -> list[Nightly]:
+    matches = []
+    for tag in tags:
+        try:
+            item = Nightly.parse(tag)
+        except ValueError:
+            continue
+        if item and (item.branch, item.legacy_base, item.date) == (
+            target.branch,
+            target.legacy_base,
+            target.date,
+        ):
+            matches.append(item)
+    return sorted(matches, key=lambda item: item.sequence, reverse=True)
+
+
 def next_nightly_sequence(
     tags: Iterable[str], *, base_version: str, release_date: str
 ) -> int:
-    """Return the next sequence for one exact Nightly base and date."""
-    if STABLE_TAG.fullmatch(f"v{base_version}") is None:
-        raise ValueError(f"invalid Nightly base version: {base_version!r}")
-    _validate_nightly_date(release_date)
-    sequences = [
-        int(match.group("number"))
-        for tag in tags
-        if (match := NIGHTLY_TAG.fullmatch(tag)) is not None
-        and match.group("base") == base_version
-        and match.group("date") == release_date
-    ]
-    return max(sequences, default=0) + 1
+    """Historical version-based sequence for existing callers."""
+    target = Nightly("develop", release_date, 1, base_version)
+    target.version(base_version)
+    matches = _nightlies_for_day(tags, target)
+    return matches[0].sequence + 1 if matches else 1
 
 
 def next_nightly_classification(
-    tags: Iterable[str], *, base_version: str, release_date: str
+    tags: Iterable[str],
+    *,
+    base_version: str,
+    release_date: str,
+    branch: str | None = None,
 ) -> dict[str, object]:
-    """Classify the next Nightly for the repository-owned base version."""
-    known_tags = tuple(tags)
-    sequence = next_nightly_sequence(
-        known_tags, base_version=base_version, release_date=release_date
+    first = Nightly(
+        branch or "develop", release_date, 1, None if branch else base_version
     )
-    return classify_tag(f"nightly/v{base_version}-{release_date}-{sequence}")
+    matches = _nightlies_for_day(tags, first)
+    item = (
+        Nightly(first.branch, first.date, matches[0].sequence + 1, first.legacy_base)
+        if matches
+        else first
+    )
+    result = classify_tag(item.tag, base_version=base_version)
+    if branch is not None:
+        result["resume_candidates"] = [item.tag for item in matches]
+    return result
 
 
 def validate_tag_against_config(tag: str, config_path: Path) -> dict[str, object]:
-    classification = classify_tag(tag)
     config = load(config_path)
+    classification = classify_tag(tag, base_version=str(config["ucm_base_version"]))
     tag_base = Version(str(classification["version"])).base_version
     if tag_base != config["ucm_base_version"]:
         raise ValueError(

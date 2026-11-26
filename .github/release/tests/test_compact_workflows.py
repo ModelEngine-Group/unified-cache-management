@@ -50,7 +50,7 @@ def test_review_observer_is_removed() -> None:
 
 def test_tag_version_gate_blocks_only_v_tags_and_preserves_other_routes() -> None:
     workflow = _load("release-tag.yml")
-    assert workflow["on"]["push"]["tags"] == ["v*", "draft/v*", "nightly/v*"]
+    assert workflow["on"]["push"]["tags"] == ["v*", "draft/v*", "nightly/*"]
     jobs = workflow["jobs"]
     gate = jobs["version-check"]
     assert gate["if"] == "${{ startsWith(github.ref, 'refs/tags/v') }}"
@@ -164,7 +164,16 @@ def test_chart_filters_families_without_a_second_plan_artifact() -> None:
 
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
-    assert workflow["on"]["schedule"] == [{"cron": "0 18 * * *"}]
+    scheduler = _load("schedule-nightly.yml")
+    assert scheduler["on"]["schedule"] == [{"cron": "0 18 * * *"}]
+    assert "schedule" not in workflow["on"]
+    dispatch = scheduler["jobs"]["dispatch"]
+    assert dispatch["strategy"]["matrix"]["branch"] == [
+        "develop",
+        "${{ needs.branches.outputs.latest }}",
+    ]
+    assert "release-nightly.yml/dispatches" in dispatch["steps"][0]["run"]
+    assert "github.ref == 'refs/heads/develop'" in scheduler["jobs"]["branches"]["if"]
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
         "queue": "max",
@@ -172,12 +181,12 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     }
     jobs = workflow["jobs"]
     prepare = jobs["prepare-nightly"]
-    assert "github.ref == 'refs/heads/develop'" in prepare["if"]
+    assert "github.ref_type == 'branch'" in prepare["if"]
     assert (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
-        in prepare["if"]
+        in scheduler["jobs"]["branches"]["if"]
     )
-    assert prepare["permissions"] == {"contents": "write"}
+    assert prepare["permissions"] == {"contents": "write", "actions": "read"}
     checkout = next(
         step
         for step in prepare["steps"]
@@ -185,7 +194,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     )
     assert checkout["with"]["ref"] == "${{ github.sha }}"
     run = next(step["run"] for step in prepare["steps"] if step.get("id") == "prepare")
-    assert "TZ=Asia/Shanghai date +%Y%m%d" in run
+    assert "TZ=Asia/Shanghai date" in run
     assert "--next-nightly" in run
     assert "--version-config version.ini" in run
     assert "next_patch_version" not in run
@@ -215,7 +224,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     assert release["with"]["source_sha"] == (
         "${{ needs.prepare-nightly.outputs.source_sha }}"
     )
-    assert "github.event_name == 'workflow_dispatch'" in prepare["if"]
+    assert "workflow_dispatch" in workflow["on"]
     assert release["with"]["publication_scope"] == (
         "${{ github.repository == 'ModelEngine-Group/unified-cache-management' "
         "&& 'official' || 'fork' }}"

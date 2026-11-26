@@ -717,6 +717,20 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
         [filename, "release-manifest.json"]
     )
 
+    if release_type == "nightly":
+        tag = "nightly/develop-20261126-2"
+        version = "0.10.0.dev20261126002+develop"
+        state, document = json.loads(
+            json.dumps((final, release_document))
+            .replace(plan["git_tag"], tag)
+            .replace(plan["version"], version)
+        )
+        manifest = public_manifest.build_manifest(state, document)
+        assert manifest["python"]["version"] == version
+        assert cleanup_records.record_from_manifest(manifest, "example/ucm")[
+            "versions"
+        ] == [version]
+
 
 @pytest.fixture
 def published_release(tmp_path):
