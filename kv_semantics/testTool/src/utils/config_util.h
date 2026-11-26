@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -56,8 +57,8 @@ public:
     int GetAutoDisconnect() const { return config_parse::RequireInt(values_, "autodisconnect"); }
     int GetStartCoreId() const { return config_parse::RequireInt(values_, "startcoreid"); }
     int GetNumJobs() const { return config_parse::RequireInt(values_, "numjobs"); }
-    int64_t GetBufferSize() const { return config_parse::RequireInt64(values_, "buffersize"); }
-    int GetBufferCount() const { return config_parse::RequireInt(values_, "buffercount"); }
+    std::size_t GetBufferSize() const { return config_parse::RequireSize(values_, "buffersize"); }
+    std::size_t GetBufferCount() const { return config_parse::RequireSize(values_, "buffercount"); }
     std::string GetBufferType() const { return config_parse::RequireValue(values_, "buffertype"); }
     int GetDeviceId() const { return config_parse::RequireInt(values_, "deviceid"); }
     const LogConfigUtil &GetLogConfig() const { return logConfig_; }

@@ -84,7 +84,7 @@ public:
     /** 绑定值缓冲内存分配器（不拥有；load 回读比对经其 D2H 读回，生命周期由调用方保证） */
     void SetAllocator(DeviceAllocator *allocator);
 
-    /** 设置 perf 压测模式（on 时压制 get/put/exist/delete 明细日志输出） */
+    /** 设置 perf 压测模式（on 时全部操作仅记失败请求明细，成功不记） */
     void SetPerfMode(bool perf);
 
     /**
@@ -127,8 +127,9 @@ private:
     void WriteExistLog(const Request &request, const kv::TaskResult &result);
 
     /** 把 delete 任务响应明细写入其余操作明细日志（每任务一行聚合格式，字段同 exist；
-     *  delete 无前缀命中信息，prefix_hit_len 以 "-" 占位；delete 无 value 载荷） */
-    void WriteDeleteLog(const Request &request);
+     *  delete 无前缀命中信息，prefix_hit_len 以 "-" 占位；delete 无 value 载荷；
+     *  notFound/failed 为调用侧算好的未命中与失败计数，供 perf 模式失败判定） */
+    void WriteDeleteLog(const Request &request, std::uint64_t notFound, std::uint64_t failed);
 
     /** 提交删除并等待：NOT_FOUND 计 notFoundCount、其他失败计 errorCount */
     bool DeleteAndRecord(const Request &request, std::string &err);
@@ -158,7 +159,7 @@ private:
     /** 绑定的值缓冲内存分配器（不拥有；回读比对用） */
     DeviceAllocator *allocator_{nullptr};
 
-    /** perf 压测模式（压制明细日志输出） */
+    /** perf 压测模式（on 时仅记失败请求明细） */
     bool perf_{false};
 
     // ---- 埋点计数器（原子变量：执行与采样线程并发安全） ----

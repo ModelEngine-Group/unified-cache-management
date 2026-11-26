@@ -87,11 +87,10 @@ Scheduler::~Scheduler()
 bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigUtil &config,
                                       std::string &err)
 {
-    const std::int64_t bufferSize = config.GetBufferSize();
-    const int bufferCount = config.GetBufferCount();
+    const std::size_t bufferCount = config.GetBufferCount();
     const int deviceId = config.GetDeviceId();
     // 池参数已由 ConfigUtil::Check 前置校验
-    bufferSize_ = static_cast<std::size_t>(bufferSize);
+    bufferSize_ = config.GetBufferSize();
 
     // kv client 初始化与建链
     client_ = std::make_unique<KvClientUtil>();
@@ -115,12 +114,11 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
     // 值缓冲池一次性分配（bufferCount 块 × bufferSize 字节）：每块整块写 'A' 底色
     // （value 只写前缀不补齐，前缀之后保持底色或残留）并组装 MemoryRegion 注册；
     // 任一失败统一清理
-    const std::size_t count = static_cast<std::size_t>(bufferCount);
     std::vector<kv::MemoryRegion> regions;
-    regions.reserve(count);
+    regions.reserve(bufferCount);
     bool ok = true;
     std::vector<std::uint8_t> initBlock(bufferSize_, 0x41);  // 'A' 底色块，循环外构造一次
-    for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t i = 0; i < bufferCount; ++i) {
         std::uint64_t addr = 0;
         if (!allocator_->Allocate(bufferSize_, addr, err)) {
             err = "value buffer " + std::to_string(i) + " allocate failed: " + err;
@@ -153,7 +151,7 @@ bool Scheduler::initializeAndRegister(const std::string &confPath, const ConfigU
         return false;
     }
     LOG_INFO("Scheduler: {} value buffers registered ({} bytes each, type={})", registered_.size(),
-             bufferSize, allocator_->IsDeviceMemory() ? "device" : "host");
+             bufferSize_, allocator_->IsDeviceMemory() ? "device" : "host");
 
     return true;
 }

@@ -121,10 +121,10 @@ bool ConfigUtil::Check(std::string &err)
         return false;
     }
 
-    // 值缓冲池参数必须为正
-    const int64_t bufferSize = config_parse::RequireInt64(values_, "buffersize");
-    const int bufferCount = config_parse::RequireInt(values_, "buffercount");
-    if (bufferSize <= 0 || bufferCount <= 0) {
+    // 值缓冲池参数必须非零（负值已由 RequireSize 拦截）
+    const std::size_t bufferSize = config_parse::RequireSize(values_, "buffersize");
+    const std::size_t bufferCount = config_parse::RequireSize(values_, "buffercount");
+    if (bufferSize == 0 || bufferCount == 0) {
         err = "invalid value buffer pool config: buffersize=" + std::to_string(bufferSize) +
               " buffercount=" + std::to_string(bufferCount);
         return false;
