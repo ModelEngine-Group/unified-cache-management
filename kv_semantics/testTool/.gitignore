@@ -2,6 +2,7 @@ build/
 build-arm/
 logs/
 log/
+demo/
 .vscode/
 asu-fake-backend-store/
 gcc85-repos/

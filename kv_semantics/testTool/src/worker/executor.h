@@ -56,17 +56,15 @@ struct ExecutorMetrics {
     std::uint64_t notFoundCount = 0;
     /** 回读比对不一致计数（get 读回数据与基准不符） */
     std::uint64_t mismatchCount = 0;
-    /** 写入 + 读取的 value 流量字节数（成功 entry 的口径：失败/未命中 entry 计
-     * 0；查询/删除无载荷不计） */
+    /** 写入 + 读取的 value 流量字节数（成功 entry 口径；查询/删除无载荷不计） */
     std::uint64_t ioBytes = 0;
     /** 完成等待的任务数（TTFT 样本数，每任务一个样本） */
     std::uint64_t taskCount = 0;
     /** 任务提交→完成时延累计（纳秒） */
     std::uint64_t latencyNsTotal = 0;
-    /** 分接口操作数（下标为 OpType 枚举值；全量口径），支持 get/put/delete/exist 各自的 iops 统计
-     */
+    /** 分接口操作数（下标为 OpType 枚举值；全量口径） */
     std::uint64_t opCountByOp[kOpTypeCount] = {0};
-    /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径），exist/delete 恒为 0 */
+    /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径） */
     std::uint64_t ioBytesByOp[kOpTypeCount] = {0};
 };
 
@@ -85,6 +83,9 @@ public:
 
     /** 绑定值缓冲内存分配器（不拥有；load 回读比对经其 D2H 读回，生命周期由调用方保证） */
     void SetAllocator(DeviceAllocator *allocator);
+
+    /** 设置 perf 压测模式（on 时全部操作仅记失败请求明细，成功不记） */
+    void SetPerfMode(bool perf);
 
     /**
      * 执行单个测试任务（op 决定操作，request 为任务数据包）
@@ -109,19 +110,26 @@ private:
      * mismatchCount、其他失败计 errorCount */
     bool LoadAndRecord(const Request &request, std::string &err);
 
-    /** 把 put / get 任务响应明细写入请求明细日志（每 entry 一行：batchCode + entryCode + 原文 key +
-     * key_low/key_high 分开 + offset + len + 读回 value/tail，opcode
-     * 区分；读回失败视为工具链失败；perf=on 压测模式下请求明细日志整体关闭，不输出） */
+    /**
+     * 把 put / get 任务响应明细写入请求明细日志（每 entry 一行，字段名(值) 形式：
+     * (opcode), nsid, return batch code(整批全部 entry 状态码逗号拼接，逐行重复),
+     * key code(本 entry 返回码), inputkey, key+offset(低64位 高16位 offset), offset,
+     * value(读回缓冲实际内容), len(低64位位数+offset位数), tail(尾 8 字节)；
+     * get 无论 entry 状态总是读回缓冲（预填哨兵串即“没读到数据”标记），put 仅成功
+     * entry 读回、失败以 "-" 占位；读回失败视为工具链失败）
+     */
     bool WritePutGetLog(const Request &request, const kv::TaskResult &result, const char *opcode,
                         std::string &err);
 
-    /** 把 exist 任务响应明细写入请求明细日志（每 key 一行：batchCode + 原文 key + key_low/key_high
-     * + exists + prefix_hit_len，无 entryCode）；调用侧已保证 queryResult 有值且尺寸匹配 */
+    /** 把 exist 任务响应明细写入其余操作明细日志（每任务一行聚合格式：(exist)
+     *  all_block_ids[input 原文 key 逗号拼接] key_low_high[逐 key“低64位 高16位”拼接]
+     *  prefix_hit_len(前缀命中 key 数)）；调用侧已保证 queryResult 有值且尺寸匹配 */
     void WriteExistLog(const Request &request, const kv::TaskResult &result);
 
-    /** 把 delete 任务响应明细写入请求明细日志（每 key 一行：batchCode + entryCode + 原文 key +
-     * key_low/key_high；delete 无 value 载荷） */
-    void WriteDeleteLog(const Request &request, const kv::TaskResult &result);
+    /** 把 delete 任务响应明细写入其余操作明细日志（每任务一行聚合格式，字段同 exist；
+     *  delete 无前缀命中信息，prefix_hit_len 以 "-" 占位；delete 无 value 载荷；
+     *  notFound/failed 为调用侧算好的未命中与失败计数，供 perf 模式失败判定） */
+    void WriteDeleteLog(const Request &request, std::uint64_t notFound, std::uint64_t failed);
 
     /** 提交删除并等待：NOT_FOUND 计 notFoundCount、其他失败计 errorCount */
     bool DeleteAndRecord(const Request &request, std::string &err);
@@ -141,8 +149,7 @@ private:
     /** 汇总请求项的 value 流量字节数（各 entry 的 region 大小求和） */
     static std::uint64_t SumBytes(const std::vector<kv::KVBuffer> &entries);
 
-    /** 成功 entry 的流量字节和（entryStatus[i].ok() 口径；entryStatus 缺失时按任务级状态归类全部）
-     */
+    /** 成功 entry 的流量字节和；entryStatus 缺失时按任务级状态归类全部 */
     static std::uint64_t SumOkBytes(const kv::TaskResult &result,
                                     const std::vector<kv::KVBuffer> &entries);
 
@@ -151,6 +158,9 @@ private:
 
     /** 绑定的值缓冲内存分配器（不拥有；回读比对用） */
     DeviceAllocator *allocator_{nullptr};
+
+    /** perf 压测模式（on 时仅记失败请求明细） */
+    bool perf_{false};
 
     // ---- 埋点计数器（原子变量：执行与采样线程并发安全） ----
     std::atomic<std::uint64_t> opCount_{0};

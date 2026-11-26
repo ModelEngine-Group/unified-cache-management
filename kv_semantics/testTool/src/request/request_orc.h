@@ -49,8 +49,7 @@ struct RequestOrc {
     std::uint64_t keyLow64{0};
     /** key 128 位整数右移 64 位后的低 16 位（bit64-79；testmode=1 的 value 生成规则使用） */
     std::uint16_t keyHigh16{0};
-    /** input 原文 key token（请求明细日志显示原始 key 用；与 keyLow64/keyHigh16 数值分量分开透传）
-     */
+    /** input 原文 key token（明细日志显示原始 key 用） */
     std::string rawKey;
     /** 块内偏移（入 KVBuffer.offset） */
     std::uint32_t offset{0};

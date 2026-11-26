@@ -44,8 +44,8 @@ struct Request {
     std::vector<std::uint16_t> keyHighs;
     /** input 原文 key token 列表（与 keys 逐项对应；请求明细日志显示原始 key 用） */
     std::vector<std::string> rawKeys;
-    /** 各 entry 的 value 前缀长度列表（与 keys 逐项对应；请求明细日志 value 读回长度用：
-     *  mode1 为 BuildValueBlock 生成前缀的实际长度，mode2 为 entry.length 完整块长度） */
+    /** 各 entry 的 value 前缀长度（明细日志 value 读回长度：mode1 为前缀实际长度，
+     *  mode2 为完整块长度） */
     std::vector<std::size_t> prefixLens;
     /** 组装好的 kv client 请求项（绑定已注册 buffer 与 offset） */
     std::vector<kv::KVBuffer> entries;
@@ -54,14 +54,13 @@ struct Request {
 };
 
 /**
- * 按 testmode 生成待写入缓冲的 value 前缀（不补齐，尺寸 ≤ entry.length；前缀之后的
- * 缓冲内容保持启动 memset 的 'A' 底色或上次写入的残留）：
- * mode1 系统生成（key128 低 64 位、高 16 位、offset、length、时间戳以空格拼接为种子串，
- * 只写一次不重复填充；用户写的 value 不生效），
- * mode2 用行尾 value 字段作前缀（超 length 截断；value 为空时不写，整块保持底色）。
+ * 按 testmode 生成待写入缓冲的 value 前缀（不补齐，尺寸 ≤ entry.length）：
+ * mode1 系统生成（key128 低 64 位、高 16 位、offset、length、时间戳以空格拼接为
+ * 种子串，只写一次不重复填充），mode2 用行尾 value 字段作前缀（超 length 截断；
+ * value 为空时不写，整块保持底色）。
  * @param entry 单条原始输入（length 与 value 的来源）
  * @param testmode 值生成模式（1 或 2）
- * @param seedTime mode1 种子串的时间戳（batch 级在 for 外生成一次共用，同批全部 entry 一致）
+ * @param seedTime mode1 种子串的时间戳（batch 级共用一次）
  * @return 前缀字节（可能为空）
  */
 std::vector<std::uint8_t> BuildValueBlock(const RequestOrc &entry, int testmode,
