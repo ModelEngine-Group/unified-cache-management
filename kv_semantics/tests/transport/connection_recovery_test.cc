@@ -41,7 +41,9 @@
 #include <functional>
 #include <memory>
 #include <set>
+#include <algorithm>
 #include <thread>
+#include <future>
 #include <vector>
 #include <gtest/gtest.h>
 #include "conn/connection_internal.h"
@@ -63,6 +65,15 @@ public:
     std::function<bool(const std::string&)> failByIp;
     // 建链时回调（用于在 UpdateGroups 窗口内观察快照）。
     std::function<void()> onCreate;
+    // 建链调用顺序日志（FIFO / 公平性断言用），线程安全。
+    std::mutex ipsMu;
+    std::vector<std::string> createdIps;
+
+    std::vector<std::string> GetCreatedIps()
+    {
+        std::lock_guard<std::mutex> lock(ipsMu);
+        return createdIps;
+    }
 
     Status GetServerCapabilities(ConnectionHandle, ServerKvCapabilities& capabilities) override
     {
@@ -75,6 +86,10 @@ public:
                             std::vector<ConnectionHandle>& handles) override
     {
         const auto sequence = createCount.fetch_add(1) + 1;
+        {
+            std::lock_guard<std::mutex> lock(ipsMu);
+            createdIps.push_back(remoteIp);
+        }
         if (onCreate) { onCreate(); }
         if (failByIp && failByIp(remoteIp)) {
             return Status::Error(StatusCode::CONNECTION_ERROR, "scripted create failure");
@@ -418,6 +433,12 @@ TEST(ConnectionHealthTest, StubTransportDefaultsToUnsupported)
     UpdateResult result;
     EXPECT_EQ(stub.GetConnectionHealth(snapshot).code, StatusCode::UNSUPPORTED);
     EXPECT_EQ(stub.UpdateEndpoints({}, {}, result).code, StatusCode::UNSUPPORTED);
+
+    // 新增异步契约的默认实现：ready future + UNSUPPORTED，Stub 免实现。
+    auto asyncFuture = stub.UpdateEndpointsAsync({}, {});
+    ASSERT_EQ(asyncFuture.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    const auto asyncResult = asyncFuture.get();
+    EXPECT_EQ(asyncResult.status.code, StatusCode::UNSUPPORTED);
 }
 
 // ─── F5: 动态 Endpoint（UpdateGroups） ───
@@ -684,6 +705,211 @@ TEST(ConnectionConcurrencyTest, ConcurrentSelectReportAndUpdateIsSafe)
     // 关停后再对账：句柄账目守恒（建链句柄数 == 删除句柄数，恰好一次）。
     (void)mgr.Shutdown();
     EXPECT_EQ(provider.createHandleCount.load(), provider.deleteCount.load());
+}
+
+
+// ─── 异步 UpdateGroups（RecoverLoop 合并消费） ───
+
+TEST(ConnectionUpdateGroupsAsyncTest, AddPatchCompletesOnWorker)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    auto future = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.60.1")}, {});
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    const auto result = future.get();
+    ASSERT_TRUE(result.status.ok()) << result.status.message;
+    ASSERT_EQ(result.addResults.size(), std::size_t{1});
+    EXPECT_EQ(result.addResults.front().action, "created");
+    EXPECT_FALSE(result.updating);
+
+    auto channel = mgr.SelectConnection();
+    ASSERT_NE(channel, nullptr);
+    channel->ReleaseInflight();
+
+    NodeHealthSnapshot snapshot;
+    mgr.GetHealthSnapshot(snapshot);
+    EXPECT_FALSE(snapshot.updating);  // 窗口已闭合
+    EXPECT_EQ(snapshot.health, NodeHealth::GREEN);
+
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, FailFastRejectsReadyFutureWithoutWork)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    auto empty = mgr.UpdateGroupsAsync({}, {});
+    ASSERT_EQ(empty.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_EQ(empty.get().status.code, StatusCode::INVALID_ARGUMENT);
+
+    auto badPort = MakeEndpoint("10.0.61.1");
+    badPort.port = 0;
+    auto invalid = mgr.UpdateGroupsAsync({badPort}, {});
+    ASSERT_EQ(invalid.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    EXPECT_EQ(invalid.get().status.code, StatusCode::INVALID_ARGUMENT);
+
+    // 原子拒绝：没有任何建链/入队副作用。
+    EXPECT_EQ(provider.createCount.load(), 0);
+    NodeHealthSnapshot snapshot;
+    mgr.GetHealthSnapshot(snapshot);
+    EXPECT_FALSE(snapshot.updating);
+
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, StrictFIFOOrderingBetweenPatches)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    auto first = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.62.1")}, {});
+    auto second = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.62.2")}, {});
+    ASSERT_EQ(first.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    ASSERT_EQ(second.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    EXPECT_TRUE(first.get().status.ok());
+    EXPECT_TRUE(second.get().status.ok());
+
+    // 建链调用顺序 = 提交顺序（严格 FIFO，无合并）。
+    const auto ips = provider.GetCreatedIps();
+    auto posFirst = std::find(ips.begin(), ips.end(), "10.0.62.1");
+    auto posSecond = std::find(ips.begin(), ips.end(), "10.0.62.2");
+    ASSERT_NE(posFirst, ips.end());
+    ASSERT_NE(posSecond, ips.end());
+    EXPECT_LT(posFirst - ips.begin(), posSecond - ips.begin());
+
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, SpreadAddsDoNotStarveGroupRecovery)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.63.1"), 1).ok());
+    auto victim = mgr.SelectConnection();
+    ASSERT_NE(victim, nullptr);
+    victim->ReleaseInflight();
+
+    // 该组后续建链持续失败 -> 恢复窗口不断重试。
+    provider.failByIp = [](const std::string& ip) { return ip == "10.0.63.1"; };
+    mgr.StartRecoverLoop();
+    mgr.ReportFailure(victim);  // X=1 -> FAILED -> 恢复窗口开启
+    ASSERT_TRUE(WaitFor([&] { return mgr.HasRecoverState(victim->GetGroup()->GetGroupId()); }));
+
+    // 2 个 add 分摊在两个 tick：每 tick 之间组恢复 sweep 照常推进。
+    auto future = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.63.2"), MakeEndpoint("10.0.63.3")},
+                                        {});
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    const auto result = future.get();
+    ASSERT_TRUE(result.status.ok()) << result.status.message;
+    ASSERT_EQ(result.addResults.size(), std::size_t{2});
+
+    // 公平性：两次 add 的建链之间至少穿插一次恢复尝试。
+    const auto ips = provider.GetCreatedIps();
+    auto posAdd1 = std::find(ips.begin(), ips.end(), "10.0.63.2");
+    auto posAdd2 = std::find(ips.begin(), ips.end(), "10.0.63.3");
+    ASSERT_NE(posAdd1, ips.end());
+    ASSERT_NE(posAdd2, ips.end());
+    const auto recoveryBetween =
+        std::find(posAdd1 + 1, posAdd2, "10.0.63.1");
+    EXPECT_NE(recoveryBetween, posAdd2)
+        << "group recovery must interleave between per-tick adds";
+
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, StopRecoverLoopCancelsPendingPatches)
+{
+    ScriptedTransProvider provider;
+    std::atomic<bool> slowCreate{false};
+    provider.onCreate = [&slowCreate]() {
+        if (slowCreate.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(500)); }
+    };
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    slowCreate.store(true);
+    // patch1：2 个 add，第一个 add 的建链内 worker 会睡 500ms。
+    auto first = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.64.1"), MakeEndpoint("10.0.64.2")},
+                                      {});
+    ASSERT_TRUE(WaitFor([&] { return provider.createCount.load() >= 1; }));
+
+    // worker 正在 tick1 内：patch2 只能排队。
+    auto second = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.64.3")}, {});
+    EXPECT_EQ(second.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+
+    // 停止（stop 先于 join 置位）：worker 完成本 tick 后退出，
+    // active(patch1 剩 1 add) + queued(patch2) 全部终结为 CANCELED。
+    mgr.StopRecoverLoop();
+
+    ASSERT_EQ(first.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    ASSERT_EQ(second.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    EXPECT_EQ(first.get().status.code, StatusCode::CANCELED);
+    EXPECT_EQ(second.get().status.code, StatusCode::CANCELED);
+
+    NodeHealthSnapshot snapshot;
+    mgr.GetHealthSnapshot(snapshot);
+    EXPECT_FALSE(snapshot.updating);
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, UpdatingFlagVisibleAcrossTicks)
+{
+    ScriptedTransProvider provider;
+    provider.onCreate = []() { std::this_thread::sleep_for(std::chrono::milliseconds(200)); };
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    auto future = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.65.1"), MakeEndpoint("10.0.65.2")},
+                                        {});
+    // 入队即置位：worker 处理第一个 add（200ms sleep）期间从外部观测。
+    NodeHealthSnapshot snapshot;
+    mgr.GetHealthSnapshot(snapshot);
+    EXPECT_TRUE(snapshot.updating);
+
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(4)), std::future_status::ready);
+    const auto result = future.get();
+    ASSERT_TRUE(result.status.ok()) << result.status.message;
+    EXPECT_FALSE(result.updating);
+
+    mgr.GetHealthSnapshot(snapshot);
+    EXPECT_FALSE(snapshot.updating);
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, SyncWrapperWorksWhileLoopRunning)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    mgr.StartRecoverLoop();
+
+    // 同步包装 = 入队 + future.get()：循环运行时语义与内联一致。
+    UpdateResult result;
+    const auto status = mgr.UpdateGroups({MakeEndpoint("10.0.66.1")}, {}, result);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(result.addResults.size(), std::size_t{1});
+    EXPECT_EQ(result.addResults.front().action, "created");
+    EXPECT_EQ(mgr.GetServerCapabilities().size(), std::size_t{1});
+
+    mgr.StopRecoverLoop();
+}
+
+TEST(ConnectionUpdateGroupsAsyncTest, InlineFallbackWhenLoopNotRunning)
+{
+    ScriptedTransProvider provider;
+    ConnectionManager mgr(provider, "");
+    // 不启动循环：必须内联执行（返回已就绪 future），行为与旧同步接口一致。
+    auto future = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.67.1")}, {});
+    ASSERT_EQ(future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    const auto result = future.get();
+    ASSERT_TRUE(result.status.ok()) << result.status.message;
+    ASSERT_EQ(result.addResults.size(), std::size_t{1});
+    EXPECT_EQ(result.addResults.front().action, "created");
+    EXPECT_EQ(mgr.GetServerCapabilities().size(), std::size_t{1});
+    EXPECT_FALSE(result.updating);
 }
 
 }  // namespace kv::test

@@ -244,6 +244,20 @@ Status AsuTransportImpl::UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
     return connManager_->UpdateGroups(toAdd, toRemove, result);
 }
 
+std::future<UpdateResult> AsuTransportImpl::UpdateEndpointsAsync(
+    const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove)
+{
+    if (!connManager_) {
+        std::promise<UpdateResult> completion;
+        UpdateResult result;
+        result.status =
+            Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+        completion.set_value(std::move(result));
+        return completion.get_future();
+    }
+    return connManager_->UpdateGroupsAsync(toAdd, toRemove);
+}
+
 Status AsuTransportImpl::Submit(const TransportTaskPtr& task)
 {
     if (!task) { return Status::Error(StatusCode::INVALID_ARGUMENT, "transport task is null"); }

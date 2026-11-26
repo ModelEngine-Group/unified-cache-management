@@ -271,25 +271,51 @@ void ConnectionManager::StartRecoverLoop()
     KV_DEBUG("ConnectionManager::StartRecoverLoop start");
     if (recoverWorker_.joinable()) { return; }
     stopRecover_.store(false, std::memory_order_release);
+    // Enqueue is allowed only while the worker is alive; set the flag before
+    // spawn so no submission is lost in between.
+    recoverRunning_.store(true, std::memory_order_release);
     recoverWorker_ = std::thread(&ConnectionManager::RecoverLoop, this);
 }
 
 void ConnectionManager::StopRecoverLoop()
 {
     KV_DEBUG("ConnectionManager::StopRecoverLoop start");
+    // While stopping, submissions are rejected (never executed inline
+    // concurrently with the still-running worker); after the join they fall
+    // back to inline execution.
     stopRecover_.store(true, std::memory_order_release);
+    patchCv_.notify_all();
     if (recoverWorker_.joinable()) { recoverWorker_.join(); }
+    recoverRunning_.store(false, std::memory_order_release);
 }
 
 void ConnectionManager::RecoverLoop()
 {
     KV_DEBUG("ConnectionManager::RecoverLoop started interval_ms={}", recoverCheckIntervalMs_);
     while (!stopRecover_.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(recoverCheckIntervalMs_));
+        {
+            std::unique_lock<std::mutex> lock(patchMu_);
+            if (!HasPendingUpdateWorkLocked()) {
+                // Sleep becomes an interruptible wait: a pending patch wakes
+                // the worker immediately, otherwise it ticks at
+                // recoverCheckIntervalMs.
+                patchCv_.wait_for(lock,
+                                  std::chrono::milliseconds(recoverCheckIntervalMs_),
+                                  [this] {
+                                      return stopRecover_.load(std::memory_order_acquire) ||
+                                             HasPendingUpdateWorkLocked();
+                                  });
+            }
+        }
         if (stopRecover_.load(std::memory_order_acquire)) { break; }
+        // Dynamic-endpoint patches first (bounded: at most one add per tick),
+        // then the recovery sweep keeps its per-tick cadence.
+        ProcessPendingUpdateTick();
         RunRecoverySweep();
         SweepDrainList();
     }
+    // Un-settled patches (active or queued) are canceled so no future hangs.
+    CancelRemainingPatches();
     KV_DEBUG("ConnectionManager::RecoverLoop stopped");
 }
 
@@ -584,137 +610,273 @@ Status ConnectionManager::UpdateGroups(const std::vector<NodeEndpoint>& toAdd,
                                        const std::vector<NodeEndpoint>& toRemove,
                                        UpdateResult& result)
 {
-    result = UpdateResult{};
+    // Synchronous wrapper: submit-and-wait (worker path) or inline execution
+    // when the recover loop is not running. Never call while holding any
+    // ConnectionManager lock - the wait would deadlock.
+    auto future = UpdateGroupsAsync(toAdd, toRemove);
+    result = future.get();
+    return result.status;
+}
 
-    // Fail-fast atomic rejection: nothing is modified when the patch is empty
-    // or any endpoint is invalid.
+namespace {
+
+// Helper: a ready future carrying just a status.
+std::future<UpdateResult> ReadyUpdateFuture(Status status)
+{
+    std::promise<UpdateResult> completion;
+    UpdateResult result;
+    result.status = status;
+    completion.set_value(std::move(result));
+    return completion.get_future();
+}
+
+}  // namespace
+
+std::future<UpdateResult> ConnectionManager::UpdateGroupsAsync(
+    const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove)
+{
+    // Fail-fast atomic rejection: nothing is modified (and nothing enqueued)
+    // when the patch is empty or any endpoint is invalid.
     if (toAdd.empty() && toRemove.empty()) {
-        result.status = Status::Error(StatusCode::INVALID_ARGUMENT,
-                                      "UpdateEndpoints requires a non-empty patch");
-        return result.status;
+        return ReadyUpdateFuture(
+            Status::Error(StatusCode::INVALID_ARGUMENT,
+                          "UpdateEndpoints requires a non-empty patch"));
     }
     for (const auto& endpoint : toAdd) {
         if (!IsValidUpdateEndpoint(endpoint)) {
-            result.status =
-                Status::Error(StatusCode::INVALID_ARGUMENT, "invalid endpoint in toAdd");
-            return result.status;
+            return ReadyUpdateFuture(
+                Status::Error(StatusCode::INVALID_ARGUMENT, "invalid endpoint in toAdd"));
         }
     }
     for (const auto& endpoint : toRemove) {
         if (!IsValidUpdateEndpoint(endpoint)) {
-            result.status =
-                Status::Error(StatusCode::INVALID_ARGUMENT, "invalid endpoint in toRemove");
-            return result.status;
+            return ReadyUpdateFuture(
+                Status::Error(StatusCode::INVALID_ARGUMENT, "invalid endpoint in toRemove"));
         }
     }
     if (shuttingDown_.load(std::memory_order_acquire)) {
-        result.status = Status::Error(StatusCode::NOT_INITIALIZED, "connection manager is down");
-        return result.status;
+        return ReadyUpdateFuture(
+            Status::Error(StatusCode::NOT_INITIALIZED, "connection manager is down"));
     }
+
+    // Path decision under patchMu_: enqueue only while the worker will live
+    // long enough to consume the patch.
+    bool enqueue = false;
+    auto patch = std::make_shared<PendingPatch>();
+    {
+        std::lock_guard<std::mutex> lock(patchMu_);
+        const bool running = recoverRunning_.load(std::memory_order_acquire);
+        if (running && !stopRecover_.load(std::memory_order_acquire)) {
+            patch->toAdd = toAdd;
+            patch->toRemove = toRemove;
+            patchQueue_.push_back(patch);
+            updating_.store(true, std::memory_order_release);
+            enqueue = true;
+        } else if (running) {
+            // Transient stop window: reject instead of racing the worker.
+            return ReadyUpdateFuture(
+                Status::Error(StatusCode::NOT_INITIALIZED,
+                              "recover worker is stopping; retry after stop completes"));
+        }
+    }
+    if (enqueue) {
+        KV_INFO("ConnectionManager::UpdateGroupsAsync enqueued to_add={} to_remove={} "
+                "queued={}",
+                toAdd.size(), toRemove.size(), patchQueue_.size());
+        patchCv_.notify_one();
+        return patch->completion.get_future();
+    }
+    return ExecutePatchInline(toAdd, toRemove);
+}
+
+std::future<UpdateResult> ConnectionManager::ExecutePatchInline(
+    const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove)
+{
+    auto patch = std::make_shared<PendingPatch>();
+    patch->toAdd = toAdd;
+    patch->toRemove = toRemove;
+    auto future = patch->completion.get_future();
 
     std::lock_guard<std::mutex> updateLock(endpointUpdateMu_);
     updating_.store(true, std::memory_order_release);
-    result.updating = true;
     KV_INFO("ConnectionManager::UpdateGroups window OPEN to_add={} to_remove={}", toAdd.size(),
             toRemove.size());
+    while (!ProcessPatchTick(patch)) {
+        // Inline runs ticks back to back: all removals, then one add per tick,
+        // reproducing the original synchronous remove-then-add semantics.
+    }
+    return future;
+}
 
-    // Phase 1: remove first (先删后加).
-    for (const auto& endpoint : toRemove) {
+bool ConnectionManager::HasPendingUpdateWorkLocked() const
+{
+    return activePatch_ != nullptr || !patchQueue_.empty();
+}
+
+void ConnectionManager::ProcessPendingUpdateTick()
+{
+    std::shared_ptr<PendingPatch> patch;
+    {
+        std::lock_guard<std::mutex> lock(patchMu_);
+        if (activePatch_ == nullptr) {
+            if (patchQueue_.empty()) { return; }
+            activePatch_ = patchQueue_.front();
+            patchQueue_.pop_front();
+        }
+        patch = activePatch_;
+    }
+    // Provider calls stay outside patchMu_.
+    (void)ProcessPatchTick(patch);
+}
+
+bool ConnectionManager::ProcessPatchTick(const std::shared_ptr<PendingPatch>& patch)
+{
+    // Phase 1: removals are lock/teardown work only (no connection setup) -
+    // the whole removal phase settles within one tick.
+    while (patch->nextRemoveIndex < patch->toRemove.size()) {
+        const auto& endpoint = patch->toRemove[patch->nextRemoveIndex++];
         bool removed = false;
         const auto status = RemoveGroup(endpoint, removed);
         EndpointUpdateOutcome outcome;
         outcome.endpoint = endpoint;
         outcome.action = removed ? "removed" : "skipped";
         outcome.status = status;
-        result.removeResults.push_back(outcome);
+        patch->removeResults.push_back(outcome);
         KV_INFO("ConnectionManager::UpdateGroups remove endpoint_ip={} port={} action={}",
                 endpoint.ip, endpoint.port, outcome.action);
     }
 
-    // Phase 2: add on the post-removal group set, matched by ip:port.
-    for (const auto& endpoint : toAdd) {
-        std::shared_ptr<ConnectionGroup> existing;
-        {
-            std::shared_lock<std::shared_mutex> lock(structureMu_);
-            existing = FindGroupByEndpointLocked(endpoint);
-        }
-        const std::string action = existing ? "replaced" : "created";
-        if (existing) {
-            if (EndpointsFullyEqual(existing->GetEndpoint(), endpoint)) {
-                // Fully equal: skip and keep state/backoff/flow-control.
-                EndpointUpdateOutcome outcome;
-                outcome.endpoint = endpoint;
-                outcome.action = "skipped";
-                result.addResults.push_back(outcome);
-                KV_INFO("ConnectionManager::UpdateGroups add endpoint_ip={} port={} "
-                        "action=skipped",
-                        endpoint.ip, endpoint.port);
-                continue;
-            }
-            // Attribute-different replacement: old group walks the remove path
-            // first so the endpoint never lives in two groups at once.
-            bool removed = false;
-            (void)RemoveGroup(endpoint, removed);
-        }
-
-        ServerKvCapabilities capabilities;
-        std::vector<TransProvider::ConnectionHandle> handles;
-        auto status = CreateGroupConnections(endpoint, config_.qpNum, handles, capabilities);
-        if (!status.ok()) {
-            // Best-effort: no rollback of already-successful entries.
-            EndpointUpdateOutcome outcome;
-            outcome.endpoint = endpoint;
-            outcome.action = "failed";
-            outcome.status = status;
-            result.addResults.push_back(outcome);
-            result.failedEndpoints.push_back(endpoint);
-            KV_WARN("ConnectionManager::UpdateGroups add FAILED endpoint_ip={} port={} code={}",
-                    endpoint.ip, endpoint.port, static_cast<int>(status.code));
-            continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
-            std::unique_lock<std::shared_mutex> lock(structureMu_);
-            auto shadow = FindGroupByEndpointLocked(endpoint);
-            if (shadow != nullptr) {
-                status = Status::Error(StatusCode::INTERNAL_ERROR,
-                                       "endpoint appeared concurrently during update");
-            } else {
-                auto gid = nextGroupId_.fetch_add(1, std::memory_order_relaxed);
-                auto group = std::make_shared<ConnectionGroup>(gid, endpoint, capabilities,
-                                                              config_.qpNum);
-                group->BindSelf(group);
-                for (auto handle : handles) { group->AddChannel(handle, &provider_); }
-                groups_.push_back(std::move(group));
-                cacheDirty_.store(true, std::memory_order_release);
-            }
-        }
-        if (!status.ok()) {
-            const auto statuses = provider_.DeleteConnections(handles);
-            (void)statuses;
-            EndpointUpdateOutcome outcome;
-            outcome.endpoint = endpoint;
-            outcome.action = "failed";
-            outcome.status = status;
-            result.addResults.push_back(outcome);
-            result.failedEndpoints.push_back(endpoint);
-            continue;
-        }
-        EndpointUpdateOutcome outcome;
-        outcome.endpoint = endpoint;
-        outcome.action = action;
-        result.addResults.push_back(outcome);
-        KV_INFO("ConnectionManager::UpdateGroups add endpoint_ip={} port={} action={} "
-                "qp_num={}",
-                endpoint.ip, endpoint.port, action, config_.qpNum);
+    // Phase 2: at most ONE add endpoint per tick (bounded head-of-line so the
+    // recovery sweep in the same tick is never starved). Single 1+K round;
+    // failures land in failedEndpoints for caller re-push (retry rounds are a
+    // future iteration).
+    if (patch->nextAddIndex < patch->toAdd.size()) {
+        ApplySingleAdd(patch->toAdd[patch->nextAddIndex++], *patch);
     }
 
-    updating_.store(false, std::memory_order_release);
+    if (patch->nextAddIndex < patch->toAdd.size()) { return false; }
+    FinalizePatch(patch);
+    return true;
+}
+
+void ConnectionManager::ApplySingleAdd(const NodeEndpoint& endpoint, PendingPatch& patch)
+{
+    std::shared_ptr<ConnectionGroup> existing;
+    {
+        std::shared_lock<std::shared_mutex> lock(structureMu_);
+        existing = FindGroupByEndpointLocked(endpoint);
+    }
+    const std::string action = existing ? "replaced" : "created";
+    if (existing) {
+        if (EndpointsFullyEqual(existing->GetEndpoint(), endpoint)) {
+            // Fully equal: skip and keep state/backoff.
+            EndpointUpdateOutcome outcome;
+            outcome.endpoint = endpoint;
+            outcome.action = "skipped";
+            patch.addResults.push_back(outcome);
+            KV_INFO("ConnectionManager::UpdateGroups add endpoint_ip={} port={} action=skipped",
+                    endpoint.ip, endpoint.port);
+            return;
+        }
+        // Attribute-different replacement: the old group walks the remove path
+        // first so the endpoint never lives in two groups at once.
+        bool removed = false;
+        (void)RemoveGroup(endpoint, removed);
+    }
+
+    ServerKvCapabilities capabilities;
+    std::vector<TransProvider::ConnectionHandle> handles;
+    auto status = CreateGroupConnections(endpoint, config_.qpNum, handles, capabilities);
+    if (!status.ok()) {
+        // Best-effort: no rollback of already-successful entries.
+        EndpointUpdateOutcome outcome;
+        outcome.endpoint = endpoint;
+        outcome.action = "failed";
+        outcome.status = status;
+        patch.addResults.push_back(outcome);
+        patch.failedEndpoints.push_back(endpoint);
+        KV_WARN("ConnectionManager::UpdateGroups add FAILED endpoint_ip={} port={} code={}",
+                endpoint.ip, endpoint.port, static_cast<int>(status.code));
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
+        std::unique_lock<std::shared_mutex> lock(structureMu_);
+        auto shadow = FindGroupByEndpointLocked(endpoint);
+        if (shadow != nullptr) {
+            status = Status::Error(StatusCode::INTERNAL_ERROR,
+                                   "endpoint appeared concurrently during update");
+        } else {
+            auto gid = nextGroupId_.fetch_add(1, std::memory_order_relaxed);
+            auto group =
+                std::make_shared<ConnectionGroup>(gid, endpoint, capabilities, config_.qpNum);
+            group->BindSelf(group);
+            for (auto handle : handles) { group->AddChannel(handle, &provider_); }
+            groups_.push_back(std::move(group));
+            cacheDirty_.store(true, std::memory_order_release);
+        }
+    }
+    if (!status.ok()) {
+        const auto statuses = provider_.DeleteConnections(handles);
+        (void)statuses;
+        EndpointUpdateOutcome outcome;
+        outcome.endpoint = endpoint;
+        outcome.action = "failed";
+        outcome.status = status;
+        patch.addResults.push_back(outcome);
+        patch.failedEndpoints.push_back(endpoint);
+        return;
+    }
+    EndpointUpdateOutcome outcome;
+    outcome.endpoint = endpoint;
+    outcome.action = action;
+    patch.addResults.push_back(outcome);
+    KV_INFO("ConnectionManager::UpdateGroups add endpoint_ip={} port={} action={} qp_num={}",
+            endpoint.ip, endpoint.port, action, config_.qpNum);
+}
+
+void ConnectionManager::FinalizePatch(const std::shared_ptr<PendingPatch>& patch)
+{
+    const auto failedCount = patch->failedEndpoints.size();
+    UpdateResult result;
+    result.status = Status::OK();
+    result.removeResults = std::move(patch->removeResults);
+    result.addResults = std::move(patch->addResults);
+    result.failedEndpoints = std::move(patch->failedEndpoints);
     result.updating = false;
-    KV_INFO("ConnectionManager::UpdateGroups window CLOSED failed={}",
-            result.failedEndpoints.size());
-    return Status::OK();
+    KV_INFO("ConnectionManager::UpdateGroups window CLOSED failed={}", failedCount);
+    patch->completion.set_value(std::move(result));
+
+    std::lock_guard<std::mutex> lock(patchMu_);
+    if (activePatch_ == patch) { activePatch_.reset(); }
+    if (patchQueue_.empty()) { updating_.store(false, std::memory_order_release); }
+}
+
+void ConnectionManager::CancelRemainingPatches()
+{
+    std::vector<std::shared_ptr<PendingPatch>> victims;
+    {
+        std::lock_guard<std::mutex> lock(patchMu_);
+        if (activePatch_ != nullptr) {
+            victims.push_back(activePatch_);
+            activePatch_.reset();
+        }
+        while (!patchQueue_.empty()) {
+            victims.push_back(patchQueue_.front());
+            patchQueue_.pop_front();
+        }
+        if (!victims.empty()) { updating_.store(false, std::memory_order_release); }
+    }
+    for (auto& patch : victims) {
+        KV_INFO("ConnectionManager::CancelRemainingPatches canceled patch to_add={} "
+                "to_remove={}",
+                patch->toAdd.size(), patch->toRemove.size());
+        UpdateResult canceled;
+        canceled.status =
+            Status::Error(StatusCode::CANCELED, "endpoint update canceled during shutdown");
+        patch->completion.set_value(std::move(canceled));
+    }
 }
 
 void ConnectionManager::RebuildChannelCache()

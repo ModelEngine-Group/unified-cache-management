@@ -25,8 +25,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -50,6 +53,22 @@ enum class RoutingPolicy : std::uint8_t {
 class ConnectionChannel;
 class ConnectionGroup;
 struct ScatterGatherEntry;
+
+// One queued dynamic-endpoint patch with its completion contract. The
+// recover worker consumes at most one patch per tick and at most one add
+// endpoint per tick (bounded head-of-line), so a patch with A adds settles
+// over successive ticks; the future completes once every endpoint has a
+// terminal outcome. Patches are strictly FIFO - no coalescing.
+struct PendingPatch {
+    std::vector<NodeEndpoint> toAdd;
+    std::vector<NodeEndpoint> toRemove;
+    std::promise<UpdateResult> completion;
+    std::size_t nextRemoveIndex{0};
+    std::size_t nextAddIndex{0};
+    std::vector<EndpointUpdateOutcome> removeResults;
+    std::vector<EndpointUpdateOutcome> addResults;
+    std::vector<NodeEndpoint> failedEndpoints;
+};
 
 // Backoff bookkeeping for one endpoint-level recovery window. Existence of a
 // RecoverState means the group is inside the recovery window.
@@ -86,10 +105,24 @@ public:
     // UpdateGroups is mutating the configuration window.
     void GetHealthSnapshot(NodeHealthSnapshot& snapshot);
 
-    // Incremental dynamic endpoint update. Removes first, then adds; no new
-    // threads are created (connection work reuses the recover worker).
+    // Incremental dynamic endpoint update, synchronous wrapper: submits the
+    // patch and waits for the worker (or runs inline when the recover loop is
+    // not running). Existing callers and tests keep synchronous semantics.
     Status UpdateGroups(const std::vector<NodeEndpoint>& toAdd,
                         const std::vector<NodeEndpoint>& toRemove, UpdateResult& result);
+
+    // Asynchronous external contract: fail-fast validation rejects empty or
+    // invalid patches synchronously with a ready INVALID_ARGUMENT future.
+    // When the recover loop runs, the patch is enqueued (strict FIFO) and the
+    // future completes after the worker has settled every endpoint (at most
+    // one add per tick, single 1+K round per endpoint; failures land in
+    // failedEndpoints for caller re-push). When the loop is not running the
+    // patch executes inline and the returned future is already complete.
+    // Shutdown/stopping completes pending futures with CANCELED.
+    // Note: never call the synchronous wrapper while holding any
+    // ConnectionManager lock (submit-and-wait would deadlock).
+    std::future<UpdateResult> UpdateGroupsAsync(const std::vector<NodeEndpoint>& toAdd,
+                                                const std::vector<NodeEndpoint>& toRemove);
 
     // True while the group is inside an endpoint-level recovery window.
     bool HasRecoverState(std::uint32_t groupId) const;
@@ -117,9 +150,18 @@ private:
     std::shared_mutex drainMu_;
     std::vector<std::shared_ptr<ConnectionChannel>> drainList_;
 
-    // Serialized UpdateGroups entry; distinguishes the config window.
+    // Serialized inline fallback path (recover loop not running); guards the
+    // config window for the inline execution.
     std::mutex endpointUpdateMu_;
     std::atomic<bool> updating_{false};
+
+    // Pending update patches consumed by the recover worker (strict FIFO,
+    // at most one patch active at a time; patchMu_ is a leaf lock).
+    std::mutex patchMu_;
+    std::condition_variable patchCv_;
+    std::deque<std::shared_ptr<PendingPatch>> patchQueue_;
+    std::shared_ptr<PendingPatch> activePatch_;
+    std::atomic<bool> recoverRunning_{false};
 
     // gid -> recovery window state; guarded by recoverMu_.
     mutable std::mutex recoverMu_;
@@ -139,6 +181,27 @@ private:
 
     void RecoverLoop();
     void RunRecoverySweep();
+    // Dynamic-endpoint patch processing on the worker: pops/continues the
+    // active patch, applies all removals in one tick and at most one add
+    // endpoint per tick (single 1+K round; failures go to failedEndpoints
+    // immediately - retry rounds are a future iteration).
+    void ProcessPendingUpdateTick();
+    // One processing tick for a single patch; returns true when the patch is
+    // settled and its future has been completed.
+    bool ProcessPatchTick(const std::shared_ptr<PendingPatch>& patch);
+    // Applies one add endpoint (skip/replace/create with membership-checked
+    // publish) and records the outcome into the patch.
+    void ApplySingleAdd(const NodeEndpoint& endpoint, PendingPatch& patch);
+    // Completes the patch future with the accumulated UpdateResult and clears
+    // the updating window when no work remains.
+    void FinalizePatch(const std::shared_ptr<PendingPatch>& patch);
+    // Inline synchronous execution when the recover loop is not running.
+    std::future<UpdateResult> ExecutePatchInline(const std::vector<NodeEndpoint>& toAdd,
+                                                 const std::vector<NodeEndpoint>& toRemove);
+    // StopRecoverLoop tail: completes every un-settled patch future with a
+    // CANCELED result so callers never hang on get().
+    void CancelRemainingPatches();
+    bool HasPendingUpdateWorkLocked() const;
     // One recovery round for a group inside the window: bounded drain, whole
     // group teardown, 1+K rebuild, membership-checked publish. Returns true
     // when the round succeeded and published fresh channels.
