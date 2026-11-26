@@ -127,6 +127,7 @@ class FakeRemote:
         self.runs = {}
         self.tag_sha = SOURCE_SHA
         self.tag_object = None
+        self.tag_only_refs = set()
         self.payloads = {}
         self.archives = {}
         self.artifacts = {}
@@ -149,12 +150,11 @@ class FakeRemote:
         if path.endswith("/git/matching-refs/tags/"):
             return [
                 {
-                    "ref": "refs/tags/" + r["tag_name"],
+                    "ref": "refs/tags/" + tag,
                     "object": {"type": "commit", "sha": self.tag_sha},
                 }
-                for r in self.releases
-                if not r["tag_name"].startswith("untagged-")
-                and self.tag_sha is not None
+                for tag in self.tag_only_refs | {r["tag_name"] for r in self.releases}
+                if not tag.startswith("untagged-") and self.tag_sha is not None
             ]
         if "/git/ref/tags/" in path:
             if self.tag_sha is None:
@@ -199,6 +199,16 @@ class FakeRemote:
                 return self.archives[int(match[1])]
             pytest.fail(f"unexpected GitHub binary request: {path}")
         assert method == "POST", "inventory must never delete resources"
+        if path == f"/repos/{REPOSITORY}/releases":
+            payload = json.loads(data)
+            assert (
+                payload["draft"] is True and payload["target_commitish"] == self.tag_sha
+            )
+            rid = max((r["id"] for r in self.releases), default=0) + 1
+            release = dict(_release(release_id=rid), **payload)
+            self.releases.append(release)
+            self.present.add(f"{payload['tag_name']}#{rid}")
+            return json.dumps(release).encode()
         self.events.append(("record-persisted", path))
         if self.upload_error is not None:
             raise self.upload_error
@@ -596,7 +606,8 @@ def test_legacy_early_failure_is_persisted_without_losing_recorded_partial_targe
     assert [resource.reference for resource in target.registry] == [reference]
     assert len(resolution.pending_recovery) == 1
     assert not any(event[0] == "POST" for event in remote.events)
-    inventory.persist_recovery(resolution)
+    record = inventory_module.collect_catalog(remote, release_type="draft").records[0]
+    assert inventory.prepare_cleanup(record, resolution) == target
     recovered = remote.payloads[max(remote.uploaded_ids)]
     assert recovered["run_id"] == 100 and recovered["resources"] == []
     assert _resolve(inventory).target == target
@@ -663,7 +674,8 @@ def test_recovered_legacy_plan_is_persisted_before_actions_run_deletion(
     assert len(resolution.pending_recovery) == 1
     assert resolution.pending_recovery[0].source_sha == historical_sha
     assert not any(event[0] == "POST" for event in remote.events)
-    inventory.persist_recovery(resolution)
+    record = inventory_module.collect_catalog(remote, release_type="draft").records[0]
+    assert inventory.prepare_cleanup(record, resolution) == target
     assert remote.payloads[max(remote.uploaded_ids)]["source_sha"] == historical_sha
     assert _resolve(inventory).target == target
     _make_present(remote, target)
@@ -675,6 +687,70 @@ def test_recovered_legacy_plan_is_persisted_before_actions_run_deletion(
         < event_names.index("delete")
     )
     assert remote.events[-1] == ("delete", "github-release")
+
+
+def test_tag_only_draft_preview_and_retry_after_snapshot_upload_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    remote = _legacy_remote()
+    remote.tag_only_refs = {TAG}
+    # This newer Draft would be evicted on retry if the recovery Release's new
+    # ID were mistaken for the old Tag's publication order.
+    newer_tag = "draft/v0.8.0-2"
+    remote.releases = [_release(release_id=10, tag=newer_tag)]
+    args = SimpleNamespace(
+        release_type="draft",
+        current_tag="draft/v0.8.0-3",
+        max_count=2,
+        pypi_enabled=False,
+        fail_resource=None,
+        dry_run=True,
+        report=tmp_path / "report.json",
+    )
+    inventory = _inventory(remote)
+    preview = _resolve(inventory).target
+    _make_present(remote, preview)
+    remote.present.add(newer_tag)
+    assert cleanup._run_retention(args, remote) == []
+    results = json.loads(args.report.read_text())["results"]
+    assert [
+        (r["tag"], r["registry_references"])
+        for r in results
+        if r["status"] == "would-delete"
+    ] == [(TAG, 2)]
+    assert not any(op in {"POST", "delete"} for op, _ in remote.events)
+
+    args.dry_run = False
+    remote.upload_error = execution.RemoteError("upload failed", status=403)
+    assert cleanup._run_retention(args, remote)
+    assert not any(op == "delete" for op, _ in remote.events)
+
+    remote.upload_error = None
+    assert cleanup._run_retention(args, remote) == []
+    assert remote.events.count(("POST", f"/repos/{REPOSITORY}/releases")) == 1
+    events = [op for op, _ in remote.events]
+    assert events.index("record-readback") < events.index("delete")
+    assert remote.events[-1] == ("delete", "github-release")
+    assert remote.present == {newer_tag}
+
+
+@pytest.mark.parametrize("invalid", ["moved", "expired", "ambiguous", "active"])
+def test_unsafe_legacy_draft_recovery_makes_no_writes(invalid):
+    remote = _legacy_remote()
+    remote.tag_only_refs = {TAG}
+    remote.releases = []
+    if invalid == "moved":
+        remote.tag_sha = "b" * 40
+    elif invalid == "expired":
+        remote.artifacts[100][0]["expired"] = True
+    elif invalid == "ambiguous":
+        remote.releases = [_release(), _release(release_id=11)]
+    else:
+        remote.runs[100]["status"] = "in_progress"
+    issues = cleanup._run_tag(SimpleNamespace(tag=TAG, fail_resource=None), remote)
+    assert bool(issues) == (invalid != "active")
+    assert not any(op in {"POST", "delete"} for op, _ in remote.events)
 
 
 def test_unrecorded_active_publication_prevents_all_retention_deletes():
@@ -1158,8 +1234,35 @@ def test_unowned_untagged_draft_with_the_same_name_is_not_a_cleanup_target(kind)
     assert not any(event[0] in {"POST", "delete"} for event in remote.events)
 
 
-def test_pending_plan_does_not_cover_another_attempt_recovered_only_from_artifacts():
+def test_draft_tag_without_any_cleanup_evidence_is_rejected():
+    remote = FakeRemote()
+    record = {
+        "kind": resources_module.CLEANUP_KIND,
+        "schema_version": resources_module.CLEANUP_SCHEMA_VERSION,
+        "repository": REPOSITORY,
+        "tag": TAG,
+        "source_sha": None,
+        "release_ids": [],
+        "runs": [],
+        "resources": [],
+    }
+    with pytest.raises(
+        execution.CleanupError, match="no Draft cleanup evidence remains"
+    ):
+        inventory_module.ReleaseInventory(remote).resolve_record(record)
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_pending_plan_does_not_cover_another_attempt_recovered_only_from_artifacts(
+    restored,
+):
     remote = _legacy_remote()
+    if restored:
+        remote.releases[0].update(
+            draft=True,
+            body=inventory_module._RECOVERY_DRAFT_BODY,
+            target_commitish=SOURCE_SHA,
+        )
     remote.runs[101] = _run_payload(101)
     snapshot = resources_module.new_record(REPOSITORY, TAG, SOURCE_SHA, 101, 1)
     snapshot["resources"] = [
@@ -1174,7 +1277,17 @@ def test_pending_plan_does_not_cover_another_attempt_recovered_only_from_artifac
     resolution = inventory_module.ReleaseInventory(remote).resolve_record(record)
     assert [item.run["id"] for item in resolution.pending_recovery] == [100]
     assert all(action.holds_recovery_data for action in resolution.target.actions)
-    assert not resolution.target.releases[0].holds_recovery_data
+    assert resolution.target.releases[0].holds_recovery_data is restored
+    if restored:
+        target = resolution.target
+        _make_present(remote, target)
+        report = execution.execute_cleanup(
+            target,
+            remote,
+            fail_resource=target.actions[0].reference,
+            sleeper=lambda _: None,
+        )
+        assert report.failures and target.releases[0].reference in remote.present
 
 
 def test_scheduled_artifact_preserves_the_frozen_tag_commit():
