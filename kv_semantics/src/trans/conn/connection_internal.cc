@@ -31,9 +31,8 @@ namespace kv {
 
 ConnectionChannel::ConnectionChannel(std::uint32_t id, ConnectionGroup* grp,
                                      TransProvider::ConnectionHandle handle,
-                                     TransProvider* provider,
-                                     const std::shared_ptr<ConnectionGroup>& lease)
-    : channelId(id), group(grp), handle_(handle), provider_(provider), groupLease(lease)
+                                     TransProvider* provider)
+    : channelId(id), group(grp), handle_(handle), provider_(provider)
 {
     groupId = grp != nullptr ? grp->GetGroupId() : 0;
     state.store(ChannelState::ACTIVE, std::memory_order_release);
@@ -127,8 +126,7 @@ std::shared_ptr<ConnectionChannel> ConnectionGroup::AddChannel(ConnectionHandle 
                                                                TransProvider* provider)
 {
     auto id = nextChannelId_.fetch_add(1, std::memory_order_relaxed);
-    auto lease = self_.lock();
-    auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider, lease);
+    auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider);
     channels.push_back(channel);
     KV_DEBUG("ConnectionGroup::AddChannel groupId={} ch_id={} totalChannels={}", groupId,
              channel->GetChannelId(), channels.size());

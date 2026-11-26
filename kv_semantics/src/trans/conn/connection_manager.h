@@ -124,9 +124,6 @@ public:
     std::future<UpdateResult> UpdateGroupsAsync(const std::vector<NodeEndpoint>& toAdd,
                                                 const std::vector<NodeEndpoint>& toRemove);
 
-    // True while the group is inside an endpoint-level recovery window.
-    bool HasRecoverState(std::uint32_t groupId) const;
-
     std::int64_t TotalInflightCount();
     std::vector<ServerKvCapabilities> GetServerCapabilities();
 
@@ -177,7 +174,9 @@ private:
     std::uint32_t recoverInitialBackoffMs_{100};
     std::uint32_t recoverMaxBackoffMs_{5000};
     std::uint64_t taskTimeoutMs_{100};
-    TransportConfig config_;
+    // QP count per group for dynamic endpoint adds (the only knob still
+    // needed from the config after the ctor extracts the rest).
+    std::uint32_t qpNum_{1};
 
     void RecoverLoop();
     void RunRecoverySweep();

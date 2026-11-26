@@ -61,7 +61,7 @@ ConnectionManager::ConnectionManager(TransProvider& provider, const std::string&
       recoverInitialBackoffMs_(config.recovery.recoverInitialBackoffMs),
       recoverMaxBackoffMs_(config.recovery.recoverMaxBackoffMs),
       taskTimeoutMs_(config.timeoutMs),
-      config_(config)
+      qpNum_(config.qpNum)
 {
 }
 
@@ -150,7 +150,6 @@ Status ConnectionManager::AddGroup(const NodeEndpoint& endpoint, std::uint32_t q
         std::unique_lock<std::shared_mutex> lock(structureMu_);
         auto gid = nextGroupId_.fetch_add(1, std::memory_order_relaxed);
         auto group = std::make_shared<ConnectionGroup>(gid, endpoint, capabilities, qp_num);
-        group->BindSelf(group);
         for (auto handle : handles) { group->AddChannel(handle, &provider_); }
         groups_.push_back(std::move(group));
 
@@ -479,8 +478,6 @@ void ConnectionManager::SweepDrainList()
         pending.swap(drainList_);
     }
     for (const auto& channel : pending) {
-        const auto group = channel->LockGroup();
-        if (!group) { continue; }  // group gone: drop the work item
         if (channel->GetState() == ChannelState::DRAINING && channel->GetInflightCount() == 0) {
             channel->MarkFailed();
         }
@@ -495,12 +492,6 @@ void ConnectionManager::EraseRecoverState(std::uint32_t groupId)
 {
     std::lock_guard<std::mutex> lock(recoverMu_);
     recoverStates_.erase(groupId);
-}
-
-bool ConnectionManager::HasRecoverState(std::uint32_t groupId) const
-{
-    std::lock_guard<std::mutex> lock(recoverMu_);
-    return recoverStates_.count(groupId) != 0;
 }
 
 void ConnectionManager::GetHealthSnapshot(NodeHealthSnapshot& snapshot)
@@ -574,8 +565,7 @@ Status ConnectionManager::RemoveGroup(const NodeEndpoint& endpoint, bool& remove
         drainList_.erase(
             std::remove_if(drainList_.begin(), drainList_.end(),
                            [&victim](const std::shared_ptr<ConnectionChannel>& channel) {
-                               const auto group = channel->LockGroup();
-                               return !group || group.get() == victim.get();
+                               return channel->GetGroup() == victim.get();
                            }),
             drainList_.end());
     }
@@ -786,7 +776,7 @@ void ConnectionManager::ApplySingleAdd(const NodeEndpoint& endpoint, PendingPatc
 
     ServerKvCapabilities capabilities;
     std::vector<TransProvider::ConnectionHandle> handles;
-    auto status = CreateGroupConnections(endpoint, config_.qpNum, handles, capabilities);
+    auto status = CreateGroupConnections(endpoint, qpNum_, handles, capabilities);
     if (!status.ok()) {
         // Best-effort: no rollback of already-successful entries.
         EndpointUpdateOutcome outcome;
@@ -810,8 +800,7 @@ void ConnectionManager::ApplySingleAdd(const NodeEndpoint& endpoint, PendingPatc
         } else {
             auto gid = nextGroupId_.fetch_add(1, std::memory_order_relaxed);
             auto group =
-                std::make_shared<ConnectionGroup>(gid, endpoint, capabilities, config_.qpNum);
-            group->BindSelf(group);
+                std::make_shared<ConnectionGroup>(gid, endpoint, capabilities, qpNum_);
             for (auto handle : handles) { group->AddChannel(handle, &provider_); }
             groups_.push_back(std::move(group));
             cacheDirty_.store(true, std::memory_order_release);
@@ -833,7 +822,7 @@ void ConnectionManager::ApplySingleAdd(const NodeEndpoint& endpoint, PendingPatc
     outcome.action = action;
     patch.addResults.push_back(outcome);
     KV_INFO("ConnectionManager::UpdateGroups add endpoint_ip={} port={} action={} qp_num={}",
-            endpoint.ip, endpoint.port, action, config_.qpNum);
+            endpoint.ip, endpoint.port, action, qpNum_);
 }
 
 void ConnectionManager::FinalizePatch(const std::shared_ptr<PendingPatch>& patch)

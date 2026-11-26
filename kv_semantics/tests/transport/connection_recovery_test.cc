@@ -67,6 +67,8 @@ public:
     std::function<bool(const std::string&)> failByIp;
     // 建链时回调（用于在 UpdateGroups 窗口内观察快照）。
     std::function<void()> onCreate;
+    // 按 remoteIp 的建链钩子（穿插/时序构造用），与 onCreate 叠加。
+    std::function<void(const std::string&)> onCreateIp;
     // 建链调用顺序日志（FIFO / 公平性断言用），线程安全。
     std::mutex ipsMu;
     std::vector<std::string> createdIps;
@@ -93,6 +95,7 @@ public:
             createdIps.push_back(remoteIp);
         }
         if (onCreate) { onCreate(); }
+        if (onCreateIp) { onCreateIp(remoteIp); }
         if (failByIp && failByIp(remoteIp)) {
             return Status::Error(StatusCode::CONNECTION_ERROR, "scripted create failure");
         }
@@ -246,9 +249,10 @@ TEST(ConnectionRecoveryTest, RecoveryWindowOpensAndRebuildsWholeGroup)
     EXPECT_EQ(ch0->GetState(), ChannelState::FAILED);
     EXPECT_EQ(ch1->GetState(), ChannelState::FAILED);
 
-    // 窗口期：无候选 fail-fast，恢复窗口状态存在。
+    // 窗口期：无候选 fail-fast，且恢复轮次已开始（失败尝试即窗口证据）。
+    const auto createCountAtFail = provider.createCount.load();
     EXPECT_TRUE(WaitFor([&] {
-        return mgr.SelectConnection() == nullptr && mgr.HasRecoverState(gid);
+        return mgr.SelectConnection() == nullptr && provider.createCount.load() > createCountAtFail;
     }));
 
     // 恢复完成：一次性替换全部新 Channel 对象。
@@ -278,9 +282,7 @@ TEST(ConnectionRecoveryTest, RecoveryWindowOpensAndRebuildsWholeGroup)
     EXPECT_EQ(provider.deleteCount.load(), 2);
     // 初始建链 1 次 + 失败轮 2 次 + 成功轮 1 次。
     EXPECT_EQ(provider.createCount.load(), 4);
-    // 窗口关闭。
-    EXPECT_FALSE(mgr.HasRecoverState(gid));
-
+    // 窗口关闭：新 Channel 可服务，快照回绿。
     mgr.GetHealthSnapshot(snapshot);
     EXPECT_EQ(snapshot.health, NodeHealth::GREEN);
 }
@@ -362,13 +364,20 @@ TEST(ConnectionRecoveryTest, SingleGroupFailureKeepsNodeYellowWithOtherActiveGro
     mgr.StartRecoverLoop();
     mgr.ReportFailure(failing);
 
-    EXPECT_TRUE(WaitFor([&] { return mgr.HasRecoverState(failing->GetGroupId()); }));
+    // 窗口开启证据：失败组的恢复轮次开始消耗建链尝试。
+    const auto createCountAtFail = provider.createCount.load();
+    EXPECT_TRUE(WaitFor([&] { return provider.createCount.load() > createCountAtFail; }));
     NodeHealthSnapshot snapshot;
     mgr.GetHealthSnapshot(snapshot);
     EXPECT_EQ(snapshot.health, NodeHealth::YELLOW);
 
     provider.createFailuresRemaining.store(0);
-    EXPECT_TRUE(WaitFor([&] { return !mgr.HasRecoverState(failing->GetGroupId()); }));
+    // 窗口关闭证据：失败组重建成功，节点回绿（直接观察终态，不经计数代理）。
+    NodeHealthSnapshot recovered;
+    EXPECT_TRUE(WaitFor([&] {
+        mgr.GetHealthSnapshot(recovered);
+        return recovered.health == NodeHealth::GREEN;
+    }));
     mgr.StopRecoverLoop();
     mgr.GetHealthSnapshot(snapshot);
     EXPECT_EQ(snapshot.health, NodeHealth::GREEN);
@@ -790,7 +799,12 @@ TEST(ConnectionUpdateGroupsAsyncTest, StrictFIFOOrderingBetweenPatches)
 TEST(ConnectionUpdateGroupsAsyncTest, SpreadAddsDoNotStarveGroupRecovery)
 {
     ScriptedTransProvider provider;
-    ConnectionManager mgr(provider, "");
+    // add 端点的建链各耗时 200ms（恢复 IP 不减速）：单 tick 占用被刻意拉长，
+    // 使其后 sweep 内的恢复轮次必然到期（200ms 远大于退避上限）。
+    provider.onCreateIp = [](const std::string& ip) {
+        if (ip != "10.0.63.1") { std::this_thread::sleep_for(std::chrono::milliseconds(200)); }
+    };
+    ConnectionManager mgr(provider, "", FastRecoveryConfig());  // 退避上限 20ms
     ASSERT_TRUE(mgr.AddGroup(MakeEndpoint("10.0.63.1"), 1).ok());
     auto victim = mgr.SelectConnection();
     ASSERT_NE(victim, nullptr);
@@ -800,7 +814,8 @@ TEST(ConnectionUpdateGroupsAsyncTest, SpreadAddsDoNotStarveGroupRecovery)
     provider.failByIp = [](const std::string& ip) { return ip == "10.0.63.1"; };
     mgr.StartRecoverLoop();
     mgr.ReportFailure(victim);  // X=1 -> FAILED -> 恢复窗口开启
-    ASSERT_TRUE(WaitFor([&] { return mgr.HasRecoverState(victim->GetGroup()->GetGroupId()); }));
+    // 窗口开启证据：失败组的恢复轮次开始（首个建链尝试出现）。
+    ASSERT_TRUE(WaitFor([&] { return provider.createCount.load() > 1; }));
 
     // 2 个 add 分摊在两个 tick：每 tick 之间组恢复 sweep 照常推进。
     auto future = mgr.UpdateGroupsAsync({MakeEndpoint("10.0.63.2"), MakeEndpoint("10.0.63.3")},
@@ -810,7 +825,8 @@ TEST(ConnectionUpdateGroupsAsyncTest, SpreadAddsDoNotStarveGroupRecovery)
     ASSERT_TRUE(result.status.ok()) << result.status.message;
     ASSERT_EQ(result.addResults.size(), std::size_t{2});
 
-    // 公平性：两次 add 的建链之间至少穿插一次恢复尝试。
+    // 公平性（确定性）：tick(add1) 结束后的 sweep 中恢复轮次已到期
+    //（add1 建链 200ms 远超退避上限 20ms），恢复尝试必然穿插于两次 add 之间。
     const auto ips = provider.GetCreatedIps();
     auto posAdd1 = std::find(ips.begin(), ips.end(), "10.0.63.2");
     auto posAdd2 = std::find(ips.begin(), ips.end(), "10.0.63.3");

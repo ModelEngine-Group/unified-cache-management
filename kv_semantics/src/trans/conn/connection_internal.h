@@ -44,12 +44,8 @@ enum class ChannelState : std::uint8_t {
 
 class ConnectionChannel {
 public:
-    // lease is optional: runtime channels carry a weak group lease so that any
-    // cross-lock holder can keep the group alive; stack-allocated test groups
-    // leave it empty.
     ConnectionChannel(std::uint32_t id, ConnectionGroup* grp,
-                      TransProvider::ConnectionHandle handle, TransProvider* provider,
-                      const std::shared_ptr<ConnectionGroup>& lease = {});
+                      TransProvider::ConnectionHandle handle, TransProvider* provider);
     ~ConnectionChannel();
 
     std::uint32_t GetChannelId() const { return channelId; }
@@ -57,8 +53,6 @@ public:
     ChannelState GetState() const { return state.load(std::memory_order_acquire); }
     std::uint32_t GetInflightCount() const { return inflightCount.load(std::memory_order_acquire); }
     ConnectionGroup* GetGroup() const { return group; }
-    // Shared_ptr lease for cross-lock group access; empty for test channels.
-    std::shared_ptr<ConnectionGroup> LockGroup() const { return groupLease.lock(); }
     TransProvider::ConnectionHandle GetConnection() const { return handle_; }
 
     std::uint32_t FetchAddErrorCount(std::uint32_t val);
@@ -92,7 +86,6 @@ private:
     ConnectionGroup* group{nullptr};
     TransProvider::ConnectionHandle handle_{nullptr};
     TransProvider* provider_{nullptr};
-    std::weak_ptr<ConnectionGroup> groupLease;
 
     // Cold path
     std::atomic<std::uint32_t> errorCount{0};
@@ -119,12 +112,6 @@ public:
     // Group inflight = sum of channel inflight counts.
     std::uint32_t GetInflightCount() const;
 
-    // Called by the owning manager right after make_shared so channels can
-    // carry a weak group lease; stack-allocated test groups leave it empty.
-    void BindSelf(const std::shared_ptr<ConnectionGroup>& self) { self_ = self; }
-
-    // Group-level dynamic flow admission is wired by the manager (Shard 5).
-
 private:
     std::uint32_t groupId{0};
     NodeEndpoint endpoint;
@@ -132,7 +119,6 @@ private:
     std::uint32_t qpNum_{1};
     std::vector<std::shared_ptr<ConnectionChannel>> channels;
     std::atomic<std::uint32_t> nextChannelId_{0};
-    std::weak_ptr<ConnectionGroup> self_;
 };
 
 }  // namespace kv
