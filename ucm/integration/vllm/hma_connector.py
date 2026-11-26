@@ -15,6 +15,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.request import RequestStatus
 
 try:
     from vllm.v1.core.kv_cache_utils import resolve_kv_cache_block_sizes
@@ -1911,6 +1912,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._async_load_req_ids.discard(request.request_id)
         if request.request_id in self.requests_meta:
             self.requests_meta.pop(request.request_id)
+        if request.status == RequestStatus.PREEMPTED:
+            # Remember the preemption edge: older vLLM re-admits the request
+            # through scheduled_cached_reqs, newer releases through
+            # scheduled_new_reqs and no longer flag it on CachedRequestData.
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
@@ -2201,10 +2210,20 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # Workers drain the old dumps before this step starts. Register this
         # step's new dump plans only after retiring the preempted ones.
         self._async_dump_req_ids.difference_update(preempted_req_ids)
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Newer releases no longer flag the resumed request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(preempted_req_ids)
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids
+            # A resumed request is re-admitted here; its complete block table is
+            # already handled by need_load=True. Retire the record so the next
+            # decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 # New-request metadata contains the complete block table, including
@@ -2223,7 +2242,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 )
 
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
+        # 0.34+ carries no resume field: a resumed request is re-admitted
+        # through scheduled_new_reqs and handled above. Honour the field when
+        # the scheduler still provides it, otherwise fall back to the
+        # preemption record kept by this connector.
+        resume_flags = getattr(scheduled_cached_reqs, "resumed_from_preemption", None)
         for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+            if resume_flags is not None:
+                resumed_from_preemption = resume_flags[i]
+            elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                resumed_from_preemption = (
+                    request_id in scheduled_cached_reqs.resumed_req_ids
+                )
+            else:
+                resumed_from_preemption = request_id in resumed_req_ids
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 new_block_ids = scheduled_cached_reqs.new_block_ids[i]
@@ -2231,14 +2264,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     new_block_ids = tuple([] for _ in self.group_metas)
                 else:
                     new_block_ids = tuple(new_block_ids)
-                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                    resumed_from_preemption = (
-                        scheduled_cached_reqs.resumed_from_preemption[i]
-                    )
-                else:
-                    resumed_from_preemption = (
-                        request_id in scheduled_cached_reqs.resumed_req_ids
-                    )
                 if resumed_from_preemption:
                     req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
@@ -2258,6 +2283,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}

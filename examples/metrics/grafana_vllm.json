@@ -47,7 +47,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Selected time range breakdown of UCM-observed prefix cache query tokens: GPU/HBM hits, UCM hits, and misses.",
+      "description": "Selected time range breakdown of prefix cache query tokens: GPU/HBM hits, UCM hits, and misses (falls back to native vLLM prefix cache metrics when UCM metrics are absent).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -109,7 +109,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+          "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))\nor\nsum(increase(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
           "instant": true,
           "legendFormat": "GPU/HBM Prefix Hit Tokens",
           "range": false,
@@ -133,7 +133,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
+          "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)\nor\nclamp_min((sum(increase(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
           "instant": true,
           "legendFormat": "Misses",
           "range": false,

@@ -2144,6 +2144,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         hbm_hit_block_num = num_computed_tokens // self.block_size
         if request.status == RequestStatus.PREEMPTED:
             self.requests_meta.pop(request.request_id, None)
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
 
         if request.request_id not in self.requests_meta:
             assert self.request_block_hasher is not None
@@ -2245,14 +2249,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if not external_block_ids:
             return 0, False
-
-        ucmmetrics.update_stats(
-            {
-                "interval_lookup_hit_rates": external_hit_blocks
-                * self.cp_world_size
-                / len(ucm_block_ids)
-            },
-        )
 
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
@@ -2404,10 +2400,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_dump_req_ids.difference_update(
             scheduler_output.preempted_req_ids or set()
         )
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Keep the ids across steps: newer releases no longer flag the resumed
+        # request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(scheduler_output.preempted_req_ids or ())
+
         requests_dispatch_meta = {}
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids[0]
+            # A resumed request is re-admitted here. Its complete block table is
+            # already handled by need_load=True; retire the record so the next
+            # decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
@@ -2424,20 +2432,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         if not isinstance(scheduled_cached_reqs, list):
             # >= 0.9.2
+            # 0.34+ carries no resume field: a resumed request is re-admitted
+            # through scheduled_new_reqs and handled above. Honour the field
+            # when the scheduler still provides it, otherwise fall back to the
+            # preemption record kept by this connector.
+            resume_flags = getattr(
+                scheduled_cached_reqs, "resumed_from_preemption", None
+            )
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                if resume_flags is not None:
+                    resumed_from_preemption = resume_flags[i]
+                elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                    resumed_from_preemption = (
+                        request_id in scheduled_cached_reqs.resumed_req_ids
+                    )
+                else:
+                    resumed_from_preemption = request_id in resumed_req_ids
+                resumed_req_ids.discard(request_id)
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     new_block_ids = []
                     if scheduled_cached_reqs.new_block_ids[i] != None:
                         new_block_ids = scheduled_cached_reqs.new_block_ids[i][0]
-                    if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                        resumed_from_preemption = (
-                            scheduled_cached_reqs.resumed_from_preemption[i]
-                        )
-                    else:
-                        resumed_from_preemption = (
-                            request_id in scheduled_cached_reqs.resumed_req_ids
-                        )
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
@@ -2463,6 +2479,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         # Async loads are intentionally absent from scheduled request lists.
         # Dispatch their transfer plans independently of model-forward work.
@@ -2937,6 +2954,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._dumped_layer_ids: set[int] = set()
         self._layerwise_load_start_by_layer: dict[int, float] = {}
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_layer_load_wait_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
@@ -3143,7 +3161,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         load_start = self._layerwise_load_start_by_layer.pop(layer_id)
         duration_ms = self._non_negative_ms((load_end - load_start) * 1000)
         self._layerwise_layer_load_duration_sum_ms += duration_ms
-        ucmmetrics.update_stats({"layerwise_layer_load_duration_ms": duration_ms})
         return True
 
     def _submit_layerwise_dump_task(
@@ -3264,6 +3281,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.need_load = False
         self._layerwise_load_start_by_layer.clear()
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_layer_load_wait_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         self.dump_total_ptrs = None
@@ -3312,7 +3330,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         if not layer_tasks:
             # A repeated hook must not resubmit and replace next-layer tasks.
             return
-
+        wait_start = time.perf_counter()
         for request_id, task in layer_tasks.items():
             try:
                 self._rank_consistency.wait_load(task)
@@ -3334,6 +3352,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
 
         wait_end = time.perf_counter()
+        self._layerwise_layer_load_wait_duration_sum_ms += self._non_negative_ms(
+            (wait_end - wait_start) * 1000
+        )
         load_duration_recorded = self._record_layerwise_load_duration(
             current_layer_id, wait_end
         )
@@ -3347,13 +3368,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         elif load_duration_recorded:
             duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
+            wait_duration_sum_ms = self._layerwise_layer_load_wait_duration_sum_ms
             ucmmetrics.update_stats(
                 {
                     "layerwise_batch_load_duration_sum_ms": duration_sum_ms,
+                    "layerwise_batch_load_wait_duration_sum_ms": wait_duration_sum_ms,
                     "load_bytes_total": self._layerwise_load_bytes,
                 }
             )
             self._layerwise_layer_load_duration_sum_ms = 0.0
+            self._layerwise_layer_load_wait_duration_sum_ms = 0.0
             self._layerwise_load_bytes = 0
 
     def save_kv_layer(
@@ -4096,7 +4120,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         from ucm.integration.vllm.hla_connector import (
             UCMHybridLinearAttentionConnector,
             UCMHybridLinearAttentionLayerWiseConnector,
-            is_cuda_blnhc_layout,
         )
         from ucm.integration.vllm.hma_connector import UCMFAWAConnector
 
@@ -4112,40 +4135,17 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     kv_cache_config
                 )
             )
-        if requires_cuda_async and not (
-            is_fawa or use_hybrid_linear_attention or use_ratio_rate
-        ):
-            if needs_specialized_connector:
-                raise RuntimeError(
-                    "UCM has no compatible request-async connector for this "
-                    "CUDA KV cache layout. Disable UCM external KV caching."
-                )
-            if use_cp_parallel:
-                raise RuntimeError(
-                    "UCMCPConnector does not support the request-async load "
-                    "required by this CUDA KV cache layout."
-                )
-        cuda_blnhc = is_cuda_blnhc_layout(kv_cache_config)
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
-        if cuda_blnhc and use_hybrid_linear_attention_layerwise:
-            raise RuntimeError(
-                "CUDA BLNHC does not support layerwise. "
-                "Set hybrid_linear_attention_layerwise to false "
-                "to use whole-store."
-            )
         if use_hybrid_linear_attention_layerwise:
-            layerwise_block_reason = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
+            layerwise_fallback_log = UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
                 vllm_config
             )
-            if layerwise_block_reason:
-                logger.warning(
-                    "Layerwise disabled, using direct mode: %s",
-                    layerwise_block_reason,
-                )
+            if layerwise_fallback_log:
+                logger.warning(layerwise_fallback_log)
                 use_hybrid_linear_attention_layerwise = False
 
         if is_fawa:

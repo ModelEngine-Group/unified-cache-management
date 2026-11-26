@@ -24,6 +24,7 @@ from vllm.v1.kv_cache_interface import (
     MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
 )
+from vllm.v1.request import RequestStatus
 
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import RequestHasher
@@ -242,6 +243,14 @@ def npu_flash_next_column_owners(
     if ple_gid is not None:
         owned[ple_gid] = {(n_slots * 2, 0)}
     return owned
+
+
+def _is_embedded_mtp_layer(layout, name: str, num_hidden_layers: int) -> bool:
+    """MTP draft modules register as model.layers.<num_hidden_layers>."""
+    return (
+        num_hidden_layers > 0
+        and layout.layer_name_to_id.get(name, -1) >= num_hidden_layers
+    )
 
 
 def _layer_ordinal(layer_name: str) -> Optional[int]:
@@ -1837,6 +1846,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     ) -> tuple[int, bool]:
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+        if request.status == RequestStatus.PREEMPTED:
+            # The scheduler may re-admit this request either through
+            # scheduled_cached_reqs (older vLLM) or scheduled_new_reqs (newer,
+            # where CachedRequestData has no resume field). Remember the
+            # preemption edge until that step arrives.
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
         assert self.group_manager is not None, (
             "get_num_new_matched_tokens must be called on the scheduler-side "
             "connector, where the group manager is initialized."
@@ -1929,15 +1947,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # Use the base connector's best-effort hotness update. It refreshes
         # rank 0 as well as other ranks and isolates prefetch failures.
         self._prefetch_direct_hit_key_hotness(hbm_full_attn, per_rank_hashes)
-
-        if len(primary_block_ids) > 0:
-            ucmmetrics.update_stats(
-                {
-                    "interval_lookup_hit_rates": external_hit_lcm_blocks
-                    * lcm_block_size
-                    / (len(primary_block_ids) * primary_full_attn.block_size)
-                },
-            )
 
         # No post-lookup workaround needed: pre-lookup truncation already
         # ensures the mamba state at total_hit_tokens is verified.
@@ -2222,8 +2231,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         requests_dispatch_meta: dict[str, HLARequestDispatchMeta] = {}
 
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Newer releases no longer flag the resumed request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(scheduler_output.preempted_req_ids or ())
+
         for request in scheduler_output.scheduled_new_reqs:
             request_id = request.req_id
+            # A resumed request is re-admitted here; its complete block table is
+            # already handled by incoming_block_ids_are_full=True. Retire the
+            # record so the next decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta is None:
                 continue
@@ -2241,7 +2261,23 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # resumed (load + dump), decode (no-op).
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         if not isinstance(scheduled_cached_reqs, list):
+            # 0.34+ carries no resume field: a resumed request is re-admitted
+            # through scheduled_new_reqs and handled above. Honour the field
+            # when the scheduler still provides it, otherwise fall back to the
+            # preemption record kept by this connector.
+            resume_flags = getattr(
+                scheduled_cached_reqs, "resumed_from_preemption", None
+            )
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                if resume_flags is not None:
+                    resumed_from_preemption = resume_flags[i]
+                elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                    resumed_from_preemption = (
+                        request_id in scheduled_cached_reqs.resumed_req_ids
+                    )
+                else:
+                    resumed_from_preemption = request_id in resumed_req_ids
+                resumed_req_ids.discard(request_id)
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta is None:
                     continue
@@ -2250,14 +2286,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 new_block_ids = (
                     empty_per_group if raw_new_block_ids is None else raw_new_block_ids
                 )
-                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                    resumed_from_preemption = (
-                        scheduled_cached_reqs.resumed_from_preemption[i]
-                    )
-                else:
-                    resumed_from_preemption = (
-                        request_id in scheduled_cached_reqs.resumed_req_ids
-                    )
                 requests_dispatch_meta[request_id] = self._generate_hla_dispatch_meta(
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
@@ -2288,6 +2316,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}
@@ -3129,50 +3158,28 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
-    """Layerwise connector: per-pair store, per-layer dump/load, depth-2 load.
+    """Per-layer loads with checkpoint-window dumps on Ascend.
 
-    One shard per (block, pair); the posix commit fires on the max-pair
-    shard, so max-pair layers defer their dump to the commit task in
-    ``wait_for_save``. Loads pipeline with depth 2: ``start_load_kv``
-    submits the first two layers; each ``wait_for_layer_load`` hook waits
-    its pair and submits two positions ahead. Dumps fire per layer
-    right after the layer's forward (attention layers: vLLM's decorator;
-    GDN/KDA layers: ``mamba_layer_hooks_patch``).
+    Loads use each layer's native prefix and pipeline with depth 2. A dump
+    window ends at a full-attention checkpoint and contains the preceding
+    linear-attention layers, whose empty save-hook names are not needed.
+    ``wait_for_save`` backfills the tail and handles the max-pair commit.
     """
-
-    # These families' linear layers have no custom-op boundary, so their
-    # module-forward hooks are pruned under compiled execution.
-    _MODULE_TIER_ONLY_ARCHITECTURES = (
-        "KimiK3ForConditionalGeneration",
-        "Glm5NextForConditionalGeneration",
-    )
 
     @classmethod
     def layerwise_engine_config_error(cls, vllm_config) -> Optional[str]:
-        """Why layerwise cannot run under this engine config, or None."""
-        hf_config = getattr(
-            getattr(vllm_config, "model_config", None), "hf_config", None
-        )
-        architectures = list(getattr(hf_config, "architectures", None) or [])
-        matched = [
-            arch
-            for arch in architectures
-            if arch in cls._MODULE_TIER_ONLY_ARCHITECTURES
-        ]
-        if not matched:
+        """Return the fallback log, or None when layerwise is allowed.
+
+        Layerwise HLA transfers rely on per-layer native hooks that only the
+        Ascend backends provide end to end; on CUDA-like platforms every
+        architecture falls back to direct mode.
+        """
+        if not current_platform.is_cuda_alike():
             return None
-        cc = getattr(vllm_config, "compilation_config", None)
-        mode = str(getattr(getattr(cc, "mode", None), "name", None) or "NONE")
-        cg_mode = str(
-            getattr(getattr(cc, "cudagraph_mode", None), "name", None) or "NONE"
-        )
-        if mode == "NONE" and cg_mode != "FULL":
-            return None
+        platform = getattr(current_platform, "device_type", "unknown").upper()
         return (
-            f"Layerwise for {matched[0]} requires mode=NONE and "
-            f"cudagraph_mode != FULL (got mode={mode}, "
-            f"cudagraph_mode={cg_mode}). Use --enforce-eager or "
-            '\'{"mode": "NONE", "cudagraph_mode": "FULL_DECODE_ONLY"}\'.'
+            "Layerwise mode is not supported on "
+            f"{platform}; falling back to direct mode."
         )
 
     def __init__(
@@ -3190,6 +3197,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.launch_config = copy.deepcopy(self.launch_config)
         self.launch_config["use_layerwise"] = True
         self.use_layerwise = True
+        self.checkpoint_windows: list[list[str]] = []
+        self._checkpoint_to_window: dict[str, int] = {}
         # Deferred-commit plan (filled by register_kv_caches).
         self._max_slot = 0
         self._deferred_dump_layers: set[str] = set()
@@ -3215,7 +3224,35 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             worker_cores,
             store_cores,
         )
-        # Max-pair layers defer their dump to the commit task (see class doc).
+        # Draft layers run last despite their independent layer-id space. An
+        # embedded MTP draft shares the target's composite group, so only true
+        # draft layers move; an eagle group with no draft signal is an
+        # external draft model and moves as a whole.
+        specs = layer_name_to_kv_cache_spec(self._kv_cache_config)
+        num_hidden_layers = getattr(layout, "num_hidden_layers", 0)
+        eagle_layers: set[str] = set()
+        for cache_group in self._kv_cache_config.kv_cache_groups:
+            if not getattr(cache_group, "is_eagle_group", False):
+                continue
+            draft_layers = {
+                name
+                for name in cache_group.layer_names
+                if any(
+                    getattr(spec, "non_causal_multi_token_decode", False)
+                    for spec in specs.get(name, [])
+                )
+                or _is_embedded_mtp_layer(layout, name, num_hidden_layers)
+            }
+            eagle_layers |= draft_layers or set(cache_group.layer_names)
+        ordered_layers = sorted(
+            layout.layer_anchors,
+            key=lambda name: (layout.layer_name_to_id[name], name),
+        )
+        self.layer_order = [
+            name for name in ordered_layers if name not in eagle_layers
+        ] + [name for name in ordered_layers if name in eagle_layers]
+        self.layer_pos = {name: pos for pos, name in enumerate(self.layer_order)}
+        # Max-pair layers defer their dump to the commit task.
         self._max_slot = layout.num_slots - 1
         self._deferred_dump_layers = {
             name
@@ -3231,6 +3268,35 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 or layout.layer_name_to_id[name] > layout.layer_name_to_id[existing]
             ):
                 self._group_commit_layer[gid] = name
+        self._build_checkpoint_windows()
+
+    def _build_checkpoint_windows(self) -> None:
+        specs = layer_name_to_kv_cache_spec(self._kv_cache_config)
+        checkpoint_layers = {
+            name
+            for name in self.layer_order
+            if any(
+                isinstance(spec, FullAttentionSpec)
+                and participates_in_prefix_caching(spec)
+                and not is_mamba_align_kv_cache_spec(spec)
+                and (
+                    getattr(spec, "is_index_group_leader", True)
+                    or getattr(spec, "tokens_per_state", 1) == 1
+                )
+                for spec in specs.get(name, [])
+            )
+        }
+        self.checkpoint_windows = []
+        self._checkpoint_to_window = {}
+        start = 0
+        for end, layer_name in enumerate(self.layer_order):
+            if layer_name not in checkpoint_layers:
+                continue
+            self._checkpoint_to_window[layer_name] = len(self.checkpoint_windows)
+            self.checkpoint_windows.append(self.layer_order[start : end + 1])
+            start = end + 1
+        if start < len(self.layer_order) and self.checkpoint_windows:
+            self.checkpoint_windows.append(self.layer_order[start:])
 
     def _submit_layer_load(self, pos: int) -> None:
         """Submit load tasks for the layer at execution position ``pos``."""
@@ -3631,6 +3697,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self.layer_to_slot[layer_name],
         )
         if pair_key not in self._waited_group_slots:
+            # Idempotent; a hook-order gap can leave this pair unsubmitted.
+            self._submit_layer_load(pos)
             self._waited_group_slots.add(pair_key)
             self._wait_layer_load_pair(pair_key)
             if pos == len(self.layer_order) - 1:
@@ -3649,20 +3717,15 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         attn_metadata: "AttentionMetadata",
         **kwargs,
     ) -> None:
-        if not self._connector_metadata:
+        if not self._connector_metadata or layer_name in self._dumped_layers:
             return
-        if layer_name in self._dumped_layers:
+        window_id = getattr(self, "_checkpoint_to_window", {}).get(layer_name)
+        if window_id is None:
             return
-        if layer_name in self._deferred_dump_layers:
-            # Deferred to the commit task in wait_for_save (see class doc).
-            self._dumped_layers.add(layer_name)
-            self._dumped_group_slots.add(
-                (self.layer_to_group[layer_name], self.layer_to_slot[layer_name])
-            )
-            return
-        if layer_name not in self.layer_pos:
-            return
-        self._submit_layer_dump(layer_name)
+        for name in self.checkpoint_windows[window_id]:
+            if name in self._dumped_layers or name in self._deferred_dump_layers:
+                continue
+            self._submit_layer_dump(name)
 
     def wait_for_save(self) -> None:
         """Layerwise dump: catch up undumped layers, then the max-pair commit."""

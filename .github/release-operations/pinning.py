@@ -4,7 +4,7 @@ from syntax import OperationError
 
 
 class ReleasePinning:
-    def release_pin(self, release):
+    def release_pin(self, release, *, attempt=True):
         owner, name = self.repository.split("/")
         try:
             if self.issue(release)["state"] == "closed":
@@ -22,6 +22,8 @@ class ReleasePinning:
                 return
             if len(snapshot["pinnedIssues"]["nodes"]) >= 3:
                 raise OperationError("All three repository pin slots are occupied")
+            if not attempt:
+                return "The Release Checklist has not been pinned"
             self.api.call(
                 "graphql",
                 "POST",
@@ -32,3 +34,4 @@ class ReleasePinning:
             )
         except OperationError as error:
             print(f"Could not pin Release Checklist #{release}: {error}")
+            return str(error)

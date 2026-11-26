@@ -56,7 +56,6 @@ No Connector-specific Gauges are exported by default.
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `ucm:save_duration` | Time from entering `wait_for_save` until asynchronous Dump completion, in ms; use it to track overall save duration |
 | `ucm:save_completion_wait_duration` | Time actually blocked while confirming asynchronous Dump completion, in ms; use it to track the remaining wait imposed on the caller |
-| `ucm:interval_lookup_hit_rates`                         | Per-request UCM Lookup hit-rate distribution[^export-scope] |
 | `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface `get_block_size`                          |
 | `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface `get_kv_connector_stats`                  |
 | `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface `get_num_new_matched_tokens`              |
@@ -76,8 +75,8 @@ No Connector-specific Gauges are exported by default.
 | `ucm:connector_build_connector_worker_meta_duration_ms` | Duration of Connector interface `build_connector_worker_meta`             |
 | `ucm:connector_update_connector_output_duration_ms`     | Duration of Connector interface `update_connector_output`                 |
 | `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface `clear_connector_metadata`                |
-| `ucm:layerwise_layer_load_duration_ms`                  | Per-layer wall-clock time from layer load start to `wait_for_layer_load` return |
 | `ucm:layerwise_batch_load_duration_sum_ms`              | Sum of per-layer load durations within one Layerwise batch               |
+| `ucm:layerwise_batch_load_wait_duration_sum_ms`         | Sum of per-layer blocking `wait_for_layer_load` durations within one Layerwise batch |
 
 ### 1.2 Cache Store
 
@@ -98,6 +97,16 @@ When loads slow down, compare queuing, backend-ready waits and H2D synchronizati
 | `ucm:cache_posix_load_success_shards_total` | Shards successfully loaded to device after waiting for Posix to fill Cache[^cache-source] |
 | `ucm:cache_dump_shards_total`               | Total shard descriptors processed by Cache Dump, including failed tasks    |
 | `ucm:cache_dump_backend_shards_total`       | Owner shards actually written to the backend                               |
+| `ucm:cache_dump_waiting_enqueue_total`      | Dump tasks accepted into the Dump waiting queue (task granularity)         |
+| `ucm:cache_dump_waiting_dequeue_total`      | Dump tasks popped from the Dump waiting queue for D2H dispatch (task granularity) |
+| `ucm:cache_load_waiting_bytes_total`        | Bytes of Load tasks accepted into the Load waiting queue (shard size × shards) |
+| `ucm:cache_dump_waiting_bytes_total`        | Bytes of Dump tasks accepted into the Dump waiting queue (shard size × shards) |
+| `ucm:cache_dump_backend_wait_enqueue_total` | Dump tasks pushed onto the Dump backend-wait queue (task granularity)      |
+| `ucm:cache_dump_backend_wait_dequeue_total` | Dump tasks popped from the Dump backend-wait queue for the backend write wait |
+| `ucm:cache_load_waiting_enqueue_total`      | Load tasks accepted into the Load waiting queue (task granularity)         |
+| `ucm:cache_load_waiting_dequeue_total`      | Load tasks popped from the Load waiting queue for dispatch (task granularity) |
+| `ucm:cache_load_running_enqueue_total`      | Load shards pushed into the Load running queue (shard granularity)         |
+| `ucm:cache_load_running_dequeue_total`      | Load shards popped from the Load running queue for H2D (shard granularity) |
 | `ucm:cache_load_bytes_total`                | Cumulative bytes loaded through the Cache stage                            |
 | `ucm:cache_dump_bytes_total`                | Cumulative bytes dumped through the Cache stage                            |
 
@@ -120,7 +129,13 @@ No Cache Store-specific Gauges are exported by default.
 | `ucm:cache_load_queue_wait_duration_ms`     | Time a Cache Load task waits before a dispatch worker picks it up                        |
 | `ucm:cache_dump_queue_wait_duration_ms`     | Time a Cache Dump task waits before a dispatch worker picks it up                        |
 | `ucm:cache_load_backend_submit_duration_ms` | Time to allocate a Cache buffer and synchronously submit the backend Load                |
+| `ucm:cache_load_prealloc_duration_ms`       | Time to preallocate the next shard slot of each loaded block during dispatch             |
+| `ucm:cache_shard_running_queue_wait_ms`     | Time one shard spends between entering the running queue and the H2D thread picking it up |
 | `ucm:cache_shard_backend_wait_ms`           | Time one shard waits for the backend to become ready before H2D submission               |
+| `ucm:cache_shard_ready_wait_ms`             | Time one shard polls its Cache slot until ready (slot owned by another in-flight task); backend-owned slots are covered by `cache_shard_backend_wait_ms` |
+| `ucm:cache_task_total_backend_wait_ms`      | Per-task sum over the task's shards of `cache_shard_backend_wait_ms`                     |
+| `ucm:cache_task_total_ready_wait_ms`        | Per-task sum over the task's shards of `cache_shard_ready_wait_ms`                       |
+| `ucm:cache_task_total_h2d_submit_ms`        | Per-task sum over the task's shards of `cache_h2d_submit_ms`                             |
 | `ucm:cache_h2d_submit_ms`                   | CPU overhead of one asynchronous shard H2D submission, excluding transfer time           |
 | `ucm:cache_h2d_sync_ms`                     | Remaining H2D stream drain time after the final shard submission                         |
 | `ucm:cache_dump_mkbuf_duration_ms`          | Cache Dump buffer allocation/reuse and asynchronous D2H submission time                  |
@@ -458,6 +473,5 @@ ucm:posix_store_health{job="vllm"}
 
 ## 3. Runtime interpretation notes
 
-[^export-scope]: The current `vllm_connector` consumer excludes `interval_lookup_hit_rates` in `ucm/metrics_config.py`. The native metric remains in this catalog; do not expect it on the default vLLM endpoint.
 [^cache-source]: `cache_posix_load_success_shards_total` follows the Cache buffer's not-ready state at dispatch. The lower Store need not be Posix. For Cache/Posix, source-share formulas estimate tier contribution; correlate backend activity and completed transfers rather than treating a wait as a physical disk read.
 [^posix-bytes]: Current Posix counters accumulate nominal task bytes at completion, including error or aborted paths. Check errors alongside byte rates; physical storage throughput requires filesystem or device observations.
