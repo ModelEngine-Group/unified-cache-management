@@ -139,7 +139,8 @@ def split_requirement_reference(value, repository):
 
 def mask_bot_regions(body):
     body = re.sub(
-        r"<!-- ucm-release-(navigation|overview):start -->.*?<!-- ucm-release-\1:end -->",
+        r"<!-- ucm-release-(navigation|overview|command|check|attention|delivery|plan):start -->"
+        r".*?<!-- ucm-release-\1:end -->",
         lambda m: "\n" * m[0].count("\n"),
         body,
         flags=re.S,

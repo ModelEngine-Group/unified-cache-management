@@ -1,11 +1,95 @@
 """Evaluate the current Milestone for release readiness."""
 
+import hashlib
+import json
+
 from ownership import milestone_number
-from presentation import report_result
+from presentation import (
+    checklist_region,
+    release_check_body,
+    report_result,
+    set_checklist_region,
+)
 from syntax import OperationError, parse_release
 
 
+def fingerprint(value):
+    encoded = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def plan_baseline(plan):
+    return {
+        "requirements": {
+            str(entry["number"]): fingerprint(
+                [entry["title"], entry["description"].rstrip(), entry["developer"]]
+            )
+            for entry in plan["entries"]
+            if entry["number"] is not None
+        },
+        "metadata": {
+            key: fingerprint(value) for key, value in sorted(plan["metadata"].items())
+        },
+    }
+
+
+def save_plan_baseline(body, plan):
+    baseline = json.dumps(plan_baseline(plan), separators=(",", ":"), sort_keys=True)
+    updated = set_checklist_region(body, "plan", f"<!-- {baseline} -->")
+    if updated != body:
+        updated = set_checklist_region(
+            updated,
+            "check",
+            "### Release Check\n\nRun `/release_check` to check the current plan.",
+        )
+    return updated
+
+
+def pending_plan_changes(body, plan):
+    try:
+        _, region = checklist_region(body, "plan")
+        if not region:
+            return {}
+        snapshot = region.splitlines()[1].removeprefix("<!-- ").removesuffix(" -->")
+        previous = json.loads(snapshot)
+        requirements, metadata = previous["requirements"], previous["metadata"]
+        if not isinstance(requirements, dict) or not isinstance(metadata, dict):
+            return {}
+        if not all(number.isdecimal() for number in requirements):
+            return {}
+    except (ValueError, IndexError, KeyError, TypeError):
+        return {}
+    current = plan_baseline(plan)
+    return {
+        "added": [
+            entry["title"] + (f" #{entry['number']}" if entry["number"] else "")
+            for entry in plan["entries"]
+            if str(entry["number"]) not in requirements
+        ],
+        "removed": [
+            f"#{n}"
+            for n in sorted(requirements.keys() - current["requirements"].keys())
+        ],
+        "changed": [
+            f"#{n}"
+            for n, value in current["requirements"].items()
+            if n in requirements and value != requirements[n]
+        ],
+        "metadata": [
+            name
+            for name in sorted(current["metadata"].keys() | metadata.keys())
+            if current["metadata"].get(name) != metadata.get(name)
+        ],
+    }
+
+
 class ReleaseChecks:
+    def write_release_check(self, release, report, run_url):
+        issue = self.issue(release)
+        self.patch_issue(
+            issue, {"body": release_check_body(issue["body"], report, run_url)}
+        )
+
     def release_check(self, release, candidate_sha=None, tag=None):
         with self.snapshots():
             state = self.reconcile(release)
@@ -49,6 +133,23 @@ class ReleaseChecks:
                 "other_version_prs": [],
                 "version_conflicts": [],
             }
+            open_issues = report["open_issues"]
+            report["open_bugs"] = [
+                number for number in open_issues if str(number) in state["bugs"]
+            ]
+            report["open_checklists"] = [
+                number
+                for number in open_issues
+                if number in (release, state["archive"])
+            ]
+            report["open_requirements"] = sorted(
+                set(open_issues)
+                - set(report["open_bugs"])
+                - set(report["open_checklists"])
+            )
+            unsynced = pending_plan_changes(source["body"], plan)
+            if any(unsynced.values()):
+                report["unsynced"] = unsynced
             if candidate_sha:
                 report["candidate"] = {"ref": tag, "sha": candidate_sha}
             for number, record in linked.items():

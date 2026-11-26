@@ -44,7 +44,16 @@ jobs:
         with:
           python-version: '3.12'
       - name: Execute version operation
+        id: command
         env:
           GH_TOKEN: ${{ github.token }}
           UCM_PROJECT_TOKEN: ${{ secrets.UCM_PROJECT_TOKEN }}
         run: python .github/release-operations/controller.py
+      - name: Finalize command status
+        if: >-
+          ${{ always() && github.event_name == 'issue_comment' &&
+              (steps.command.outcome == 'failure' || steps.command.outcome == 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UCM_COMMAND_OUTCOME: ${{ steps.command.outcome }}
+        run: python .github/release-operations/controller.py --finalize "${UCM_COMMAND_OUTCOME}"

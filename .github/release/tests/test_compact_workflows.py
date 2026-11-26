@@ -29,6 +29,12 @@ def test_management_callbacks_are_scoped_and_runtime_tests_run_in_pr_ci() -> Non
         "unittest" not in step.get("run", "")
         for step in management["jobs"]["operate"]["steps"]
     )
+    finalizer = management["jobs"]["operate"]["steps"][-1]
+    assert "always()" in finalizer["if"]
+    assert "github.event_name == 'issue_comment'" in finalizer["if"]
+    assert "steps.command.outcome == 'failure'" in finalizer["if"]
+    assert "steps.command.outcome == 'cancelled'" in finalizer["if"]
+    assert "controller.py --finalize" in finalizer["run"]
     assert not management["on"]["workflow_dispatch"]
     contracts = _load("release-operations-check.yml")
     paths = contracts["on"]["pull_request"]["paths"]
@@ -66,7 +72,25 @@ def test_tag_version_gate_blocks_only_v_tags_and_preserves_other_routes() -> Non
 
 
 def test_only_successful_version_delivery_can_close_the_milestone() -> None:
-    assert not (WORKFLOWS / "release-delivery-status.yml").exists()
+    observer = _load("release-delivery-status.yml")
+    assert observer["on"]["workflow_run"]["types"] == ["in_progress", "completed"]
+    assert observer["on"]["workflow_run"]["workflows"] == [
+        _load("release-tag.yml")["name"]
+    ]
+    assert observer["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "issues": "write",
+    }
+    assert observer["concurrency"] == _load("release-operations.yml")["concurrency"]
+    report = observer["jobs"]["report"]
+    assert "workflow_run.event == 'push'" in report["if"]
+    assert "workflow_run.head_repository.full_name == github.repository" in report["if"]
+    assert (
+        report["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+    assert report["steps"][-1]["run"].endswith("delivery.py observe")
     result = _load("release-tag.yml")["jobs"]["delivery-result"]
     assert "!cancelled()" in result["if"]
     assert "needs.version-check.result == 'success'" in result["if"]

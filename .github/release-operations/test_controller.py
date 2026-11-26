@@ -2,10 +2,19 @@ import copy
 import re
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from controller import Controller, GitHub, bug_progress
-from presentation import NAV_START, OVERVIEW_END, OVERVIEW_START, release_body
+from presentation import (
+    COMMAND_END,
+    COMMAND_START,
+    NAV_START,
+    OVERVIEW_END,
+    OVERVIEW_START,
+    checklist_region,
+    release_body,
+)
 from syntax import (
     OperationError,
     bind_entries,
@@ -963,13 +972,154 @@ class RepositoryOperations(unittest.TestCase):
 
     def test_release_check_command_does_not_create_machine_comments(self):
         self.initialize()
-        comment = self.api.comment(1, "/release_check")
-        self.controller.handle(
-            {"issue": self.api.items[1], "comment": comment, "sender": comment["user"]},
-            "issue_comment",
-        )
+        comment = self.run_command("/release_check")
         self.assertEqual(self.api.comments, [comment])
-        self.assertNotIn("### Release Check", self.api.items[1]["body"])
+        self.assertEqual(self.api.reactions[comment["id"]]["content"], "eyes")
+        body = self.api.items[1]["body"]
+        self.assertIn("**Blocked** · `/release_check`", body)
+        self.assertIn("Open Issues · #1, #2, #3, #4", body)
+        self.controller.reconcile(1)
+        self.assertEqual(self.api.items[1]["body"], body)
+
+    def test_release_check_persists_pending_edits_after_another_command(self):
+        self.initialize()
+        checklist = self.api.items[1]
+        body = checklist["body"]
+        body = body.replace("release_date: TBD", "release_date: 2026-12-01")
+        body = body.replace(
+            "Implement the connector.", "Implement the revised connector."
+        )
+        start, end = body.index("- Store interface"), body.index("### Change Log")
+        checklist["body"] = (
+            body[:start]
+            + "- New requirement\n\n  description:\n    New work.\n\n  assignee:\n\n  pull_requests:\n\n"
+            + body[end:]
+        )
+        self.run_command("/release_check")
+        body = self.api.items[1]["body"]
+        _, result = checklist_region(body, "check")
+        self.assertIn("**Blocked**", result)
+        self.assertIn("Open requirements and other Issues · #3, #4", result)
+        self.assertIn("Added requirements · New requirement", result)
+        self.assertIn("Removed requirements · #4", result)
+        self.assertIn("Edited requirements · #3", result)
+        self.assertIn("Edited release fields · release_date", result)
+        self.run_command("/update --dry-run")
+        self.assertEqual(
+            checklist_region(self.api.items[1]["body"], "check")[1], result
+        )
+        self.run_command("/update")
+        _, reset = checklist_region(self.api.items[1]["body"], "check")
+        self.assertIn("Run `/release_check`", reset)
+        self.assertEqual(self.api.items[4]["milestone"]["number"], 1)
+
+    def test_initialization_preview_updates_only_comment_and_checklist(self):
+        original_body = self.api.items[1]["body"]
+        plan = parse_release(original_body, REPOSITORY)
+        apply_plan = self.controller.apply_plan
+
+        def apply_after_acknowledgement(*args):
+            self.assertIn(
+                "**Running** · `/release_init --dry-run`", self.api.items[1]["body"]
+            )
+            self.assertEqual(self.api.reactions[1]["content"], "eyes")
+            return apply_plan(*args)
+
+        with TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            with patch.dict(
+                "os.environ",
+                {
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                    "GITHUB_SERVER_URL": "https://github.com",
+                    "GITHUB_RUN_ID": "123",
+                    "GITHUB_RUN_ATTEMPT": "2",
+                },
+            ):
+                with patch.object(
+                    self.controller,
+                    "apply_plan",
+                    side_effect=apply_after_acknowledgement,
+                ):
+                    comment = self.run_command("/release_init --dry-run")
+            self.assertIn("Preview /release_init", summary.read_text(encoding="utf-8"))
+
+        self.assertEqual(self.api.reactions[comment["id"]]["content"], "eyes")
+        self.assertEqual(self.api.comments, [comment])
+        self.assertEqual(set(self.api.items), {1})
+        self.assertFalse(self.api.milestones)
+        self.assertFalse(self.api.pins)
+        body = self.api.items[1]["body"]
+        self.assertTrue(body.startswith(original_body))
+        self.assertTrue(body.rstrip().endswith(COMMAND_END))
+        self.assertIn("<summary>Preview plan</summary>", body)
+        self.assertIn("Create Issue · Connector v2 initial integration", body)
+        self.assertIn(
+            f"https://github.com/{REPOSITORY}/actions/runs/123/attempts/2", body
+        )
+        self.assertEqual(parse_release(body, REPOSITORY), plan)
+
+    def test_update_preview_replaces_latest_feedback_without_linking_pr(self):
+        self.run_command("/release_init")
+        self.assertIn("**Succeeded** · `/release_init`", self.api.items[1]["body"])
+        self.api.add_pr(10, "")
+        self.api.items[1]["body"] = self.api.items[1]["body"].replace(
+            "  pull_requests:\n", "  pull_requests:\n    - #10\n", 1
+        )
+        comment = self.run_command("/update --dry-run")
+        body = self.api.items[1]["body"]
+        self.assertEqual(self.api.reactions[comment["id"]]["content"], "eyes")
+        self.assertEqual(body.count(COMMAND_START), 1)
+        self.assertIn("**Succeeded** · `/update --dry-run`", body)
+        self.assertIn(
+            "Reuse Issue #3 · Connector v2 initial integration · Link PRs #10", body
+        )
+        self.assertFalse(self.api.native_links)
+        self.assertIsNone(self.api.prs[10]["milestone"])
+        self.assertEqual(len(self.api.items), 5)
+
+    def test_failed_command_writes_error_and_keeps_failure(self):
+        with self.assertRaisesRegex(OperationError, "先执行 /release_init"):
+            self.run_command("/update --dry-run")
+        comment = self.api.comments[0]
+        self.assertEqual(self.api.reactions[comment["id"]]["content"], "eyes")
+        self.assertIn("**Failed** · `/update --dry-run`", self.api.items[1]["body"])
+        self.assertIn("先执行 /release_init", self.api.items[1]["body"])
+        self.assertFalse(self.api.milestones)
+
+    def test_finalize_updates_only_running_status_from_the_same_attempt(self):
+        command = "/release_init --dry-run"
+        comment = self.api.comment(1, command)
+        event = {"issue": self.api.items[1], "comment": comment}
+        with patch.dict(
+            "os.environ",
+            {
+                "GITHUB_SERVER_URL": "https://github.com",
+                "GITHUB_RUN_ID": "123",
+                "GITHUB_RUN_ATTEMPT": "2",
+            },
+        ):
+            self.controller.write_command_feedback(1, command, comment, "Running", "")
+            original = self.api.items[1]["body"]
+            with patch.dict("os.environ", {"GITHUB_RUN_ATTEMPT": "1"}):
+                self.controller.finalize_command(event, "failure")
+            self.assertEqual(self.api.items[1]["body"], original)
+
+            self.controller.finalize_command(event, "cancelled")
+            cancelled = self.api.items[1]["body"]
+            self.assertIn("**Cancelled** · `/release_init --dry-run`", cancelled)
+            self.controller.finalize_command(event, "failure")
+            self.assertEqual(self.api.items[1]["body"], cancelled)
+        self.assertFalse(self.api.milestones)
+        self.assertEqual(self.api.comments, [comment])
+
+    def test_reaction_failure_does_not_prevent_preview_feedback(self):
+        self.api.reaction_failure = True
+        self.run_command("/release_init --dry-run")
+        self.assertFalse(self.api.reactions)
+        self.assertIn(
+            "**Succeeded** · `/release_init --dry-run`", self.api.items[1]["body"]
+        )
 
     def test_verify_command_is_retired_and_does_not_close_issue(self):
         self.initialize()
@@ -1117,6 +1267,27 @@ class RepositoryOperations(unittest.TestCase):
         state = self.initialize()
         self.assertEqual(state["archive"], 2)
         self.assertNotIn(1, self.api.pins)
+        self.assertIn("All three repository pin slots", self.api.items[1]["body"])
+        self.controller.reconcile(1)
+        self.assertIn("Attention required", self.api.items[1]["body"])
+        self.api.pins = {1: "User"}
+        self.controller.reconcile(1)
+        self.assertNotIn("Attention required", self.api.items[1]["body"])
+
+    def test_sync_displays_and_clears_checklist_format_warning(self):
+        self.initialize()
+        body = self.api.items[1]["body"]
+        self.api.items[1]["body"] = body.replace(
+            "release_date: TBD", "release_date: tomorrow"
+        )
+        self.controller.reconcile(1)
+        self.assertIn("Attention required", self.api.items[1]["body"])
+        self.assertIn("use YYYY-MM-DD or TBD", self.api.items[1]["body"])
+        self.api.items[1]["body"] = self.api.items[1]["body"].replace(
+            "release_date: tomorrow", "release_date: TBD"
+        )
+        self.controller.reconcile(1)
+        self.assertNotIn("Attention required", self.api.items[1]["body"])
 
     def test_pin_api_failure_is_reported_without_blocking_initialization(self):
         self.api.pin_failure = True
@@ -1214,6 +1385,14 @@ class RepositoryOperations(unittest.TestCase):
 
     def initialize(self):
         return self.controller.initialize_or_update(1, "release_init")
+
+    def run_command(self, body):
+        comment = self.api.comment(1, body)
+        self.controller.handle(
+            {"issue": self.api.items[1], "comment": comment, "sender": comment["user"]},
+            "issue_comment",
+        )
+        return comment
 
     def test_preview_performs_no_writes_and_apply_creates_flat_requirements(self):
         self.api.items[1]["body"] = PLAN.replace("[]", "[Issue]()")
@@ -1393,11 +1572,30 @@ class RepositoryOperations(unittest.TestCase):
         _, report = self.controller.release_check(1)
         self.assertNotIn(99, report["open_issues"])
 
+    def test_bug_keeps_fixing_without_a_pull_request(self):
+        state = self.initialize()
+        self.api.items[8] = self.api.make_issue(
+            8, "Bug", "Observed failure.", ["bug", "status:triage", "status:fixing"]
+        )
+        self.api.parents[8] = state["archive"]
+
+        self.controller.reconcile(1)
+
+        self.assertEqual(
+            self.api.items[8]["labels"], [{"name": "bug"}, {"name": "status:fixing"}]
+        )
+        project_item = self.api.projects["I_8"]["P_BUG"]
+        self.assertEqual(self.api.project_statuses[project_item]["name"], "In progress")
+
     def test_bug_status_matches_merge_and_issue_state(self):
         self.assertEqual(
-            bug_progress(False, {"9"}, True), ("status:verification", "In review")
+            bug_progress(False, {"9"}, True, already_fixing=True),
+            ("status:verification", "In review"),
         )
-        self.assertEqual(bug_progress(True, {"9"}, True), ("status:verified", "Done"))
+        self.assertEqual(
+            bug_progress(True, {"9"}, True, already_fixing=True),
+            ("status:verified", "Done"),
+        )
 
 
 if __name__ == "__main__":

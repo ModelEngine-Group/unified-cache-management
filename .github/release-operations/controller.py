@@ -10,16 +10,29 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
 from associations import PullRequestAssociations
-from checks import ReleaseChecks
+from checks import ReleaseChecks, save_plan_baseline
 from delivery import ReleaseDelivery
 from ownership import milestone_number
 from pinning import ReleasePinning
-from presentation import release_body, report_result
+from presentation import (
+    COMMAND_END,
+    COMMAND_START,
+    PIN_WARNING_PREFIX,
+    check_details,
+    checklist_region,
+    command_feedback,
+    preview_details,
+    release_body,
+    replace_region,
+    report_result,
+    update_attention,
+)
 from syntax import (
     OperationError,
     bind_entries,
@@ -36,12 +49,14 @@ def has_label(issue, label):
     return any(item["name"] == label for item in issue.get("labels", []))
 
 
-def bug_progress(closed: bool, merged: set[str], has_pr: bool) -> tuple[str, str]:
+def bug_progress(
+    closed: bool, merged: set[str], has_pr: bool, *, already_fixing: bool
+) -> tuple[str, str]:
     if closed:
         return "status:verified", "Done"
     if merged:
         return "status:verification", "In review"
-    if has_pr:
+    if has_pr or already_fixing:
         return "status:fixing", "In progress"
     return "status:triage", "Ready"
 
@@ -401,18 +416,16 @@ class Controller(
             existing[number] = item
 
         if dry_run:
-            report_result(
-                f"Preview /{command}",
-                [
-                    {
-                        "issue": entry["number"],
-                        "title": entry["title"],
-                        "requested_prs": entry["requested_prs"],
-                    }
-                    for entry in entries
-                ],
-            )
-            return
+            preview = [
+                {
+                    "issue": entry["number"],
+                    "title": entry["title"],
+                    "requested_prs": entry["requested_prs"],
+                }
+                for entry in entries
+            ]
+            report_result(f"Preview /{command}", preview)
+            return preview
         if self.issue(release)["body"] != source["body"]:
             raise OperationError("Release body changed; retry the command")
 
@@ -497,9 +510,13 @@ class Controller(
         patched = patch_references(latest["body"], objects, self.repository)
         latest = self.patch_issue(latest, {"body": patched})
         self.link_requested_pull_requests(expected["entries"])
-        if not initialized:
-            self.release_pin(release)
+        pin_warning = self.release_pin(release) if not initialized else None
         state = self.reconcile(release, source=latest)
+        latest = self.issue(release)
+        updated = save_plan_baseline(latest["body"], expected)
+        if pin_warning:
+            updated = update_attention(updated, pin_warning=pin_warning)
+        self.patch_issue(latest, {"body": updated})
         report_result(
             "Release plan applied", {"checklist": release, "milestone": version}
         )
@@ -507,12 +524,24 @@ class Controller(
 
     def refresh_release_body(self, source, state, rows):
         original = source["body"]
+        warnings = [
+            f"PR #{number} has linked Issues in different Milestones. Set its Milestone manually."
+            for number, pr in state["prs"].items()
+            if pr["conflict"]
+        ]
         try:
+            parse_release(original, self.repository, read_pr_requests=True)
             body = patch_pull_requests(original, rows, self.repository)
         except OperationError as error:
             print(f"Cannot refresh PR references for #{source['number']}: {error}")
+            warnings.append(f"Checklist requires attention · {error}")
             body = original
         patched = release_body(body, state)
+        _, attention = checklist_region(original, "attention")
+        pin_warning = None
+        if any(line.startswith(PIN_WARNING_PREFIX) for line in attention.splitlines()):
+            pin_warning = self.release_pin(source["number"], attempt=False) or ""
+        patched = update_attention(patched, warnings=warnings, pin_warning=pin_warning)
         if len(patched) > 60000:
             raise OperationError("Release body reached the managed display limit")
         if patched != original:
@@ -575,14 +604,16 @@ class Controller(
             self.prefetch_memberships(state["bugs"].values())
         for number, bug in state["bugs"].items():
             related = rows.get(int(number), [])
+            labels = [entry["name"] for entry in bug["labels"]]
+            status_labels = {entry for entry in labels if entry.startswith("status:")}
             label, project_status = bug_progress(
                 bug["state"] == "closed",
                 {pr["number"] for pr in related if pr["merged_at"]},
                 bool(related),
+                already_fixing="status:fixing" in status_labels,
             )
-            labels = [entry["name"] for entry in bug["labels"]]
-            if label not in labels or "bug" not in labels:
-                desired = [entry for entry in labels if not entry.startswith("status:")]
+            if status_labels != {label} or "bug" not in labels:
+                desired = [entry for entry in labels if entry not in status_labels]
                 if "bug" not in desired:
                     desired.append("bug")
                 self.api.rest(
@@ -623,10 +654,101 @@ class Controller(
         if not is_plan and command != "/release_check":
             return
         self.authorize(event["sender"]["login"])
-        if is_plan:
-            self.apply_plan(source["number"], is_plan[1], bool(is_plan[2]))
-        else:
-            self.release_check(source["number"])
+        self.acknowledge_comment(comment)
+        release = source["number"]
+        try:
+            self.write_command_feedback(release, command, comment, "Running", "")
+        except OperationError as error:
+            print(f"Could not write running status for #{release}: {error}")
+
+        status = "Succeeded"
+        try:
+            if is_plan:
+                dry_run = bool(is_plan[2])
+                result = self.apply_plan(release, is_plan[1], dry_run)
+                if dry_run:
+                    details = preview_details(result)
+                else:
+                    milestone = result["milestone"]
+                    details = (
+                        f"[Milestone {milestone['title']}]({milestone['html_url']})"
+                        f" · Bug Archive #{result['archive']}"
+                    )
+            else:
+                _, report = self.release_check(release)
+                self.write_release_check(release, report, self.command_run_url())
+                if report["status"] == "blocked":
+                    status = "Blocked"
+                details = check_details(report)
+        except Exception as error:
+            report_result("Release command failed", str(error))
+            try:
+                self.write_command_feedback(
+                    release,
+                    command,
+                    comment,
+                    "Failed",
+                    escape(" ".join(str(error).split())),
+                )
+            except OperationError as feedback_error:
+                print(
+                    f"Could not write command feedback for #{release}: {feedback_error}"
+                )
+            raise
+        self.write_command_feedback(release, command, comment, status, details)
+
+    def acknowledge_comment(self, comment):
+        if not (comment_id := comment.get("id")):
+            return
+        try:
+            self.api.rest(
+                f"issues/comments/{comment_id}/reactions",
+                "POST",
+                {"content": "eyes"},
+            )
+        except OperationError as error:
+            print(f"Comment #{comment_id} acknowledgement unavailable: {error}")
+
+    def write_command_feedback(self, release, command, comment, status, details):
+        issue = self.issue(release)
+        body = command_feedback(
+            issue["body"],
+            command,
+            status,
+            details,
+            comment.get("html_url"),
+            self.command_run_url(),
+        )
+        self.patch_issue(issue, {"body": body})
+
+    def command_run_url(self):
+        server = os.environ.get("GITHUB_SERVER_URL")
+        run_id = os.environ.get("GITHUB_RUN_ID")
+        if not server or not run_id:
+            return None
+        url = f"{server}/{self.repository}/actions/runs/{run_id}"
+        if attempt := os.environ.get("GITHUB_RUN_ATTEMPT"):
+            url += f"/attempts/{attempt}"
+        return url
+
+    def finalize_command(self, event, job_status):
+        if not (run_url := self.command_run_url()):
+            return
+        comment = event["comment"]
+        command = comment["body"].strip()
+        comment_url = comment.get("html_url")
+        issue = self.issue(event["issue"]["number"])
+        _, current = replace_region(issue["body"], COMMAND_START, COMMAND_END)
+        running = command_feedback(
+            "", command, "Running", "", comment_url, run_url
+        ).strip()
+        if current != running:
+            return
+        status = {"failure": "Failed", "cancelled": "Cancelled"}[job_status]
+        body = command_feedback(
+            issue["body"], command, status, "", comment_url, run_url
+        )
+        self.patch_issue(issue, {"body": body})
 
     def reconcile_all(self, event=None):
         with self.snapshots():
@@ -646,6 +768,17 @@ class Controller(
                     self.reconcile(source["number"], event, source=source)
                 except OperationError as error:
                     errors.append(f"Release #{source['number']}: {error}")
+                    try:
+                        latest = self.issue(source["number"])
+                        body = update_attention(
+                            latest["body"],
+                            warnings=[f"Synchronization failed · {error}"],
+                        )
+                        self.patch_issue(latest, {"body": body})
+                    except OperationError as feedback_error:
+                        print(
+                            f"Could not write synchronization warning: {feedback_error}"
+                        )
             if errors:
                 raise OperationError("\n".join(errors))
 
@@ -696,13 +829,19 @@ def main():
     parser.add_argument(
         "--event-name", default=os.environ.get("GITHUB_EVENT_NAME", "schedule")
     )
+    parser.add_argument("--finalize", choices=("failure", "cancelled"))
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     repository = os.environ.get("GITHUB_REPOSITORY", config["repository"])
     if repository != config["repository"]:
         raise OperationError("部署仓库与 config.json 的 repository 不一致")
     event = json.loads(args.event.read_text(encoding="utf-8")) if args.event else {}
-    Controller(GitHub(repository), config).handle(event, args.event_name)
+    controller = Controller(GitHub(repository), config)
+    if args.finalize:
+        if args.event_name == "issue_comment":
+            controller.finalize_command(event, args.finalize)
+        return
+    controller.handle(event, args.event_name)
     print(
         json.dumps(
             {"status": "completed", "event": args.event_name, "repository": repository}
