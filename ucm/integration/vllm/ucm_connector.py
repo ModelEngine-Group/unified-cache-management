@@ -2128,6 +2128,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         hbm_hit_block_num = num_computed_tokens // self.block_size
         if request.status == RequestStatus.PREEMPTED:
             self.requests_meta.pop(request.request_id, None)
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
 
         if request.request_id not in self.requests_meta:
             assert self.request_block_hasher is not None
@@ -2380,10 +2384,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_dump_req_ids.difference_update(
             scheduler_output.preempted_req_ids or set()
         )
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Keep the ids across steps: newer releases no longer flag the resumed
+        # request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(scheduler_output.preempted_req_ids or ())
+
         requests_dispatch_meta = {}
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids[0]
+            # A resumed request is re-admitted here. Its complete block table is
+            # already handled by need_load=True; retire the record so the next
+            # decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
@@ -2400,20 +2416,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
         if not isinstance(scheduled_cached_reqs, list):
             # >= 0.9.2
+            # 0.34+ carries no resume field: a resumed request is re-admitted
+            # through scheduled_new_reqs and handled above. Honour the field
+            # when the scheduler still provides it, otherwise fall back to the
+            # preemption record kept by this connector.
+            resume_flags = getattr(
+                scheduled_cached_reqs, "resumed_from_preemption", None
+            )
             for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+                if resume_flags is not None:
+                    resumed_from_preemption = resume_flags[i]
+                elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                    resumed_from_preemption = (
+                        request_id in scheduled_cached_reqs.resumed_req_ids
+                    )
+                else:
+                    resumed_from_preemption = request_id in resumed_req_ids
+                resumed_req_ids.discard(request_id)
                 req_meta = self.requests_meta.get(request_id)
                 if req_meta:
                     new_block_ids = []
                     if scheduled_cached_reqs.new_block_ids[i] != None:
                         new_block_ids = scheduled_cached_reqs.new_block_ids[i][0]
-                    if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                        resumed_from_preemption = (
-                            scheduled_cached_reqs.resumed_from_preemption[i]
-                        )
-                    else:
-                        resumed_from_preemption = (
-                            request_id in scheduled_cached_reqs.resumed_req_ids
-                        )
                     requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
@@ -2439,6 +2463,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         # Async loads are intentionally absent from scheduled request lists.
         # Dispatch their transfer plans independently of model-forward work.
