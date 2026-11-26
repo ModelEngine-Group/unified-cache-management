@@ -160,7 +160,7 @@ std::shared_ptr<spdlog::logger> Logger::Make()
     if (this->logger_) { return this->logger_; }
     std::string pid = std::to_string(getpid());
     std::string log_path = this->path_ + "/kv-" + pid + ".log";
-    const std::string name = "KV";
+    const std::string name = "client";
     try {
         if (!spdlog::thread_pool()) { spdlog::init_thread_pool(8192, 1); }
         auto tp = spdlog::thread_pool();
@@ -178,7 +178,7 @@ std::shared_ptr<spdlog::logger> Logger::Make()
 
         auto logger = std::make_shared<spdlog::async_logger>(
             name, sinks.begin(), sinks.end(), tp, spdlog::async_overflow_policy::overrun_oldest);
-        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+        logger->set_pattern("%Y-%m-%d %H:%M:%S.%f KV_%n [%^%L%$] %P,%t [%s:%#,%!]  %v");
 
         auto level_str = spdlog::details::os::getenv("KV_LOG_LEVEL");
         if (level_str.empty()) { level_str = spdlog::details::os::getenv("KV_LOGGER_LEVEL"); }
@@ -210,9 +210,9 @@ std::shared_ptr<spdlog::logger> Logger::MakeCapture()
         auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
             log_path, this->max_size_, this->max_files_);
         auto logger =
-            std::make_shared<spdlog::async_logger>("KV_CAPTURE", file_sink, spdlog::thread_pool(),
+            std::make_shared<spdlog::async_logger>("capture", file_sink, spdlog::thread_pool(),
                                                    spdlog::async_overflow_policy::overrun_oldest);
-        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
+        logger->set_pattern("%Y-%m-%d %H:%M:%S.%f KV_%n [%^%L%$] %P,%t [%s:%#,%!]  %v");
         if (main_logger) { logger->set_level(main_logger->level()); }
         logger->flush_on(spdlog::level::warn);
         spdlog::register_logger(logger);

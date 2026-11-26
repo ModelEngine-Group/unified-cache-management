@@ -29,7 +29,7 @@
 #include <spdlog/details/thread_pool.h>
 #include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
-#include <spdlog/sinks/stdout_sinks.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include <stdexcept>
 #include <vector>
 #include "utils/file_util.h"
@@ -90,9 +90,9 @@ void LoggerManager::CreateLogger(const LogConfigUtil &logConfig, spdlog::level::
     sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
         (std::filesystem::path(dir) / fileName).string(), logConfig.GetMaxFileSize(),
         logConfig.GetMaxFiles()));
-    // 控制台 sink（无色纯文本，输出常被重定向）
+    // 控制台 sink（级别彩色；输出重定向到非终端时自动禁色，文件 sink 不受影响）
     if (logConfig.GetConsole()) {
-        sinks.push_back(std::make_shared<spdlog::sinks::stdout_sink_mt>());
+        sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
     }
     out = std::make_shared<spdlog::async_logger>(name, sinks.begin(), sinks.end(), threadPool_,
                                                  spdlog::async_overflow_policy::block);
