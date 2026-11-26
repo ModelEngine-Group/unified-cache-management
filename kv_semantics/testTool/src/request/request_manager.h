@@ -74,6 +74,36 @@ public:
     const FlowStep &GetStep(std::size_t index) const;
 
 private:
+    /** 解析单行并按当前状态分派（批内行 / 顶层行）；失败填 err 返回 false */
+    bool ProcessLine(std::size_t lineNo, const std::string &line, std::string &err);
+
+    /** 批内行处理：/batch 闭合当前批，其余行解析为批内 entry（op 与 nsid 继承批头） */
+    bool HandleBatchBody(std::size_t lineNo, const std::string &line,
+                         const std::vector<std::string> &tokens, std::string &err);
+
+    /** 顶层行处理：sleep 暂停 / batch 头开始聚合 / 单 key 行独立任务 */
+    bool HandleTopLevel(std::size_t lineNo, const std::string &line,
+                        const std::vector<std::string> &tokens, std::string &err);
+
+    /** 批闭合：空批告警忽略（无数据可执行，不属数据错误），非空批作为一个任务入步骤序列 */
+    void CloseBatch(std::size_t lineNo);
+
+    /** batch 头（op 后接 batch）：初始化批聚合状态，开始收集批内行 */
+    bool BeginBatch(OrcOp op, const std::vector<std::string> &fields, std::size_t lineNo,
+                    const std::string &line, std::string &err);
+
+    /** 单 key 行组装为独立任务入步骤序列 */
+    bool AppendSingleTask(OrcOp op, const std::vector<std::string> &fields, const std::string &line,
+                          std::size_t lineNo, std::string &err);
+
+    /** entry 协议约束校验（fail-fast）：违规组装 err 报错，不等到运行期任务失败 */
+    bool CheckEntry(const RequestOrc &entry, std::size_t lineNo, const std::string &line,
+                    std::string &err);
+
     /** 已解析的步骤序列（与 input 文件行序一致） */
     std::vector<FlowStep> steps_;
+
+    /** 批聚合状态：batch 头置位开始收集批内行，/batch 闭合复位 */
+    bool inBatch_{false};
+    OrcTask batchTask_;
 };

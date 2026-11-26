@@ -35,7 +35,8 @@ cmake --build build -j
 - **版权标记**：`src/` 下所有 C/C++ 源码文件（`.h` / `.cc` / `.cpp`）顶部必须包含与仓库统一的完整 MIT License 声明（与 `kv_semantics` 现有源文件同形态，见 `testTool/AGENTS.md` 中的完整模板）；CMakeLists.txt、conf 等非 C/C++ 文件不加。
 - **clang-format 风格（硬性）**：全部 C/C++ 源码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、4 空格缩进、100 列行宽）保持一致；改动文件交付前执行 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。宿主机先安装 clang-format（如 `apt-get install clang-format`），再以 `clang-format --style=file:<仓库根>/.clang-format -i <文件>` 执行。
 - 头文件统一使用 `#pragma once` 防止重复包含，不使用传统 include 守卫。
-- 方法（函数）前需有中文注释说明职责，一句话即可；仅参数较多或含义不直观时补充参数与返回值说明，简单参数不写；方法体内只在关键逻辑处注释，不逐行注释。
+- 方法（函数）注释按需写：签名与命名已能自明（如一行 getter / setter）时不写；仅职责无法从签名直观理解时写一句话；参数较多或含义不直观时补充参数与返回值说明；方法体内只在关键逻辑处注释，不逐行注释。
+- **注释保持精简（防膨胀）**：注释只写"看代码看不出来的东西"（坑、顺序约束、异常契约等关键语义）；工作笔记——历史沿革、决策过程、方案对比、"不再 / 沿用某做法"等过程性叙述一律不写；单条注释超过两行即视为膨胀，应精简注释而不是扩写。
 - 默认不使用 namespace，类名直接全局命名；确需 namespace 时另行约定。
 - 类名与文件名保持一致：CamelCase 类名对应 snake_case 文件名（如 `LoggerManager` → `logger_manager.h`），仅允许大小写与下划线差异。
 - 新增源文件放入 `src/` 对应模块目录（扩展名优先 `.cc`，兼容 `.cpp`）；GLOB 自动收集（CONFIGURE_DEPENDS），无需修改 CMakeLists。

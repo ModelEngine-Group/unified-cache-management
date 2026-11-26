@@ -56,12 +56,10 @@ struct FlowSegment {
 };
 
 /**
- * 调度器：统一管理 kv client 与全部执行器的生命周期——
- * 初始化（kv client 建链 + 值缓冲池一次性分配注册，尺寸与内存类型来自 conf，与 input 无关；
- * 参考 kv_test 用法：region 注册仅发生在建链阶段，执行期只复用）、
- * 多 worker 并发执行任务流（numjobs 个线程共享任务流按步骤下标原子领取，每任务仅执行一次；
- * sleep 步骤为段边界，全员到齐后统一停顿——脉冲语义）、
- * 秒级周期汇总各执行器埋点指标并输出、停止时注销请求内存并关闭 client。
+ * 调度器：管理 kv client 与执行器的生命周期——初始化（建链 + 值缓冲池分配注册）、
+ * 多 worker 并发执行任务流（numjobs 线程共享任务流按原子游标领取，每任务仅执行一次；
+ * sleep 步骤为段边界，全员到齐后统一停顿——脉冲语义）、秒级周期汇总输出指标、
+ * 停止时注销请求内存并关闭 client。
  */
 class Scheduler {
 public:
@@ -70,32 +68,29 @@ public:
     ~Scheduler();
 
     /**
-     * 初始化：kv client 建链、值缓冲池分配（buffercount 块 × buffersize 字节，内存类型按
-     * buffertype：cpu 主机内存 / gpu CUDA 显存 / npu ACL NPU 内存）并完成内存注册（两模式
-     * 共用，region 注册仅此一次）；IO 执行器不在此创建——执行模式经 PrepareExecutors 单独准备
+     * 初始化：kv client 建链、值缓冲池分配（buffercount 块 × buffersize 字节，内存
+     * 类型按 buffertype）并完成内存注册；IO 执行器不在此创建，执行模式经
+     * PrepareExecutors 单独准备
      * @param config 测试配置（取 buffersize / buffercount / buffertype / deviceid）
      */
     bool initializeAndRegister(const std::string &confPath, const ConfigUtil &config,
                                std::string &err);
 
     /**
-     * IO 执行准备：创建执行器并绑定 client 与分配器（每 worker 一个执行器：独立埋点，指标
-     * 汇总时求和）；同时缓存 worker 数与起始绑核编号（worker i 绑 startcoreid+i）——
-     * 执行器属 IO 工具层，须在 initializeAndRegister 成功后调用；只建链模式
-     * （onlyconnect=on）不调用
+     * IO 执行准备：创建执行器并绑定 client 与分配器（每 worker 一个）；须在
+     * initializeAndRegister 成功后调用，只建链模式不调用
      * @param config 测试配置（取 numjobs / startcoreid）
      */
     bool PrepareExecutors(const ConfigUtil &config, std::string &err);
 
     /**
-     * 执行 input 任务流：numjobs 个 worker 线程并发执行——任务流按 sleep 步骤切段，段内任务经
-     * 原子游标领取（每任务仅执行一次），段末全员到齐后统一停顿（脉冲）再放下一段；任务组装时
-     * 从共享缓冲池领用独占块；重复执行语义，false 仅当工具链失败（err 说明首次失败）
+     * 执行 input 任务流：numjobs 个 worker 线程并发执行——任务流按 sleep 步骤切段，
+     * 段内任务经原子游标领取，段末全员停顿（脉冲）再放下一段；重复执行语义，
+     * false 仅当工具链失败（err 说明首次失败）
      * @param requestManager 已解析的任务流
      * @param testmode 值生成模式（1 系统生成，2 行尾 value 字段）
-     * @param runtime 运行时长秒；>0 限时模式，跑满即停（时间到不开新圈，当前圈跑完）；
-     *               =0 圈数模式（以 loop 为准）
-     * @param loop 循环执行圈数（整个任务流重复 loop 遍），仅 runtime=0 时生效（Check 已保证 >0）
+     * @param runtime 运行时长秒；>0 限时模式，跑满即停；=0 圈数模式（以 loop 为准）
+     * @param loop 循环执行圈数，仅 runtime=0 时生效（Check 已保证 >0）
      */
     bool Run(const RequestManager &requestManager, int testmode, int runtime, int loop,
              std::string &err);
@@ -105,36 +100,32 @@ public:
 
 private:
     /**
-     * 组装单个执行任务的数据包：任务第 i 条 entry 绑定领用块 owned[i]（条数超池的检查在领用前
-     * 由调用方完成）、值块生成经分配器写入缓冲（device 语义为 H2D）、KVBuffer 组装（region.size
-     * 为本次 IO 长度）、基准表更新与查询（加锁，多 worker 并发安全）
+     * 组装单个执行任务的数据包：entry 绑定领用块、值块经分配器写入缓冲、KVBuffer 组装
+     * （region.size 为本次 IO 长度）、基准表更新与查询（加锁）
      */
     bool buildTaskRequest(const OrcTask &task, int testmode, const std::vector<std::size_t> &owned,
                           Request &request, std::string &err);
 
     /**
-     * worker 线程主循环：绑核并命名后进入领任务循环——锁内查退出标志与当前段末，段内经原子
-     * 游标领取任务（每任务仅执行一次）并发执行，本段领完进 barrier 全员同步；持续执行语义，
-     * 单任务工具链失败记录后继续；绑核失败属配置错误（核数不匹配），捕获异常后唤醒全员
-     * 退出（fail-fast，不做裸跑降级）
+     * worker 线程主循环：绑核并命名后进入领任务循环——锁内查退出标志与当前段末，
+     * 段内经原子游标领取任务并发执行，本段领完进 barrier 全员同步；单任务工具链
+     * 失败记录后继续；绑核失败唤醒全员退出（fail-fast）
      */
     void WorkerLoop(int workerId, int testmode);
 
     /**
-     * 段末全员 barrier：全员到齐（本段任务全部完成）后由最后到者统一停顿（脉冲，秒数取段边界
-     * sleep 步骤）并推进段、判定圈末退出（限时跑满不开新圈、圈数跑满退出），再开闸放下一段
+     * 段末全员 barrier：全员到齐后由最后到者统一停顿（脉冲）并推进段、判定圈末退出，
+     * 再开闸放下一段
      */
     void EnterBarrier();
 
-    /** 领取 count 块独占值缓冲（owned 输出块下标；空闲不足时阻塞等待其他任务归还，调用方已保证
-     * count 不超池总量） */
+    /** 领取 count 块独占值缓冲（owned 输出块下标；空闲不足时阻塞等待） */
     void AcquireBuffers(std::size_t count, std::vector<std::size_t> &owned);
 
     /** 归还值缓冲块到空闲池并唤醒等待领用的 worker */
     void ReleaseBuffers(const std::vector<std::size_t> &owned);
 
-    /** 绑定当前线程到指定 CPU 核（Linux 平台直调）；失败抛异常——startcoreid/numjobs 与
-     *  环境核数不匹配属配置错误，调用方 fail-fast 不继续执行 */
+    /** 绑定当前线程到指定 CPU 核（Linux 平台）；失败抛异常，调用方 fail-fast */
     void BindThreadToCore(int core);
 
     /** 记录工具链失败并打错误日志（保留首次失败描述，线程安全） */
