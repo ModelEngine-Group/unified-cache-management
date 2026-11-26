@@ -259,4 +259,80 @@ NodeEndpoint ParseTransportEndpoint(const std::string& value)
     return endpoint;
 }
 
+namespace {
+
+// Marker used when a recognized numeric config value cannot be parsed. The
+// value is out of every legal range, so Validate() rejects it with
+// INVALID_ARGUMENT at Init time instead of silently falling back.
+constexpr std::uint32_t kInvalidConfigMarker = 0xFFFFFFFFu;
+
+std::uint32_t ParseStrictUint32(const std::string& value)
+{
+    const auto parsed = ParseConfigUint64(value, std::numeric_limits<std::uint64_t>::max());
+    if (parsed == std::numeric_limits<std::uint64_t>::max() ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return kInvalidConfigMarker;
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+std::uint64_t ParseStrictUint64(const std::string& value)
+{
+    return ParseConfigUint64(value, std::numeric_limits<std::uint64_t>::max());
+}
+
+}  // namespace
+
+Status RetryConfig::Validate() const
+{
+    if (busyRetryCount > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_count must be in 0..16");
+    }
+    if (failoverRetryCount > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.failover_retry_count must be in 0..16");
+    }
+    if (busyRetryBackoffBaseMs == 0 || busyRetryBackoffBaseMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_backoff_base_ms must be greater than 0");
+    }
+    if (busyRetryBackoffMaxMs == 0 || busyRetryBackoffMaxMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.busy_retry_backoff_max_ms must be greater than 0");
+    }
+    if (taskTimeoutMs == 0 || taskTimeoutMs == std::numeric_limits<std::uint64_t>::max()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.task_timeout_ms must be greater than 0");
+    }
+    if (attemptTimeoutMs == 0 || attemptTimeoutMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "retry.attempt_timeout_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+bool ApplyTransportRetryConfigField(TransportConfig& config, const std::string& key,
+                                    const std::string& value)
+{
+    if (key == "retry.busyRetryCount" || key == "retry.busy_retry_count") {
+        config.retry.busyRetryCount = ParseStrictUint32(value);
+    } else if (key == "retry.busyRetryBackoffBaseMs" ||
+               key == "retry.busy_retry_backoff_base_ms") {
+        config.retry.busyRetryBackoffBaseMs = ParseStrictUint32(value);
+    } else if (key == "retry.busyRetryBackoffMaxMs" ||
+               key == "retry.busy_retry_backoff_max_ms") {
+        config.retry.busyRetryBackoffMaxMs = ParseStrictUint32(value);
+    } else if (key == "retry.failoverRetryCount" || key == "retry.failover_retry_count") {
+        config.retry.failoverRetryCount = ParseStrictUint32(value);
+    } else if (key == "retry.taskTimeoutMs" || key == "retry.task_timeout_ms") {
+        config.retry.taskTimeoutMs = ParseStrictUint64(value);
+    } else if (key == "retry.attemptTimeoutMs" || key == "retry.attempt_timeout_ms") {
+        config.retry.attemptTimeoutMs = ParseStrictUint32(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
 }  // namespace kv

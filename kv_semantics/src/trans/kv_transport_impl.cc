@@ -75,8 +75,11 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     }
     if (config_.completionPollSpinLimit == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "completionPollSpinLimit must be greater than 0");
+                              "completionPollSpinLimit must be greater than 0");
     }
+    // Structured connection-reliability sections: illegal values are rejected
+    // with INVALID_ARGUMENT instead of silent fallback.
+    if (auto status = config_.retry.Validate(); !status.ok()) { return status; }
 
     if (!transProvider_) {
         KV_ERROR("AsuTransportImpl::Init: TransProvider is null");
@@ -233,7 +236,9 @@ Status AsuTransportImpl::Submit(const TransportTaskPtr& task)
     if (!task) { return Status::Error(StatusCode::INVALID_ARGUMENT, "transport task is null"); }
     const auto entryCount = IsEntryBatchOp(task->opType) ? task->entries.size() : task->keys.size();
     task->entryStatus.assign(entryCount, Status::OK());
-    task->deadline = TaskDeadline(config_.timeoutMs);
+    // The task total deadline comes from the structured RetryConfig section;
+    // the client Wait timeout is a separate concept.
+    task->deadline = TaskDeadline(config_.retry.taskTimeoutMs);
     return SubmitTask(task);
 }
 

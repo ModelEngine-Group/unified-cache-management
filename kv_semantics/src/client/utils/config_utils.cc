@@ -222,6 +222,10 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
 
     for (auto& transportConfig : config.transportConfigs) {
         transportConfig.timeoutMs = config.timeoutMs;
+        // The structured task deadline defaults to the client wait timeout for
+        // backward compatibility; an explicit transport.retry.task_timeout_ms
+        // (applied below) overrides it. Zero keeps the RetryConfig default.
+        if (config.timeoutMs > 0) { transportConfig.retry.taskTimeoutMs = config.timeoutMs; }
         for (const auto& field : transportFields) {
             if (ApplyTransportCompletionConfigField(transportConfig, field.first, field.second)) {
                 continue;
@@ -238,9 +242,12 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             if (ApplyTransportDeviceConfigField(transportConfig, field.first, field.second)) {
                 continue;
             }
+            if (ApplyTransportRetryConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
             if (field.first == "maxErrorCount" || field.first == "max_error_count") {
-                transportConfig.maxErrorCount =
-                    static_cast<std::uint32_t>(ParseConfigUint64(field.second));
+                const auto parsed = static_cast<std::uint32_t>(ParseConfigUint64(field.second));
+                transportConfig.maxErrorCount = parsed;
                 continue;
             }
             if (field.first == "maxInflightTasks" || field.first == "max_inflight_tasks") {
