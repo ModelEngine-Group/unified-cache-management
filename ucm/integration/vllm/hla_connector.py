@@ -1938,15 +1938,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # rank 0 as well as other ranks and isolates prefetch failures.
         self._prefetch_direct_hit_key_hotness(hbm_full_attn, per_rank_hashes)
 
-        if len(primary_block_ids) > 0:
-            ucmmetrics.update_stats(
-                {
-                    "interval_lookup_hit_rates": external_hit_lcm_blocks
-                    * lcm_block_size
-                    / (len(primary_block_ids) * primary_full_attn.block_size)
-                },
-            )
-
         # No post-lookup workaround needed: pre-lookup truncation already
         # ensures the mamba state at total_hit_tokens is verified.
         num_total_hit_tokens = total_hit_block_num * lcm_block_size

@@ -2230,14 +2230,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not external_block_ids:
             return 0, False
 
-        ucmmetrics.update_stats(
-            {
-                "interval_lookup_hit_rates": external_hit_blocks
-                * self.cp_world_size
-                / len(ucm_block_ids)
-            },
-        )
-
         total_hit_block_num = hbm_hit_block_num + external_hit_blocks
 
         external_hit_tokens = external_hit_blocks * self.block_size
@@ -2921,6 +2913,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._dumped_layer_ids: set[int] = set()
         self._layerwise_load_start_by_layer: dict[int, float] = {}
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_layer_load_wait_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
@@ -3127,7 +3120,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         load_start = self._layerwise_load_start_by_layer.pop(layer_id)
         duration_ms = self._non_negative_ms((load_end - load_start) * 1000)
         self._layerwise_layer_load_duration_sum_ms += duration_ms
-        ucmmetrics.update_stats({"layerwise_layer_load_duration_ms": duration_ms})
         return True
 
     def _submit_layerwise_dump_task(
@@ -3248,6 +3240,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.need_load = False
         self._layerwise_load_start_by_layer.clear()
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_layer_load_wait_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         self.dump_total_ptrs = None
@@ -3296,7 +3289,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         if not layer_tasks:
             # A repeated hook must not resubmit and replace next-layer tasks.
             return
-
+        wait_start = time.perf_counter()
         for request_id, task in layer_tasks.items():
             try:
                 self._rank_consistency.wait_load(task)
@@ -3318,6 +3311,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
 
         wait_end = time.perf_counter()
+        self._layerwise_layer_load_wait_duration_sum_ms += self._non_negative_ms(
+            (wait_end - wait_start) * 1000
+        )
         load_duration_recorded = self._record_layerwise_load_duration(
             current_layer_id, wait_end
         )
@@ -3331,13 +3327,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         elif load_duration_recorded:
             duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
+            wait_duration_sum_ms = self._layerwise_layer_load_wait_duration_sum_ms
             ucmmetrics.update_stats(
                 {
                     "layerwise_batch_load_duration_sum_ms": duration_sum_ms,
+                    "layerwise_batch_load_wait_duration_sum_ms": wait_duration_sum_ms,
                     "load_bytes_total": self._layerwise_load_bytes,
                 }
             )
             self._layerwise_layer_load_duration_sum_ms = 0.0
+            self._layerwise_layer_load_wait_duration_sum_ms = 0.0
             self._layerwise_load_bytes = 0
 
     def save_kv_layer(

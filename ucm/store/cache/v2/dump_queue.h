@@ -76,6 +76,7 @@ class DumpQ {
     bool ioAggregation_{false};
     bool useGdr_{false};
     std::vector<size_t> tensorSizes_{};
+    size_t shardBytes_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
     SpscRingQueue<DumpCtx> dumping_{};
@@ -99,6 +100,7 @@ public:
         ioAggregation_ = config.ioAggregation;
         useGdr_ = config.useGdr;
         tensorSizes_ = config.tensorSizes;
+        shardBytes_ = config.shardSize;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
         if (backend_ != nullptr) {
@@ -113,7 +115,12 @@ public:
     void Submit(TaskPtr task, WaiterPtr waiter)
     {
         waiter->Up();
-        if (waiting_.TryPush({task, waiter})) { return; }
+        if (waiting_.TryPush({task, waiter})) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_waiting_enqueue_total"), 1.0);
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_waiting_bytes_total"),
+                                 static_cast<double>(shardBytes_ * task->desc.size()));
+            return;
+        }
         UC_ERROR("Waiting queue full, submit dump task({}) failed.", task->id);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_full_total"), 1.0);
         failureSet_->Insert(task->id);
@@ -154,6 +161,7 @@ private:
         auto& [task, waiter] = pair;
         auto queueWaitMs = (NowTime::Now() - waiter->startTp) * 1e3;
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), queueWaitMs);
+        Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_waiting_dequeue_total"), 1.0);
         if (!failureSet_->Contains(task->id)) {
             auto s = DumpOneTask(stream, task);
             if (s.Failure()) [[unlikely]] {
@@ -262,6 +270,7 @@ private:
                              static_cast<double>(nBackendShards));
         ctx.backendTaskHandle = res.Value();
         dumping_.Push(std::move(ctx));
+        Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_wait_enqueue_total"), 1.0);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         return Status::OK();
@@ -278,6 +287,7 @@ private:
         }
         BindCpuAffinity();
         dumping_.ConsumerLoop(stop_, [this](DumpCtx&& ctx) {
+            Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_wait_dequeue_total"), 1.0);
             if (ctx.backendTaskHandle == 0) { return; }
             const auto startTp = NowTime::Now();
             auto s = backend_->Wait(ctx.backendTaskHandle);

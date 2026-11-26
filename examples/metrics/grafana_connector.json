@@ -2063,7 +2063,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:layerwise_layer_load_duration_ms`；单层从开始加载到该层 `wait_for_layer_load` 返回的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector._record_layerwise_load_duration` / 单层加载完成后。",
+      "description": "指标：`ucm:layerwise_batch_load_duration_sum_ms`；一个 Layerwise batch 内各层加载耗时之和，本面板展示 avg、p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector.wait_for_layer_load` / 最后一层加载完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2130,7 +2130,7 @@
         "x": 0,
         "y": 40
       },
-      "id": 47,
+      "id": 48,
       "options": {
         "legend": {
           "calcs": [
@@ -2154,8 +2154,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -2165,8 +2165,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -2176,13 +2176,24 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Layerwise Per-Layer Load Duration",
+      "title": "Layerwise All-Layer Load Duration Sum",
       "type": "timeseries"
     },
     {
@@ -2190,7 +2201,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:layerwise_batch_load_duration_sum_ms`；一个 Layerwise batch 内各层加载耗时之和，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector.wait_for_layer_load` / 最后一层加载完成后。",
+      "description": "指标：`ucm:layerwise_batch_load_wait_duration_sum_ms`；一个 Layerwise batch 内各层 `wait_for_layer_load` 阻塞等待耗时之和，本面板展示 avg、p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector.wait_for_layer_load` / 最后一层加载完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2257,7 +2268,7 @@
         "x": 12,
         "y": 40
       },
-      "id": 48,
+      "id": 51,
       "options": {
         "legend": {
           "calcs": [
@@ -2281,8 +2292,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{engine}} {{worker_rank}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "avg {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -2292,8 +2303,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{engine}} {{worker_rank}}",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -2303,13 +2314,24 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p90 {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Layerwise All-Layer Load Duration Sum",
+      "title": "Layerwise All-Layer Load Wait Duration Sum",
       "type": "timeseries"
     },
     {
