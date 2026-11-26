@@ -148,6 +148,33 @@ enum class Protocol {
 
 enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 
+// Channel selection policy used by the connection manager.
+enum class SelectionPolicy : std::uint8_t {
+    ROUND_ROBIN = 0,
+    LEAST_LOADED = 1,
+};
+
+// Endpoint-level connection recovery knobs shared by Init and runtime
+// recovery. Each round tries 1+K connection attempts with connectTimeoutMs;
+// failures double the backoff capped at recoverMaxBackoffMs and a successful
+// round resets the backoff to the initial value.
+struct RecoveryConfig {
+    std::uint32_t connectTimeoutMs{5000};
+    std::uint32_t connectRetryPerRound{2};  // K, valid range 0..16
+    std::uint32_t recoverInitialBackoffMs{100};
+    std::uint32_t recoverMaxBackoffMs{5000};
+    std::uint32_t recoverCheckIntervalMs{100};
+    Status Validate() const;
+};
+
+// Connection state machine knobs. X=1 means a single consecutive link failure
+// drains the channel; a valid response resets the consecutive failure count.
+struct ConnectionConfig {
+    SelectionPolicy selectionPolicy{SelectionPolicy::ROUND_ROBIN};
+    std::uint32_t maxErrorCount{1};  // X >= 1, consecutive failure threshold
+    Status Validate() const;
+};
+
 struct NodeEndpoint {
     std::string ip;
     std::uint16_t port{0};
@@ -180,6 +207,11 @@ struct TransportConfig {
     std::uint64_t timeoutMs{100};
     std::uint32_t maxErrorCount{2};
     std::size_t completionPollSpinLimit{16};
+
+    // Connection reliability configuration sections (validated at Init;
+    // illegal values return INVALID_ARGUMENT instead of silent fallback).
+    RecoveryConfig recovery;
+    ConnectionConfig connection;
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};

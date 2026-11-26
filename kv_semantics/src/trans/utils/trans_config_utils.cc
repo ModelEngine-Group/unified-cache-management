@@ -139,7 +139,10 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
         } else if (key == "timeoutMs" || key == "timeout_ms") {
             config.timeoutMs = ParseConfigUint64(value);
         } else if (key == "maxErrorCount" || key == "max_error_count") {
-            config.maxErrorCount = static_cast<std::uint32_t>(ParseConfigUint64(value));
+            const auto parsed = static_cast<std::uint32_t>(ParseConfigUint64(value));
+            config.maxErrorCount = parsed;
+            // The structured ConnectionConfig field is authoritative for X.
+            config.connection.maxErrorCount = parsed;
         } else if (key == "maxInflightTasks" || key == "max_inflight_tasks") {
             config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightBytes" || key == "max_inflight_bytes") {
@@ -154,11 +157,23 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
             continue;
         } else if (ApplyTransportDeviceConfigField(config, key, value)) {
             continue;
+        } else if (ApplyTransportRecoveryConfigField(config, key, value)) {
+            continue;
+        } else if (ApplyTransportConnectionConfigField(config, key, value)) {
+            continue;
         } else {
             config.attrs[key] = value;
         }
     }
-    return ValidateSqeRequestAttrs(config.attrs);
+
+    auto status = ValidateSqeRequestAttrs(config.attrs);
+    if (!status.ok()) { return status; }
+    // Connection reliability sections are validated here so that an illegal
+    // value surfaces as INVALID_ARGUMENT from Init instead of being silently
+    // accepted by a later consumer.
+    status = config.recovery.Validate();
+    if (!status.ok()) { return status; }
+    return config.connection.Validate();
 }
 
 }  // namespace kv

@@ -238,9 +238,17 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             if (ApplyTransportDeviceConfigField(transportConfig, field.first, field.second)) {
                 continue;
             }
+            if (ApplyTransportRecoveryConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
+            if (ApplyTransportConnectionConfigField(transportConfig, field.first,
+                                                    field.second)) {
+                continue;
+            }
             if (field.first == "maxErrorCount" || field.first == "max_error_count") {
-                transportConfig.maxErrorCount =
-                    static_cast<std::uint32_t>(ParseConfigUint64(field.second));
+                const auto parsed = static_cast<std::uint32_t>(ParseConfigUint64(field.second));
+                transportConfig.maxErrorCount = parsed;
+                transportConfig.connection.maxErrorCount = parsed;
                 continue;
             }
             if (field.first == "maxInflightTasks" || field.first == "max_inflight_tasks") {
