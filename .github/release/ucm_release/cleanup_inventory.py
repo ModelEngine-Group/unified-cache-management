@@ -57,7 +57,7 @@ def _tag(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     try:
-        version_config.classify_tag(value)
+        version_config.tag_type(value)
     except ValueError:
         return None
     return value
@@ -218,10 +218,50 @@ class ReleaseInventory:
                 or run.get("head_sha") != source_sha
             ):
                 raise CleanupError("release run does not match the exact Tag and SHA")
-        elif version_config.classify_tag(tag)["release_type"] != "nightly" or run.get(
-            "event"
-        ) not in {"schedule", "workflow_dispatch"}:
+        elif version_config.tag_type(tag) != "nightly" or run.get("event") not in {
+            "schedule",
+            "workflow_dispatch",
+        }:
             raise CleanupError("Nightly run does not match the Tag provenance")
+        else:
+            nightly = version_config.Nightly.parse(tag)
+            if not nightly.legacy_base and (
+                run.get("head_branch") != nightly.branch
+                or run.get("head_sha") != source_sha
+            ):
+                raise CleanupError("Nightly run differs from its source branch or SHA")
+
+    def publication_snapshot(
+        self,
+        tag: str,
+        source_sha: str,
+        run_id: int,
+        attempt: int,
+        release_id: int | None = None,
+        plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Take the package base from the immutable source when no plan exists yet."""
+        base = None
+        nightly = version_config.Nightly.parse(tag)
+        if nightly and not nightly.legacy_base and plan is None:
+            raw = self.remote.request(
+                "GET",
+                f"/repos/{self.repository}/contents/version.ini?ref={source_sha}",
+                accept="application/vnd.github.raw+json",
+            )
+            base = version_config.parse(raw.decode(), source=source_sha)[
+                "ucm_base_version"
+            ]
+        return domain.new_record(
+            self.repository,
+            tag,
+            source_sha,
+            run_id,
+            attempt,
+            release_id,
+            plan,
+            base_version=base,
+        )
 
     def _publication_runs(self, tag: str, source_sha: str) -> list[int]:
         """Find reruns that may precede their persistent ownership snapshot."""
@@ -232,10 +272,10 @@ class ReleaseInventory:
                 f"?branch={branch}&event=push"
             )
         ]
-        if version_config.classify_tag(tag)["release_type"] == "nightly":
+        if version_config.tag_type(tag) == "nightly":
             paths.append(
                 f"/repos/{self.repository}/actions/workflows/release-nightly.yml/runs"
-                f"?head_sha={source_sha}"
+                f"?head_sha={source_sha}&branch={version_config.Nightly.parse(tag).branch}"
             )
         runs: set[int] = set()
         for path in paths:
@@ -337,6 +377,14 @@ class ReleaseInventory:
             run = self._run(run_id)
             if run is None:
                 continue
+            if run["path"].split("@", 1)[0] == ".github/workflows/release-nightly.yml":
+                nightly = version_config.Nightly.parse(tag)
+                if (
+                    nightly
+                    and not nightly.legacy_base
+                    and run.get("head_branch") != nightly.branch
+                ):
+                    continue
             self._validate_run_binding(run, tag=tag, source_sha=run.get("head_sha"))
             if run.get("status") != "completed":
                 raise ActiveRelease(f"Tag may still be used by Actions run {run_id}")
@@ -452,8 +500,8 @@ class ReleaseInventory:
     ) -> dict[str, Any]:
         self._validate_run_binding(run, tag=tag, source_sha=source_sha)
         attempt = _positive(run.get("run_attempt"), "publication run attempt")
-        document = domain.new_record(
-            self.repository, tag, source_sha, run["id"], attempt, release_id, plan
+        document = self.publication_snapshot(
+            tag, source_sha, run["id"], attempt, release_id, plan
         )
         name = domain.record_basename(document, attempt, planned=plan is not None)
         content = (json.dumps(document, sort_keys=True, indent=2) + "\n").encode()
@@ -612,8 +660,7 @@ class ReleaseInventory:
                         "legacy publication run disappeared before recovery"
                     )
                 source_sha = run["head_sha"]
-                snapshot = domain.new_record(
-                    self.repository,
+                snapshot = self.publication_snapshot(
                     tag,
                     source_sha,
                     run_id,
@@ -656,8 +703,7 @@ class ReleaseInventory:
             for recovered in pending:
                 if recovered.release_id != release["id"]:
                     continue
-                snapshot = domain.new_record(
-                    self.repository,
+                snapshot = self.publication_snapshot(
                     recovered.tag,
                     recovered.source_sha,
                     recovered.run["id"],
@@ -741,7 +787,7 @@ class _Collector:
         tag = validated["tag"]
         if (
             self.release_type is not None
-            and version_config.classify_tag(tag)["release_type"] != self.release_type
+            and version_config.tag_type(tag) != self.release_type
         ):
             return
         previous = self.records.get(tag)
@@ -785,8 +831,7 @@ class _Collector:
             if (
                 self.release_type is not None
                 and candidate is not None
-                and version_config.classify_tag(candidate)["release_type"]
-                != self.release_type
+                and version_config.tag_type(candidate) != self.release_type
             ):
                 continue
             orphan = (

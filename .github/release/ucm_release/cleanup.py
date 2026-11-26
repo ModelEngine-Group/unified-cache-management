@@ -27,6 +27,7 @@ from ucm_release.cleanup_records import (
     ResourceFailure,
 )
 from ucm_release.cleanup_remote import ProductionRemote, RemoteError
+from ucm_release.nightly import latest_release_branch
 
 
 def execute_cleanup(
@@ -278,6 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
     retention.add_argument(
         "--release-type", choices=sorted(records.RELEASE_TYPES), required=True
     )
+    retention.add_argument(
+        "--latest-branch",
+        help="confirmed newest maintenance branch for Nightly retirement",
+    )
     retention.add_argument("--max-count", type=int, required=True)
     retention.add_argument("--pypi-enabled", type=_boolean, required=True)
     _add_remote_arguments(retention)
@@ -318,6 +323,10 @@ def _read_plan(arguments: argparse.Namespace) -> dict[str, Any] | None:
 
 def _run_record(arguments: argparse.Namespace) -> None:
     plan = _read_plan(arguments)
+    nightly = version_config.Nightly.parse(arguments.tag)
+    base = None
+    if nightly and not nightly.legacy_base:
+        base = version_config.load(version_config.DEFAULT_OUTPUT)["ucm_base_version"]
     snapshot = records.new_record(
         arguments.repository,
         arguments.tag,
@@ -326,6 +335,7 @@ def _run_record(arguments: argparse.Namespace) -> None:
         arguments.run_attempt,
         release_id=arguments.release_id,
         plan=plan,
+        base_version=base,
     )
     filename = records.record_basename(
         snapshot, arguments.run_attempt, planned=plan is not None
@@ -359,13 +369,12 @@ def _run_validate_record(arguments: argparse.Namespace) -> None:
 def _run_record_targets(
     arguments: argparse.Namespace, remote: ProductionRemote
 ) -> None:
-    coordinates = version_config.classify_tag(arguments.tag)
-    if coordinates["release_type"] != arguments.release_type:
+    if version_config.tag_type(arguments.tag) != arguments.release_type:
         raise CleanupError("record release type does not match the Tag")
     plan = _read_plan(arguments)
+    inventory = ReleaseInventory(remote)
     if arguments.dry_run:
-        records.new_record(
-            remote.repository,
+        inventory.publication_snapshot(
             arguments.tag,
             arguments.source_sha,
             arguments.run_id,
@@ -375,7 +384,7 @@ def _run_record_targets(
         )
         print(f"would-record: {arguments.tag}")
         return
-    ReleaseInventory(remote).save_record(
+    inventory.save_record(
         arguments.tag,
         arguments.run_id,
         arguments.source_sha,
@@ -556,7 +565,7 @@ def _run_targets(
 def _run_tag(
     arguments: argparse.Namespace, remote: ProductionRemote
 ) -> list[ResourceFailure]:
-    release_type = str(version_config.classify_tag(arguments.tag)["release_type"])
+    release_type = version_config.tag_type(arguments.tag)
     catalog = _catalog(arguments, remote, release_type)
     targets = [
         record
@@ -588,6 +597,13 @@ def _run_retention(
         "current_tag": arguments.current_tag,
         "pypi_enabled": arguments.pypi_enabled,
     }
+    if latest := getattr(arguments, "latest_branch", None):
+        if (
+            latest_release_branch([latest]) != latest
+            or arguments.release_type != "nightly"
+        ):
+            raise CleanupError("invalid latest Nightly maintenance branch")
+        options["latest_branch"] = latest
     selection = records.select_retention([], arguments.max_count, **options)
     if selection.skipped_reason is not None:
         print(selection.skipped_reason)

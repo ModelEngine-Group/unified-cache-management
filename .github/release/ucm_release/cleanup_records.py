@@ -237,11 +237,12 @@ def _positive_int(value: object, context: str) -> int:
     return value
 
 
-def _classification(tag: object) -> dict[str, object]:
+def _classification(tag: object, version: object = None) -> dict[str, object]:
     if not isinstance(tag, str):
         raise CleanupRecordError("cleanup Tag must be a canonical release Tag")
     try:
-        return version_config.classify_tag(tag)
+        base = Version(version).base_version if isinstance(version, str) else None
+        return version_config.classify_tag(tag, base_version=base)
     except ValueError as error:
         raise CleanupRecordError(str(error)) from error
 
@@ -264,13 +265,15 @@ def _version_matches_tag(value: object, classification: dict[str, object]) -> bo
 
 
 def _sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
-    match = version_config.NIGHTLY_TAG.fullmatch(record["tag"])
-    if match is not None:
-        return (
-            int(match.group("date")),
-            int(match.group("number")),
-            tuple(int(part) for part in match.group("base").split(".")),
+    nightly = version_config.Nightly.parse(record["tag"])
+    if nightly:
+        # Prefer the new spelling if a legacy tag has the same day and sequence.
+        base = (
+            tuple(map(int, nightly.legacy_base.split(".")))
+            if nightly.legacy_base
+            else ()
         )
+        return nightly.date, nightly.sequence, nightly.legacy_base is None, base
     # Release IDs reflect creation order even when a Tag reuses an old commit.
     identifiers = record["release_ids"]
     return (min(identifiers, default=0), record["tag"])
@@ -356,8 +359,29 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
         raise CleanupRecordError(
             "cleanup record repository differs from requested repository"
         )
-    classification = _classification(record["tag"])
-    labeled_draft = Version(str(classification["version"])).local is not None
+    tag = record["tag"]
+    try:
+        release_type = version_config.tag_type(tag) if isinstance(tag, str) else None
+    except ValueError as error:
+        raise CleanupRecordError(str(error)) from error
+    if release_type is None:
+        raise CleanupRecordError("cleanup Tag must be a canonical release Tag")
+    nightly = version_config.Nightly.parse(tag)
+    branch_nightly = nightly is not None and nightly.legacy_base is None
+    # A newly discovered Tag may only have a ref and SHA. Its snapshots carry
+    # the immutable package version once the publisher has opened the Release.
+    known_versions = record.get("versions", [])
+    if not isinstance(known_versions, list):
+        raise CleanupRecordError("cleanup versions must be a list")
+    classification = (
+        None
+        if branch_nightly and not known_versions
+        else _classification(tag, known_versions[0] if known_versions else None)
+    )
+    exact_version = (
+        classification is not None
+        and Version(str(classification["version"])).local is not None
+    )
     source_sha = record["source_sha"]
     if source_sha is not None and (
         not isinstance(source_sha, str) or _SHA.fullmatch(source_sha) is None
@@ -378,7 +402,9 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
             )
         )
     versions = set()
-    for version in record.get("versions", [str(classification["version"])]):
+    for version in record.get(
+        "versions", [classification["version"]] if classification else []
+    ):
         if not isinstance(version, str):
             raise CleanupRecordError("cleanup version must be canonical")
         try:
@@ -387,10 +413,10 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
             raise CleanupRecordError("cleanup version must be canonical") from error
         if str(parsed) != version:
             raise CleanupRecordError("cleanup version must be canonical")
-        if labeled_draft and not _version_matches_tag(version, classification):
+        if exact_version and not _version_matches_tag(version, classification):
             raise CleanupRecordError("cleanup version differs from its Tag")
         versions.add(version)
-    if not versions:
+    if not versions and (not branch_nightly or record["resources"]):
         raise CleanupRecordError("cleanup record requires version coordinates")
     attempt_sources = {}
     for raw_binding in _array(
@@ -416,13 +442,13 @@ def validate_record(value: object, repository: str) -> dict[str, Any]:
             if previous != source_sha:
                 raise CleanupRecordError("cleanup record has conflicting source SHAs")
     sources = set(attempt_sources.values()) | ({source_sha} if source_sha else set())
-    if classification["release_type"] == "nightly" and len(sources) > 1:
+    if release_type == "nightly" and len(sources) > 1:
         raise CleanupRecordError(f"Nightly {record['tag']} has conflicting source SHAs")
     resources = {}
     for raw_resource in _array(record["resources"], "cleanup resources"):
         resource = (
             _resource(raw_resource, repository, classification, sorted(versions))
-            if labeled_draft
+            if exact_version
             else _registry_resource(raw_resource, repository)
         )
         previous = resources.setdefault(resource["reference"], resource)
@@ -468,10 +494,7 @@ def merge_records(
             for item in (previous, record)
             for binding in item["attempt_sources"]
         } | {sha for sha in (previous["source_sha"], record["source_sha"]) if sha}
-        if (
-            _classification(record["tag"])["release_type"] == "nightly"
-            and len(sources) > 1
-        ):
+        if version_config.tag_type(record["tag"]) == "nightly" and len(sources) > 1:
             raise CleanupRecordError(
                 f"Nightly {record['tag']} has conflicting source SHAs"
             )
@@ -490,7 +513,7 @@ def merge_records(
         sorted(
             grouped.values(),
             key=lambda record: (
-                str(_classification(record["tag"])["release_type"]),
+                str(version_config.tag_type(record["tag"])),
                 _sort_key(record),
             ),
             reverse=True,
@@ -530,8 +553,8 @@ def record_from_plan(record: object, plan: object) -> dict[str, Any]:
     repository = binding.get("repository")
     result = validate_record(binding, repository)
     plan = _object(plan, "release plan")
-    classification = _classification(result["tag"])
     version = plan.get("version")
+    classification = _classification(result["tag"], version)
     if (
         plan.get("kind") != "ucm-release-plan"
         or plan.get("repository") != repository
@@ -585,7 +608,7 @@ def record_from_manifest(
         validated = validate_manifest(manifest)
         release = validated["release"]
         tag, run_id = release["tag"], release["actions_run_id"]
-        classification = _classification(tag)
+        classification = _classification(tag, release["version"])
         release_url = urlparse(release["url"])
         release_path = f"/{repository}/releases/tag/"
         if (
@@ -687,7 +710,7 @@ def record_from_manifest(
         },
         repository,
     )
-    classification = _classification(tag)
+    classification = _classification(tag, version)
     if classification["release_type"] == "nightly":
         if schema_version in {6, 9}:
             _legacy_nightly_resources(record, repository)
@@ -736,7 +759,7 @@ def decode_legacy_record(value: object, repository: str) -> dict[str, Any]:
     wire = _object(value, "cleanup record")
     _keys(wire, _RECORD_KEYS, "cleanup record")
     record = validate_record(wire, repository)
-    if _classification(record["tag"])["release_type"] != "nightly":
+    if version_config.tag_type(record["tag"]) != "nightly":
         raise CleanupRecordError("legacy cleanup record must describe a Nightly")
     _legacy_nightly_resources(record, repository)
     return record
@@ -772,7 +795,7 @@ def decode_snapshot(
     match = _SNAPSHOT_NAME.fullmatch(filename) if isinstance(filename, str) else None
     if match is None:
         raise CleanupRecordError("cleanup recovery asset name is malformed")
-    coordinates = _classification(document.get("tag"))
+    coordinates = _classification(document.get("tag"), document.get("version"))
     if (
         document.get("kind") != CLEANUP_RECORD_KIND
         or type(document.get("schema_version")) is not int
@@ -844,6 +867,8 @@ def new_record(
     run_attempt: int,
     release_id: int | None = None,
     plan: object | None = None,
+    *,
+    base_version: str | None = None,
 ) -> dict[str, Any]:
     """Build the established per-attempt publication snapshot for any release type."""
     record = record_for_tag(
@@ -851,7 +876,10 @@ def new_record(
     )
     if plan is not None:
         record = record_from_plan(record, plan)
-    classification = _classification(tag)
+    if plan is None:
+        classification = version_config.classify_tag(tag, base_version=base_version)
+    else:
+        classification = _classification(tag, plan["version"])
     version = str(classification["version"]) if plan is None else plan["version"]
     return {
         "kind": CLEANUP_RECORD_KIND,
@@ -913,6 +941,7 @@ def select_retention(
     release_type: str | None = None,
     current_tag: str | None = None,
     pypi_enabled: bool = False,
+    latest_branch: str | None = None,
 ) -> RetentionSelection:
     """Count actual unique versions and defer active excess versions.
 
@@ -927,20 +956,18 @@ def select_retention(
     if release_type is not None and release_type not in RELEASE_TYPES:
         raise CleanupRecordError("retention release type is invalid")
     if current_tag is not None:
-        current_type = str(_classification(current_tag)["release_type"])
+        current_type = str(version_config.tag_type(current_tag))
         if release_type is not None and release_type != current_type:
             raise CleanupRecordError("current Tag differs from retention release type")
         release_type = current_type
     active = set(active_tags)
     for tag in active:
-        _classification(tag)
+        version_config.tag_type(tag)
     merged = ()
     if records:
         repository = _object(records[0], "cleanup record").get("repository")
         merged = merge_records(records, repository)
-        types = {
-            str(_classification(record["tag"])["release_type"]) for record in merged
-        }
+        types = {str(version_config.tag_type(record["tag"])) for record in merged}
         if release_type is None:
             if len(types) != 1:
                 raise CleanupRecordError("retention requires one release type")
@@ -948,7 +975,7 @@ def select_retention(
         merged = tuple(
             record
             for record in merged
-            if _classification(record["tag"])["release_type"] == release_type
+            if version_config.tag_type(record["tag"]) == release_type
         )
     if max_count == -1:
         return RetentionSelection(
@@ -959,7 +986,17 @@ def select_retention(
             merged, (), (), "retention skipped: PyPI is enabled for this release type"
         )
     if release_type == "nightly":
-        excess = merged[max_count:]
+        excess = []
+        counts: dict[str, int] = {}
+        for record in merged:
+            branch = version_config.Nightly.parse(record["tag"]).branch
+            counts[branch] = counts.get(branch, 0) + 1
+            retired = latest_branch is not None and branch not in {
+                "develop",
+                latest_branch,
+            }
+            if retired or counts[branch] > max_count:
+                excess.append(record)
     else:
         count = len(merged) + int(
             current_tag is not None

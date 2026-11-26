@@ -104,7 +104,7 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
     plan_version = version_config.release_version(
         plan.get("version"), "release plan version"
     )
-    version_config.validate_custom_draft_identity(
+    version_config.validate_local_release_identity(
         plan_version,
         plan.get("git_tag"),
         plan.get("release_type"),

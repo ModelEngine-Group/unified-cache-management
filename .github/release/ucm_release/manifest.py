@@ -709,7 +709,7 @@ def _project_python_package(
     version = version_config.release_version(
         release.get("version"), "release state version"
     )
-    version_config.validate_custom_draft_identity(
+    version_config.validate_local_release_identity(
         version,
         release.get("git_tag"),
         release.get("release_type"),
