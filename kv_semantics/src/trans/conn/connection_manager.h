@@ -24,13 +24,14 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "kv_transport.h"
 #include "kv_types.h"
@@ -50,16 +51,29 @@ class ConnectionChannel;
 class ConnectionGroup;
 struct ScatterGatherEntry;
 
+// Backoff bookkeeping for one endpoint-level recovery window. Existence of a
+// RecoverState means the group is inside the recovery window.
+struct RecoverState {
+    std::uint32_t backoffMs{100};
+    std::chrono::steady_clock::time_point nextRetryAt{};
+    std::chrono::steady_clock::time_point windowStartedAt{};
+};
+
 class ConnectionManager {
 public:
-    ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout,
-                      std::uint32_t maxErrorCount = 2);
+    // Config-driven constructor used by AsuTransportImpl.
+    ConnectionManager(TransProvider& provider, const std::string& localIp,
+                      const TransportConfig& config);
+    // Legacy constructor kept for direct users/tests; X defaults to 1.
+    ConnectionManager(TransProvider& provider, const std::string& localIp,
+                      std::uint32_t timeout = 5000, std::uint32_t maxErrorCount = 1);
     ~ConnectionManager();
 
     Status AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num);
     Status Shutdown();
 
     std::shared_ptr<ConnectionChannel> SelectConnection();
+
     std::shared_ptr<ConnectionChannel> GetActiveConnection();
     void SetRoutingPolicy(RoutingPolicy policy);
     void ReportFailure(const std::shared_ptr<ConnectionChannel>& channel);
@@ -68,11 +82,23 @@ public:
     void StartRecoverLoop();
     void StopRecoverLoop();
 
+    // Three-state snapshot derived from channel states; updating is set while
+    // UpdateGroups is mutating the configuration window.
+    void GetHealthSnapshot(NodeHealthSnapshot& snapshot);
+
+    // Incremental dynamic endpoint update. Removes first, then adds; no new
+    // threads are created (connection work reuses the recover worker).
+    Status UpdateGroups(const std::vector<NodeEndpoint>& toAdd,
+                        const std::vector<NodeEndpoint>& toRemove, UpdateResult& result);
+
+    // True while the group is inside an endpoint-level recovery window.
+    bool HasRecoverState(std::uint32_t groupId) const;
+
     std::int64_t TotalInflightCount();
     std::vector<ServerKvCapabilities> GetServerCapabilities();
 
 private:
-    std::vector<std::unique_ptr<ConnectionGroup>> groups_;
+    std::vector<std::shared_ptr<ConnectionGroup>> groups_;
     std::shared_mutex structureMu_;  // shared_mutex allows concurrent reads
 
     std::vector<std::shared_ptr<ConnectionChannel>> channelCache_;
@@ -83,7 +109,7 @@ private:
 
     std::atomic<std::uint32_t> rrIndex_{0};
     RoutingPolicy routingPolicy_{RoutingPolicy::ROUND_ROBIN};
-    static constexpr std::uint64_t kRecoverIntervalMs = 100;
+    std::uint32_t recoverCheckIntervalMs_{100};
 
     std::thread recoverWorker_;
     std::atomic<bool> stopRecover_{false};
@@ -91,16 +117,45 @@ private:
     std::shared_mutex drainMu_;
     std::vector<std::shared_ptr<ConnectionChannel>> drainList_;
 
+    // Serialized UpdateGroups entry; distinguishes the config window.
+    std::mutex endpointUpdateMu_;
+    std::atomic<bool> updating_{false};
+
+    // gid -> recovery window state; guarded by recoverMu_.
+    mutable std::mutex recoverMu_;
+    std::unordered_map<std::uint32_t, RecoverState> recoverStates_;
+    std::atomic<std::uint32_t> nextGroupId_{0};
+
     TransProvider& provider_;
     std::string localIp_;
-    std::uint32_t timeout_;
-    std::uint32_t maxErrorCount_;
+    std::uint32_t connectTimeoutMs_{5000};
+    std::uint32_t maxErrorCount_{1};
     std::uint32_t maxInflightPerChannel_{256};
+    std::uint32_t connectRetryPerRound_{2};
+    std::uint32_t recoverInitialBackoffMs_{100};
+    std::uint32_t recoverMaxBackoffMs_{5000};
+    std::uint64_t taskTimeoutMs_{100};
+    TransportConfig config_;
 
     void RecoverLoop();
+    void RunRecoverySweep();
+    // One recovery round for a group inside the window: bounded drain, whole
+    // group teardown, 1+K rebuild, membership-checked publish. Returns true
+    // when the round succeeded and published fresh channels.
+    bool RecoverGroup(const std::shared_ptr<ConnectionGroup>& group, RecoverState& state);
+    void SweepDrainList();
     void RebuildChannelCache();
+    std::shared_ptr<ConnectionChannel> SelectByPolicyLocked(
+        const std::vector<std::shared_ptr<ConnectionChannel>>& candidates);
     std::shared_ptr<ConnectionChannel> SelectByRoundRobin();
     std::shared_ptr<ConnectionChannel> SelectByLeastLoaded();
+    std::shared_ptr<ConnectionGroup> FindGroupByEndpointLocked(const NodeEndpoint& endpoint);
+    Status CreateGroupConnections(const NodeEndpoint& endpoint, std::uint32_t qpNum,
+                                   std::vector<TransProvider::ConnectionHandle>& handles,
+                                   ServerKvCapabilities& capabilities);
+    void TeardownGroup(const std::shared_ptr<ConnectionGroup>& group);
+    Status RemoveGroup(const NodeEndpoint& endpoint, bool& removed);
+    void EraseRecoverState(std::uint32_t groupId);
 };
 
 }  // namespace kv

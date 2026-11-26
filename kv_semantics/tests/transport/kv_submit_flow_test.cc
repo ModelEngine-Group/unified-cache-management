@@ -425,7 +425,9 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches);
 
     EXPECT_EQ(subBatchContexts[0].status.code, StatusCode::CONNECTION_ERROR);
-    EXPECT_EQ(channel0->GetState(), ChannelState::DRAINING);
+    // X=1：Send 失败即排空；两个 subBatch 释放后 inflight 归零，
+    // DRAINING -> FAILED（整组恢复由 RecoverLoop 接管）。
+    EXPECT_EQ(channel0->GetState(), ChannelState::FAILED);
     EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::COMPLETED);
     g_sendStatuses.clear();

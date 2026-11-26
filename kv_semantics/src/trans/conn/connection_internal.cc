@@ -31,9 +31,11 @@ namespace kv {
 
 ConnectionChannel::ConnectionChannel(std::uint32_t id, ConnectionGroup* grp,
                                      TransProvider::ConnectionHandle handle,
-                                     TransProvider* provider)
-    : channelId(id), group(grp), handle_(handle), provider_(provider)
+                                     TransProvider* provider,
+                                     const std::shared_ptr<ConnectionGroup>& lease)
+    : channelId(id), group(grp), handle_(handle), provider_(provider), groupLease(lease)
 {
+    groupId = grp != nullptr ? grp->GetGroupId() : 0;
     state.store(ChannelState::ACTIVE, std::memory_order_release);
     inflightCount.store(0, std::memory_order_release);
     errorCount.store(0, std::memory_order_release);
@@ -69,6 +71,14 @@ void ConnectionChannel::ReleaseInflight()
     auto current = inflightCount.load(std::memory_order_acquire);
     while (current > 0) {
         if (inflightCount.compare_exchange_weak(current, current - 1, std::memory_order_acq_rel)) {
+            // X=1 drain semantics: a draining channel whose inflight reached
+            // zero completes the DRAINING -> FAILED transition.
+            if (current - 1 == 0 && GetState() == ChannelState::DRAINING) {
+                if (MarkFailed()) {
+                    KV_DEBUG("ConnectionChannel drained to FAILED ch_id={} group_id={}",
+                             channelId, groupId);
+                }
+            }
             return;
         }
     }
@@ -87,11 +97,29 @@ bool ConnectionChannel::MarkForDrain()
     return true;
 }
 
+bool ConnectionChannel::MarkFailed()
+{
+    ChannelState expected = ChannelState::DRAINING;
+    if (!state.compare_exchange_strong(expected, ChannelState::FAILED, std::memory_order_acq_rel)) {
+        return false;
+    }
+    KV_DEBUG("ConnectionChannel::MarkFailed ch_id={} group_id={} DRAINING->FAILED", channelId,
+             groupId);
+    return true;
+}
+
+TransProvider::ConnectionHandle ConnectionChannel::DetachHandle()
+{
+    auto handle = handle_;
+    handle_ = nullptr;
+    return handle;
+}
+
 // ─── ConnectionGroup ───
 
 ConnectionGroup::ConnectionGroup(std::uint32_t id, const NodeEndpoint& ep,
-                                 const ServerKvCapabilities& capabilities)
-    : groupId(id), endpoint(ep), serverCapabilities(capabilities)
+                                 const ServerKvCapabilities& capabilities, std::uint32_t qpNum)
+    : groupId(id), endpoint(ep), serverCapabilities(capabilities), qpNum_(qpNum)
 {
 }
 
@@ -99,7 +127,8 @@ std::shared_ptr<ConnectionChannel> ConnectionGroup::AddChannel(ConnectionHandle 
                                                                TransProvider* provider)
 {
     auto id = nextChannelId_.fetch_add(1, std::memory_order_relaxed);
-    auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider);
+    auto lease = self_.lock();
+    auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider, lease);
     channels.push_back(channel);
     KV_DEBUG("ConnectionGroup::AddChannel groupId={} ch_id={} totalChannels={}", groupId,
              channel->GetChannelId(), channels.size());
@@ -118,12 +147,26 @@ void ConnectionGroup::RemoveChannel(ConnectionChannel* channel)
     }
 }
 
+void ConnectionGroup::ClearChannels()
+{
+    KV_DEBUG("ConnectionGroup::ClearChannels groupId={} droppedChannels={}", groupId,
+             channels.size());
+    channels.clear();
+}
+
 bool ConnectionGroup::HasActiveChannel() const
 {
     for (auto& channel : channels) {
         if (channel->GetState() == ChannelState::ACTIVE) { return true; }
     }
     return false;
+}
+
+std::uint32_t ConnectionGroup::GetInflightCount() const
+{
+    std::uint32_t total = 0;
+    for (auto& channel : channels) { total += channel->GetInflightCount(); }
+    return total;
 }
 
 }  // namespace kv

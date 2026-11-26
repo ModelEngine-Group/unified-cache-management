@@ -418,7 +418,8 @@ TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrAfterShutdown)
     EXPECT_EQ(ch, nullptr);
 }
 
-TEST(ConnectionManagerTest, ReportFailureBelowThresholdDoesNotDrain)
+// 统一 X=1：默认阈值下一次连续链路失败即排空（迁移测试必须覆盖 X=1 路径）。
+TEST(ConnectionManagerTest, ReportFailureDefaultThresholdIsOne)
 {
     g_createCount = 0;
     StubTransProvider provider;
@@ -427,9 +428,15 @@ TEST(ConnectionManagerTest, ReportFailureBelowThresholdDoesNotDrain)
 
     auto ch = mgr.SelectConnection();
     ASSERT_NE(ch, nullptr);
+    // 请求在途时排空：DRAINING，等待排空后转 FAILED。
+    EXPECT_EQ(ch->GetInflightCount(), 1u);
 
     mgr.ReportFailure(ch);
-    EXPECT_EQ(ch->GetState(), ChannelState::ACTIVE);
+    EXPECT_EQ(ch->GetState(), ChannelState::DRAINING);
+
+    // 排空（inflight 归零）后 DRAINING -> FAILED。
+    ch->ReleaseInflight();
+    EXPECT_EQ(ch->GetState(), ChannelState::FAILED);
 }
 
 TEST(ConnectionManagerTest, ReportFailureAtThresholdMarksForDrain)

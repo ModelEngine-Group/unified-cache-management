@@ -60,6 +60,28 @@ public:
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
+
+    // Three-state connection health snapshot (GREEN/YELLOW/RED + updating
+    // window flag). Default UNSUPPORTED: stubs need no implementation.
+    virtual Status GetConnectionHealth(NodeHealthSnapshot& snapshot)
+    {
+        (void)snapshot;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "GetConnectionHealth is not supported by this transport");
+    }
+
+    // Incremental dynamic endpoint update (remove first, then add). Default
+    // UNSUPPORTED: stubs need no implementation.
+    virtual Status UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
+                                    const std::vector<NodeEndpoint>& toRemove,
+                                    UpdateResult& result)
+    {
+        (void)toAdd;
+        (void)toRemove;
+        (void)result;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "UpdateEndpoints is not supported by this transport");
+    }
 };
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();
