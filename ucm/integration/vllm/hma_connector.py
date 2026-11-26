@@ -2036,6 +2036,47 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._pending_async_load_dispatches[request.request_id] = async_meta
         self._async_load_req_ids.add(request.request_id)
 
+    def _clamp_group_block_indices(
+        self,
+        group_id: int,
+        indices: np.ndarray,
+        group_block_ids: list[int],
+    ) -> np.ndarray:
+        """Clamp computed block indices to the blocks a group actually holds.
+
+        Under preemption / fragmented-block conditions the dispatch range
+        can run one block past the blocks a group holds (issue #1647:
+        index 65 on a 65-element array). Clamping keeps the slice in bounds
+        so the IndexError can never escape into the scheduler thread and
+        kill EngineCore. The length is preserved, so the returned ids stay
+        aligned with the canonical block keys; the repeated last block is
+        the same padding the WA path already applies to short snapshots.
+        The warning makes the short group visible instead of silent.
+        """
+        if indices.size == 0:
+            return indices
+        indices = np.maximum(indices, 0)
+        if not group_block_ids:
+            logger.warning(
+                "FAWA group %d holds no block ids for a slice of %d "
+                "indices; returning no blocks for this group.",
+                group_id,
+                int(indices.size),
+            )
+            return np.empty(0, dtype=np.int64)
+        max_index = int(indices.max())
+        if max_index >= len(group_block_ids):
+            logger.warning(
+                "FAWA group %d holds %d block ids but the dispatch slice "
+                "requests index %d; clamping to the last available block "
+                "(see #1647).",
+                group_id,
+                len(group_block_ids),
+                max_index,
+            )
+            return np.clip(indices, 0, len(group_block_ids) - 1)
+        return indices
+
     def _slice_group_block_ids(
         self,
         group_id: int,
@@ -2052,6 +2093,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if is_window_group:
             if not group_meta.tail_tokens:
                 return []
+            if window_boundary_token_idx.size == 0:
+                return []
             if fetch_wa_block_wise:
                 # Block-wise WA stores one tail row for each canonical boundary.
                 boundary_block_indices = (
@@ -2061,14 +2104,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 boundary_block_indices = (
                     boundary_block_indices[:, None] - offsets[None, :]
                 )
-                if boundary_block_indices.max(initial=-1) >= len(group_block_ids):
-                    raise RuntimeError(
-                        "FAWA window load exceeds the available request blocks; "
-                        "refusing an invalid WA slice."
-                    )
                 # Pad short snapshots with identical copies of the first block;
                 # loading repeats the same bytes into the same destination.
-                boundary_block_indices = np.maximum(boundary_block_indices, 0)
+                # Indices past the last available block are clamped to it
+                # instead of raising: under preemption a group can hold one
+                # fewer block than the dispatch range implies (#1647), and an
+                # exception here kills EngineCore.
+                boundary_block_indices = self._clamp_group_block_indices(
+                    group_id, boundary_block_indices, group_block_ids
+                )
                 return np.array(group_block_ids)[
                     boundary_block_indices.flatten()
                 ].tolist()
@@ -2077,22 +2121,22 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 boundary_block_idx = (
                     window_boundary_token_idx[-1] // group_meta.token_block_size
                 ) + 1
-                if boundary_block_idx > len(group_block_ids):
-                    raise RuntimeError(
-                        "FAWA window load exceeds the available request blocks; "
-                        "refusing an invalid WA slice."
-                    )
                 indices = np.arange(
                     boundary_block_idx - group_meta.tail_blocks,
                     boundary_block_idx,
                     dtype=np.int64,
                 )
-                indices = np.maximum(indices, 0)
+                indices = self._clamp_group_block_indices(
+                    group_id, indices, group_block_ids
+                )
                 return np.array(group_block_ids)[indices].tolist()
         # FA rows map each canonical hash block to its containing group block.
-        return np.array(group_block_ids)[
-            window_boundary_token_idx // group_meta.token_block_size
-        ].tolist()
+        # The dispatch range can run one block past what a group holds under
+        # preemption / fragmented-block conditions (#1647); clamp instead of
+        # letting the IndexError kill EngineCore.
+        indices = window_boundary_token_idx // group_meta.token_block_size
+        indices = self._clamp_group_block_indices(group_id, indices, group_block_ids)
+        return np.array(group_block_ids)[indices].tolist()
 
     def _generate_dispatch_meta(
         self,
