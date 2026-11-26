@@ -129,7 +129,7 @@ void TransportTaskExecutor::BuildSubBatchSendBuffers(
 
 void TransportTaskExecutor::SendSubBatchBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
-    const std::vector<TransProvider::SendIoBatch>& ioBatches)
+    const std::vector<TransProvider::SendIoBatch>& ioBatches, TransportTask& task)
 {
     if (ioBatches.empty()) { return; }
 
@@ -146,6 +146,7 @@ void TransportTaskExecutor::SendSubBatchBuffers(
         KV_ERROR("Transport send returned unexpected status count expected={} actual={}",
                  ioBatches.size(), sendStatuses.size());
         for (auto& subBatchContext : subBatchContexts) {
+            // 本地执行错误：产生方直接终结，不换链不记失败不重试。
             SetSubBatchSendFailed(subBatchContext, status);
             ReleaseSubBatchResources(subBatchContext);
         }
@@ -155,14 +156,26 @@ void TransportTaskExecutor::SendSubBatchBuffers(
     for (std::size_t index = 0; index < sendStatuses.size(); ++index) {
         auto& subBatchContext = subBatchContexts[index];
         const auto& subBatchStatus = sendStatuses[index];
-        if (subBatchStatus.ok()) { continue; }
+        if (subBatchStatus.ok()) {
+            subBatchContext.attemptDeadline = ComputeAttemptDeadline(task);
+            continue;
+        }
 
         KV_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}", index,
                  subBatchContext.cid, static_cast<int>(subBatchStatus.code),
                  subBatchStatus.message);
-        SetSubBatchSendFailed(subBatchContext, subBatchStatus);
-        connManager_->ReportFailure(subBatchContext.channel);
-        ReleaseSubBatchResources(subBatchContext);
+        // Send 同步失败（如 CONNECTION_ERROR）按分类路由换链，耗尽保留原始错误。
+        subBatchContext.status = subBatchStatus;
+        std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                  subBatchStatus);
+        const auto decision =
+            ErrorClassifier::ClassifySubBatch(subBatchContext, subBatchStatus);
+        if (connManager_ && decision.healthAction == ChannelHealthAction::RECORD_FAILURE) {
+            connManager_->ReportFailure(subBatchContext.channel);
+        }
+        if (!RouteSubBatchFailure(task, subBatchContext, decision)) {
+            CompleteFailedSubBatch(task, subBatchContext);
+        }
     }
 }
 

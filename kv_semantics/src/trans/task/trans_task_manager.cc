@@ -50,6 +50,9 @@ void TransportTask::InitializeRemainingSubBatchCount()
 
 void TransportTask::TryFinalizeFromSubBatches()
 {
+    // An explicitly finalized task (unsent total-deadline TIMEOUT, cancel)
+    // keeps its terminal status; derived finalization never overwrites it.
+    if (state.load(std::memory_order_acquire) == TransportTaskState::COMPLETED) { return; }
     if (subBatchContexts->empty()) {
         finalStatus = Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         state.store(TransportTaskState::COMPLETED, std::memory_order_release);

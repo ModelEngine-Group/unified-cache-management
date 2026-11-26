@@ -348,7 +348,9 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     subBatchContexts[0].state = TransportSubBatchState::PENDING;
     subBatchContexts[0].entryStatus.assign(1, Status::OK());
 
-    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches);
+    TransportTask flowTask;
+    flowTask.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, flowTask);
 
     EXPECT_EQ(g_kernelCount, std::uint32_t{3});
     EXPECT_EQ(g_quietCount, std::uint32_t{7});
@@ -376,12 +378,10 @@ TEST(AsuSubmitFlowTest, AbortBeforeSendPreservesStatusesBeforeFailureAndCancelsF
     EXPECT_TRUE(subBatchContexts[0].status.ok());
     EXPECT_TRUE(subBatchContexts[0].entryStatus[0].ok());
     EXPECT_EQ(subBatchContexts[1].status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(subBatchContexts[1].entryStatus[0].code, StatusCode::INTERNAL_ERROR);
+    // 部分中止：首个失败 subBatch 的未发送 Entry 保留 IN_PROGRESS，不整批全弃。
+    EXPECT_EQ(subBatchContexts[1].entryStatus[0].code, StatusCode::IN_PROGRESS);
     EXPECT_EQ(subBatchContexts[2].status.code, StatusCode::CANCELED);
     EXPECT_EQ(subBatchContexts[2].entryStatus[0].code, StatusCode::CANCELED);
-    for (const auto& entryStatus : task.entryStatus) {
-        EXPECT_EQ(entryStatus.code, StatusCode::CANCELED);
-    }
     for (const auto& subBatchContext : subBatchContexts) {
         EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     }
@@ -422,12 +422,20 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     subBatchContexts[1].channel = channel1;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches);
+    TransportTask flowTask;
+    flowTask.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, flowTask);
 
     EXPECT_EQ(subBatchContexts[0].status.code, StatusCode::CONNECTION_ERROR);
+    // Send 失败按链路故障分类换链：预算内挂起重试（非终态），排除已试 Channel。
+    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::PENDING);
+    EXPECT_EQ(subBatchContexts[0].pendingRetryCategory, RetryCategory::LINK_FAILURE);
+    ASSERT_EQ(subBatchContexts[0].attemptedChannels.size(), std::size_t{1});
+    EXPECT_EQ(subBatchContexts[0].attemptedChannels[0], channel0.get());
+    // X 阈值达限排空：释放后 inflight 归零，停在 DRAINING（基线状态机）。
     EXPECT_EQ(channel0->GetState(), ChannelState::DRAINING);
-    EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
-    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::COMPLETED);
+    EXPECT_EQ(subBatchContexts[1].state, TransportSubBatchState::PENDING);
+    EXPECT_EQ(subBatchContexts[1].pendingRetryCategory, RetryCategory::LINK_FAILURE);
     g_sendStatuses.clear();
 }
 
@@ -494,7 +502,9 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
     subBatchContexts[1].state = TransportSubBatchState::PENDING;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches);
+    TransportTask flowTask;
+    flowTask.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, flowTask);
 
     EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContexts[0].status.code, StatusCode::INTERNAL_ERROR);

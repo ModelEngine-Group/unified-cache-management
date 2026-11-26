@@ -96,7 +96,6 @@ struct TransportTask {
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
-
     std::shared_ptr<TransportSubBatchList> subBatchContexts;
     std::uint32_t remainingSubBatchCount{0};
     std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};

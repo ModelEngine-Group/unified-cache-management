@@ -241,6 +241,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
     ASSERT_TRUE(
         transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
             .ok());
+    ctx->InitializeRemainingSubBatchCount();
 
     std::size_t callbackCount = 0;
     TaskResult callbackResult;
@@ -253,10 +254,12 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
 
     EXPECT_EQ(callbackCount, std::size_t{1});
     EXPECT_EQ(ctx->state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
-    EXPECT_EQ(callbackResult.status.code, StatusCode::TIMEOUT);
+    // 已实际 Send 后的 attempt 超时裁决：合成 CQE_IO_TIMEOUT 按链路故障换链；
+    // 总Deadline已到不启动新 attempt，直接以原始错误终结。
+    EXPECT_EQ(callbackResult.status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(callbackResult.entryStatus.size(), std::size_t{2});
-    EXPECT_EQ(callbackResult.entryStatus[0].code, StatusCode::TIMEOUT);
-    EXPECT_EQ(callbackResult.entryStatus[1].code, StatusCode::TIMEOUT);
+    EXPECT_EQ(callbackResult.entryStatus[0].code, StatusCode::CQE_IO_TIMEOUT);
+    EXPECT_EQ(callbackResult.entryStatus[1].code, StatusCode::CQE_IO_TIMEOUT);
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
     EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{1});
@@ -282,12 +285,23 @@ TEST_F(TransportTaskCompletionTest, ExecutionTimeoutCountsEachSubBatch)
         subBatchContext.channel = channel;
         subBatchContext.entryStatus.assign(1, Status::OK());
     }
+    ctx->InitializeRemainingSubBatchCount();
 
     transport_->taskExecutor_->Poll(ctx);
 
-    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{2});
-    EXPECT_EQ(channel->GetState(), ChannelState::DRAINING);
+    // 未发超时（总Deadline到期且无在途attempt）：TIMEOUT 终结，
+    // 不换链、不记链路失败、不重试。
+    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{0});
+    EXPECT_EQ(channel->GetState(), ChannelState::ACTIVE);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
+    for (const auto& subBatchContext : *ctx->subBatchContexts) {
+        EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+        EXPECT_EQ(subBatchContext.status.code, StatusCode::TIMEOUT);
+        EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::TIMEOUT);
+    }
+    // 未发超时：Executor 直接 TaskResult.status=TIMEOUT 终结。
+    EXPECT_TRUE(ctx->Done());
+    EXPECT_EQ(ctx->finalStatus.code, StatusCode::TIMEOUT);
 }
 
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesPreservesSubBatchStatus)

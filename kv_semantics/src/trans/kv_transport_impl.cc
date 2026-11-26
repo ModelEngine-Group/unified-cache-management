@@ -98,7 +98,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
 
     connManager_.reset();
     connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
-                                                       config_.maxErrorCount);
+                                                        config_.maxErrorCount);
 
     const std::uint32_t qp_num = config_.qpNum;
     KV_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
@@ -302,6 +302,8 @@ void AsuTransportImpl::CompletionLoop()
 
         bool completedTask = false;
         for (const auto& ctx : tasks) {
+            // RETRY_BACKOFF 驱动：非阻塞，禁止在共享线程内 sleep 退避。
+            if (taskExecutor_->HasRetryWork(ctx)) { taskExecutor_->ExecuteRetry(ctx); }
             if (taskExecutor_->Poll(ctx)) {
                 taskManager_.NotifyCompletion(ctx);
                 completedTask = true;
