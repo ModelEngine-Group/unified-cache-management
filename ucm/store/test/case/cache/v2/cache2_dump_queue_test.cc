@@ -31,6 +31,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -127,11 +128,20 @@ public:
         UC::Detail::BlockId block;
         size_t offset;
         bool allowReserved;
+        size_t preferredRank;
+        std::optional<std::chrono::milliseconds> timeout;
     };
 
-    Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
+    UC::Expected<Handle> Get(const UC::Detail::BlockId& blockId, size_t offset,
+                             bool allowReserved = false,
+                             size_t preferredRank = UC::Cache2::kInvalid,
+                             std::optional<std::chrono::milliseconds> timeout = std::nullopt)
     {
-        getCalls_.push_back(GetCall{blockId, offset, allowReserved});
+        getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank, timeout});
+        if (onGet) {
+            auto s = onGet(getCalls_.back());
+            if (s.Failure()) { return s; }
+        }
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) {
@@ -158,6 +168,7 @@ public:
     size_t MarkedReady() const { return markedReady_.load(std::memory_order_relaxed); }
     size_t MarkedFailed() const { return markedFailed_.load(std::memory_order_relaxed); }
     const std::vector<GetCall>& GetCalls() const { return getCalls_; }
+    std::function<UC::Status(const GetCall&)> onGet;
 
 private:
     bool HostAccessibleOf(const UC::Detail::BlockId& block, size_t offset) const
@@ -739,6 +750,38 @@ TEST_F(UCCache2DumpQueueTest, DumpStageMetrics)
     EXPECT_EQ(counters.count("cache_d2h_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_dump_submit_errors_total"), 0);
     EXPECT_EQ(counters.count("cache_backend_dump_wait_errors_total"), 0);
+}
+
+TEST_F(UCCache2DumpQueueTest, DumpMidTaskBufferGetTimeoutSyncsAndFailsOwnedHandles)
+{
+    TestedQueue dumpQ;
+    auto config = config_;
+    config.timeoutMs = 2000;
+    ASSERT_TRUE(dumpQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    const auto blockA = TypesHelper::MakeBlockIdRandomly();
+    const auto blockB = TypesHelper::MakeBlockIdRandomly();
+    size_t getCount = 0;
+    buffer_.onGet = [&](const FakeBuffer::GetCall& call) {
+        EXPECT_TRUE(call.timeout.has_value());
+        if (++getCount == 2) { return UC::Status::Timeout(); }
+        return UC::Status::OK();
+    };
+    EXPECT_CALL(backend_, Dump).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.push_back({blockA, 0, {reinterpret_cast<void*>(0x1000)}});
+    desc.push_back({blockB, 0, {reinterpret_cast<void*>(0x2000)}});
+    auto task = std::make_shared<Task>(Task::Type::DUMP, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    dumpQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    EXPECT_EQ(FakeStream::gathers.size(), 1);
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_EQ(buffer_.MarkedFailed(), 1);
+    EXPECT_EQ(buffer_.LiveHandles(), 0);
 }
 
 }  // namespace

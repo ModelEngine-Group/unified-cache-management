@@ -24,8 +24,10 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <future>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -77,6 +79,7 @@ class DumpQ {
     bool useGdr_{false};
     std::vector<size_t> tensorSizes_{};
     size_t shardBytes_{0};
+    size_t timeoutMs_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
     SpscRingQueue<DumpCtx> dumping_{};
@@ -101,6 +104,7 @@ public:
         useGdr_ = config.useGdr;
         tensorSizes_ = config.tensorSizes;
         shardBytes_ = config.shardSize;
+        timeoutMs_ = config.timeoutMs;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
         if (backend_ != nullptr) {
@@ -163,7 +167,7 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), queueWaitMs);
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_waiting_dequeue_total"), 1.0);
         if (!failureSet_->Contains(task->id)) {
-            auto s = DumpOneTask(stream, task);
+            auto s = DumpOneTask(stream, task, waiter);
             if (s.Failure()) [[unlikely]] {
                 task->Fail(s);
                 failureSet_->Insert(task->id);
@@ -171,7 +175,7 @@ private:
         }
         waiter->Done();
     }
-    Status DumpOneTask(StreamT& stream, const TaskPtr& task)
+    Status DumpOneTask(StreamT& stream, const TaskPtr& task, const WaiterPtr& waiter)
     {
         auto s = WaitPrerequisite(stream, task);
         if (s.Failure()) [[unlikely]] { return s; }
@@ -181,7 +185,7 @@ private:
         Detail::TaskDesc backendDesc;
         backendDesc.brief = "Cache2Backend";
         size_t copiedShards = 0;
-        s = GatherShards(stream, task, ctx, backendDesc, copiedShards);
+        s = GatherShards(stream, task, waiter, ctx, backendDesc, copiedShards);
         if (s.Failure()) [[unlikely]] { return s; }
         if (ctx.bufferHandles.empty()) { return Status::OK(); }
         s = CompleteD2h(stream, task, ctx, copiedShards);
@@ -199,13 +203,22 @@ private:
         }
         return s;
     }
-    Status GatherShards(StreamT& stream, const TaskPtr& task, DumpCtx& ctx,
+    Status GatherShards(StreamT& stream, const TaskPtr& task, const WaiterPtr& waiter, DumpCtx& ctx,
                         Detail::TaskDesc& backendDesc, size_t& copiedShards)
     {
         const auto startTp = NowTime::Now();
         if (backend_ != nullptr) { backendDesc.reserve(task->desc.size()); }
         for (auto& shard : task->desc) {
-            auto handle = buffer_->Get(shard.owner, shard.index);
+            const auto remaining = RemainingTimeout(waiter);
+            auto handleRes = buffer_->Get(shard.owner, shard.index, false, kInvalid, remaining);
+            if (!handleRes) [[unlikely]] {
+                UC_ERROR("Failed({}) to acquire cache buffer slot for dump task({}) shard({}).",
+                         handleRes.Error(), task->id, shard.index);
+                if (copiedShards > 0) { stream.Synchronize(); }
+                FailOwnedHandles(ctx);
+                return handleRes.Error();
+            }
+            auto handle = std::move(handleRes).Value();
             if (!handle.Owner()) { continue; }
             ctx.bufferHandles.push_back(std::move(handle));
             auto& pinned = ctx.bufferHandles.back();
@@ -222,6 +235,7 @@ private:
                 if (s.Failure()) [[unlikely]] {
                     UC_ERROR("Failed({}) to copy shard for dump task({}).", s, task->id);
                     Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
+                    if (copiedShards > 0) { stream.Synchronize(); }
                     FailOwnedHandles(ctx);
                     return s;
                 }
@@ -274,6 +288,15 @@ private:
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms"),
                              (NowTime::Now() - startTp) * 1e3);
         return Status::OK();
+    }
+    std::optional<std::chrono::milliseconds> RemainingTimeout(const WaiterPtr& waiter) const
+    {
+        if (timeoutMs_ == 0) { return std::nullopt; }
+        const auto elapsed = std::chrono::duration<double>(NowTime::Now() - waiter->startTp);
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+        const auto budget = std::chrono::milliseconds(timeoutMs_);
+        if (elapsedMs >= budget) { return std::chrono::milliseconds{0}; }
+        return budget - elapsedMs;
     }
     void FailOwnedHandles(DumpCtx& ctx)
     {
