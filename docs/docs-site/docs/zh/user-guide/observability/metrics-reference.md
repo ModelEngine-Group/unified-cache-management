@@ -56,7 +56,6 @@ Connector 连接推理引擎与 UCM，适合先判断**前缀能复用多少，�
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `ucm:save_duration` | 从进入 wait_for_save 到异步 Dump 完成的时长，单位 ms；观察保存的整体耗时 |
 | `ucm:save_completion_wait_duration` | 确认异步 Dump 完成时实际阻塞等待的时长，单位 ms；观察保存留给调用方的等待开销 |
-| `ucm:interval_lookup_hit_rates` | 每个请求的 UCM Lookup 命中率分布[^export-scope] |
 | `ucm:connector_get_block_size_duration_ms` | Connector 接口 `get_block_size` 的耗时 |
 | `ucm:connector_get_kv_connector_stats_duration_ms` | Connector 接口 `get_kv_connector_stats` 的耗时 |
 | `ucm:connector_get_num_new_matched_tokens_duration_ms` | Connector 接口 `get_num_new_matched_tokens` 的耗时 |
@@ -76,8 +75,8 @@ Connector 连接推理引擎与 UCM，适合先判断**前缀能复用多少，�
 | `ucm:connector_build_connector_worker_meta_duration_ms` | Connector 接口 `build_connector_worker_meta` 的耗时 |
 | `ucm:connector_update_connector_output_duration_ms` | Connector 接口 `update_connector_output` 的耗时 |
 | `ucm:connector_clear_connector_metadata_duration_ms` | Connector 接口 `clear_connector_metadata` 的耗时 |
-| `ucm:layerwise_layer_load_duration_ms` | 从某层开始加载到 wait_for_layer_load 返回的墙钟时长 |
 | `ucm:layerwise_batch_load_duration_sum_ms` | 一个 Layerwise 批次内各层加载时长之和 |
+| `ucm:layerwise_batch_load_wait_duration_sum_ms` | 一个 Layerwise 批次内各层 `wait_for_layer_load` 阻塞等待时长之和 |
 
 ### 1.2 Cache Store
 
@@ -98,6 +97,16 @@ Cache Store 利用主机缓冲衔接设备与下层存储，适合判断**加载
 | `ucm:cache_posix_load_success_shards_total` | 等待 Posix 填充 Cache 后成功加载到设备的分片数[^cache-source] |
 | `ucm:cache_dump_shards_total` | Cache Dump 处理的分片描述符总数，包括失败任务 |
 | `ucm:cache_dump_backend_shards_total` | 实际写入后端的 owner 分片数 |
+| `ucm:cache_dump_waiting_enqueue_total` | 进入 Dump waiting 队列的任务数（任务粒度） |
+| `ucm:cache_dump_waiting_dequeue_total` | 从 Dump waiting 队列取出并做 D2H 分发的任务数（任务粒度） |
+| `ucm:cache_load_waiting_bytes_total` | 进入 Load waiting 队列的任务数据量（分片大小 × 分片数） |
+| `ucm:cache_dump_waiting_bytes_total` | 进入 Dump waiting 队列的任务数据量（分片大小 × 分片数） |
+| `ucm:cache_dump_backend_wait_enqueue_total` | 进入 Dump backend 等待队列的任务数（任务粒度） |
+| `ucm:cache_dump_backend_wait_dequeue_total` | 从 Dump backend 等待队列取出、开始等待后端写入的任务数（任务粒度） |
+| `ucm:cache_load_waiting_enqueue_total` | 进入 Load waiting 队列的任务数（任务粒度） |
+| `ucm:cache_load_waiting_dequeue_total` | 从 Load waiting 队列取出并分发的任务数（任务粒度） |
+| `ucm:cache_load_running_enqueue_total` | 进入 Load running 队列的分片数（分片粒度） |
+| `ucm:cache_load_running_dequeue_total` | 从 Load running 队列取出并做 H2D 的分片数（分片粒度） |
 | `ucm:cache_load_bytes_total` | 经 Cache 阶段加载的累计字节数 |
 | `ucm:cache_dump_bytes_total` | 经 Cache 阶段保存的累计字节数 |
 
@@ -120,7 +129,13 @@ Cache Store 利用主机缓冲衔接设备与下层存储，适合判断**加载
 | `ucm:cache_load_queue_wait_duration_ms` | Cache Load 任务被分发线程取出前的排队时长 |
 | `ucm:cache_dump_queue_wait_duration_ms` | Cache Dump 任务被分发线程取出前的排队时长 |
 | `ucm:cache_load_backend_submit_duration_ms` | 分配 Cache 缓冲并同步提交后端 Load 的时长 |
+| `ucm:cache_load_prealloc_duration_ms` | 分发阶段为每个已加载块预分配下一个分片槽位的时长 |
+| `ucm:cache_shard_running_queue_wait_ms` | 单个分片从进入 running 队列到被 H2D 线程取出的时长 |
 | `ucm:cache_shard_backend_wait_ms` | 单个分片在提交 H2D 前等待后端就绪的时长 |
+| `ucm:cache_shard_ready_wait_ms` | 单个分片轮询等待 Cache 槽位就绪的时长（槽位由其它在飞任务填充）；后端持有的槽位由 `cache_shard_backend_wait_ms` 统计 |
+| `ucm:cache_task_total_backend_wait_ms` | 任务级汇总：该任务所有分片的 `cache_shard_backend_wait_ms` 之和 |
+| `ucm:cache_task_total_ready_wait_ms` | 任务级汇总：该任务所有分片的 `cache_shard_ready_wait_ms` 之和 |
+| `ucm:cache_task_total_h2d_submit_ms` | 任务级汇总：该任务所有分片的 `cache_h2d_submit_ms` 之和 |
 | `ucm:cache_h2d_submit_ms` | 异步提交一个分片 H2D 的 CPU 开销，不含传输时间 |
 | `ucm:cache_h2d_sync_ms` | 最后一个分片提交后，等待 H2D 流排空的剩余时长 |
 | `ucm:cache_dump_mkbuf_duration_ms` | Cache Dump 分配或复用缓冲并异步提交 D2H 的时长 |
@@ -458,6 +473,5 @@ ucm:posix_store_health{job="vllm"}
 
 ## 3. 运行口径注记
 
-[^export-scope]: 当前 `ucm/metrics_config.py` 中的 `vllm_connector` consumer 排除了 `interval_lookup_hit_rates`。本目录保留原生指标条目，但默认 vLLM 端点不会导出它。
 [^cache-source]: `cache_posix_load_success_shards_total` 按分派时 Cache 缓冲尚未就绪的状态分类，下层 Store 不一定是 Posix。Cache/Posix 的来源比例用于估算各层贡献，应结合后端活动和已完成传输，不将等待直接解释为物理磁盘读取。
 [^posix-bytes]: 当前 Posix 字节计数在任务完成时累计名义任务字节数，包含错误和中止路径。查看字节速率时同时检查错误；物理存储吞吐需要结合文件系统或设备观测。

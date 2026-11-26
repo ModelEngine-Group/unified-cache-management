@@ -58,7 +58,7 @@ protected:
             t->type == Task::Type::LOAD || t->type == Task::Type::LOAD_ON_TOKEN;
         const auto shards = t->desc.size();
         const auto bytes = shardSize_ * shards;
-        w->SetEpilog([isLoad, shards, bytes, tp = w->startTp] {
+        w->SetEpilog([t, isLoad, shards, bytes, tp = w->startTp] {
             auto cost = NowTime::Now() - tp;
             auto costMs = cost * 1e3;
             auto bwGbps = cost > 0 ? static_cast<double>(bytes) / cost / 1e9 : 0.0;
@@ -67,6 +67,12 @@ protected:
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bytes_total"),
                                      static_cast<double>(bytes));
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_task_total_backend_wait_ms"),
+                                     t->totalBackendWaitMs);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_task_total_ready_wait_ms"),
+                                     t->totalReadyWaitMs);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_task_total_h2d_submit_ms"),
+                                     t->totalH2dSubmitMs);
             } else {
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_duration_ms"), costMs);
                 Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bandwidth_gbps"), bwGbps);
