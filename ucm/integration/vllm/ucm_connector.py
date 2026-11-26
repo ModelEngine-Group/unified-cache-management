@@ -4135,6 +4135,19 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     kv_cache_config
                 )
             )
+        if requires_cuda_async and not (
+            is_fawa or use_hybrid_linear_attention or use_ratio_rate
+        ):
+            if needs_specialized_connector:
+                raise RuntimeError(
+                    "UCM has no compatible request-async connector for this "
+                    "CUDA KV cache layout. Disable UCM external KV caching."
+                )
+            if use_cp_parallel:
+                raise RuntimeError(
+                    "UCMCPConnector does not support the request-async load "
+                    "required by this CUDA KV cache layout."
+                )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise

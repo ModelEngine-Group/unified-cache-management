@@ -104,6 +104,11 @@ def hla():
             "_tokens_per_state",
             "_has_glm53_layout",
             "_build_layout",
+            "_build_cuda_blhnc_layout",
+            "_iter_kv_tensors",
+            "_column_base",
+            "direct_store_config",
+            "extract_block_addrs",
             "_build_glm53_ascend_layout",
             "_validate_glm53_ascend_descriptors",
             "_build_glm53_ascend_row",
@@ -224,11 +229,12 @@ def hla():
         "MLAAttentionSpec": MLAAttentionSpec,
         "MambaSpec": MambaSpec,
         "UniformTypeKVCacheSpecs": UniformTypeKVCacheSpecs,
+        "KVCacheSegment": SimpleNamespace,
         "torch": SimpleNamespace(Tensor=FakeTensor),
         "logger": MagicMock(),
         "ucmmetrics": MagicMock(),
         "current_platform": SimpleNamespace(
-            device_type="npu", is_cuda_alike=lambda: False
+            device_type="npu", is_cuda_alike=lambda: False, is_cuda=lambda: False
         ),
         "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
         "Task": object,
@@ -2252,3 +2258,109 @@ def test_make_other_rank_hashers_covers_pcp_shards_at_tp1(hla, monkeypatch):
         b"meta:2:pcp=3",
     ]
     assert connector._make_other_rank_hashers(_cp_vllm_config()) == []
+
+
+@pytest.fixture
+def cuda_blhnc_layout(hla):
+    """GLM-5.3-Flash geometry with one shared allocation and distinct block IDs."""
+    stride = 8_143_872
+    blocks = 2200
+    base = 1 << 40
+    storage = SimpleNamespace(data_ptr=lambda: base, nbytes=lambda: stride * blocks)
+    groups = []
+    descriptors = []
+    tensors = {}
+    circular = type("CircularBufferSpec", (KVCacheSpec,), {})
+
+    def add_descriptor(specs, prefix, count, page, offset, spec_type):
+        names = []
+        for index in range(count):
+            name = f"{prefix}.{index}"
+            names.append(name)
+            specs[name] = spec_type(block_size=640, page_size_bytes=page)
+            view = FakeTensor(base + offset + index * page, (blocks, 1), (stride, 1))
+            view.untyped_storage = lambda: storage
+            tensors[name] = view
+        descriptors.append(
+            SimpleNamespace(
+                layers=names,
+                size=stride * blocks,
+                layer_stride=page,
+                block_stride=stride,
+                offset=offset,
+                host_resident=False,
+            )
+        )
+
+    def add_group(specs):
+        groups.append(
+            SimpleNamespace(
+                layer_names=list(specs),
+                kv_cache_spec=UniformTypeKVCacheSpecs(kv_cache_specs=specs),
+                enable_kv_transfer=True,
+            )
+        )
+
+    for state_group, count in enumerate((12, 11, 11)):
+        specs = {}
+        add_descriptor(specs, f"kda{state_group}", count, 655_360, 0, MambaSpec)
+        add_group(specs)
+    specs = {}
+    add_descriptor(specs, "indexer", 12, 21_120, 0, MLAAttentionSpec)
+    add_descriptor(specs, "mla", 12, 655_360, 253_440, MLAAttentionSpec)
+    add_group(specs)
+    specs = {}
+    add_descriptor(specs, "tail", 12, 8_192, 0, circular)
+    add_group(specs)
+
+    layout = hla.HybridLinearAttentionLayout()
+    layout.use_layerwise = False
+    layout.num_blocks = blocks
+    layout.kv_cache_config = SimpleNamespace(
+        kv_cache_groups=groups,
+        kv_cache_tensors=descriptors,
+        kv_cache_layout="BLHNC",
+    )
+    hla.current_platform.is_cuda = lambda: True
+    return layout, tensors, base, stride
+
+
+def test_cuda_blhnc_copies_only_group_bytes_at_block_stride(cuda_blhnc_layout):
+    layout, tensors, base, stride = cuda_blhnc_layout
+    layout._build_layout(tensors)
+
+    sizes, shard_size, block_size = layout.direct_store_config()
+    assert sizes == [7_864_320, 7_208_960, 7_208_960, 253_440, 7_864_320]
+    assert shard_size == block_size == sum(sizes)
+    assert layout.direct_group_bytes[3] == 8_117_760
+    assert layout.base_ptrs.tolist() == [base]
+    assert layout.buffer_sizes.tolist() == [2199 * stride + 8_117_760]
+
+    last = base + 2199 * stride
+    assert layout.extract_block_addrs([0, 1, 2199, 2], [0, 1, 3, 4]).tolist() == [
+        [base, 0, 0, 0, 0],
+        [0, base + stride, 0, 0, 0],
+        [0, 0, 0, last, last + 253_440],
+        [0, 0, 0, 0, 0],
+    ]
+    assert "tail.0" not in layout.layer_anchors
+    for block_id in (-1, 2200):
+        with pytest.raises(ValueError, match="outside"):
+            layout.extract_block_addrs([block_id], [3])
+
+
+def test_cuda_blhnc_rejects_incorrect_view(cuda_blhnc_layout):
+    layout, tensors, _, _ = cuda_blhnc_layout
+    tensors["mla.0"].ptr += 1
+    with pytest.raises(ValueError, match="disagrees with its descriptor"):
+        layout._build_layout(tensors)
+
+
+def test_cuda_blhnc_rejects_overlapping_group_ranges(cuda_blhnc_layout):
+    layout, tensors, _, _ = cuda_blhnc_layout
+    layout.kv_cache_config.kv_cache_tensors[4].offset -= 1
+    for name, tensor in tensors.items():
+        if name.startswith("mla."):
+            tensor.ptr -= 1
+    with pytest.raises(ValueError, match="Overlapping"):
+        layout._build_layout(tensors)

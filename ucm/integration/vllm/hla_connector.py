@@ -143,7 +143,9 @@ def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
             participates_in_prefix_caching(inner)
             for inner in spec.kv_cache_specs.values()
         )
-    # Ascend KpoolTail uses the new flag; it is request-local ring state,
+    if type(spec).__name__ == "CircularBufferSpec":
+        return False
+    # Ascend KpoolTail is request-local ring state,
     # not a historical prefix, even when KV transfer is enabled.
     return bool(getattr(spec, "prefix_cacheable", True)) and bool(
         getattr(spec, "participates_in_prefix_caching", True)
@@ -308,6 +310,8 @@ def group_state_flags(kv_cache_config: "KVCacheConfig", group) -> tuple[bool, bo
     PLE keeps the state-hash role even when its spec is not mamba-align.
     A mamba-align spec with a PLE, compressed, or raw_key role does not.
     """
+    if not getattr(group, "enable_kv_transfer", True):
+        return False, False
     role = ""
     if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
         kv_cache_config
@@ -410,7 +414,12 @@ class KVCacheGroupManager:
             ):
                 role = blnhc_group_role(group.layer_names)
             is_mamba_align, is_ple = group_state_flags(kv_cache_config, group)
-            seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
+            group_namespace = (
+                b"UCM_HLA_BLHNC_GROUP_V1"
+                if kv_cache_layout_name(kv_cache_config) == "BLHNC"
+                else b"UCM_GROUP_SEED"
+            )
+            seed = request_hasher((group_namespace, base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
                 block_size=block_size,
@@ -420,7 +429,10 @@ class KVCacheGroupManager:
                 is_ple=is_ple,
                 is_compressed=role == "compressed",
                 is_raw_key=role == "raw_key",
-                participates_in_prefix_caching=participates_in_prefix_caching(spec)
+                participates_in_prefix_caching=getattr(
+                    group, "enable_kv_transfer", True
+                )
+                and participates_in_prefix_caching(spec)
                 and role not in _BLNHC_UNHASHED_ROLES,
             )
             if not info.is_state_hash and info.participates_in_prefix_caching:
@@ -664,6 +676,12 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
 
     def _build_layout(self, kvcaches) -> None:
+        if (
+            current_platform.is_cuda()
+            and kv_cache_layout_name(self.kv_cache_config) == "BLHNC"
+        ):
+            self._build_cuda_blhnc_layout(kvcaches)
+            return
         if is_cuda_blnhc_layout(self.kv_cache_config):
             self._build_cuda_blnhc_layout(kvcaches)
             return
@@ -707,6 +725,125 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 f"layers={_short_list(names)}"
             )
         return min(origins)
+
+    def _build_cuda_blhnc_layout(self, kvcaches) -> None:
+        """Build direct-transfer columns from each group's packed page ranges."""
+        if self.use_layerwise or self.num_blocks <= 0:
+            raise ValueError("CUDA BLHNC requires a nonempty direct HLA cache.")
+
+        cache_config = self.kv_cache_config
+        self.layer_name_to_group = {
+            name: gid
+            for gid, group in enumerate(cache_config.kv_cache_groups)
+            if getattr(group, "enable_kv_transfer", True)
+            and participates_in_prefix_caching(group.kv_cache_spec)
+            for name in group.layer_names
+        }
+        specs = layer_name_to_kv_cache_spec(cache_config)
+        buffers: dict[int, int] = {}
+        ranges: dict[tuple[int, int], list[tuple[int, int]]] = defaultdict(list)
+        allocation_strides: dict[int, int] = {}
+        strides: list[int] = []
+        self.page_types = []
+        self.pair_bases = {}
+        self.group_owns_type = {}
+        self.group_pairs = defaultdict(set)
+        self.direct_group_bytes = defaultdict(int)
+        self.layer_anchors = {}
+        self.layer_name_to_slot = {}
+        self.layer_column_bytes = {}
+
+        for raw in cache_config.kv_cache_tensors:
+            names = _kv_cache_tensor_layers(raw)
+            group_ids = {self.layer_name_to_group.get(name) for name in names}
+            if not group_ids or group_ids == {None}:
+                continue
+            if len(group_ids) != 1 or None in group_ids or raw.host_resident:
+                raise ValueError(
+                    "CUDA BLHNC descriptor must belong to one device cache group."
+                )
+            gid = next(iter(group_ids))
+            page = int(raw.layer_stride)
+            stride = int(raw.block_stride)
+            offset = int(raw.offset)
+            copy_size = page * len(names)
+            end = offset + copy_size
+            span = (self.num_blocks - 1) * stride + end
+            if page <= 0 or offset < 0 or end > stride or span > raw.size:
+                raise ValueError(
+                    "CUDA BLHNC descriptor exceeds its block or allocation."
+                )
+
+            storage_base = None
+            for index, name in enumerate(names):
+                if name in self.layer_anchors or len(specs[name]) != 1:
+                    raise ValueError(f"Ambiguous CUDA BLHNC cache layer: {name}.")
+                if specs[name][0].page_size_bytes != page:
+                    raise ValueError(f"CUDA BLHNC layer page size mismatch: {name}.")
+                tensors = list(self._iter_kv_tensors(kvcaches.get(name)))
+                if not tensors:
+                    raise ValueError(f"CUDA BLHNC layer has no live tensor: {name}.")
+                storage = tensors[0].untyped_storage()
+                base = storage.data_ptr()
+                if storage_base is None:
+                    storage_base = base
+                layer_start = base + offset + index * page
+                ptrs = [tensor.data_ptr() for tensor in tensors]
+                if (
+                    base != storage_base
+                    or storage.nbytes() < span
+                    or min(ptrs) != layer_start
+                    or max(ptrs) >= layer_start + page
+                    or any(t.untyped_storage().data_ptr() != base for t in tensors)
+                ):
+                    raise ValueError(
+                        f"CUDA BLHNC tensor disagrees with its descriptor: {name}."
+                    )
+                self.layer_anchors[name] = [
+                    KVCacheSegment(
+                        ptr=layer_start,
+                        copy_size=page,
+                        block_stride=stride,
+                        buffer_size=(self.num_blocks - 1) * stride + page,
+                    )
+                ]
+                self.layer_name_to_slot[name] = 0
+                self.layer_column_bytes[name] = page
+
+            assert storage_base is not None
+            if allocation_strides.setdefault(storage_base, stride) != stride:
+                raise ValueError(
+                    "Inconsistent CUDA BLHNC strides in a shared allocation."
+                )
+            storage_ranges = ranges[gid, storage_base]
+            if any(
+                offset < old_end and old_start < end
+                for old_start, old_end in storage_ranges
+            ):
+                raise ValueError("Overlapping CUDA BLHNC ranges within a cache group.")
+            storage_ranges.append((offset, end))
+            buffers[storage_base] = max(buffers.get(storage_base, 0), span)
+            column = len(self.page_types)
+            self.page_types.append(copy_size)
+            strides.append(stride)
+            self.pair_bases[column, 0] = storage_base + offset
+            self.group_owns_type[gid, column] = True
+            self.group_pairs[gid].add(0)
+            self.direct_group_bytes[gid] += copy_size
+
+        missing = self.layer_name_to_group.keys() - self.layer_anchors.keys()
+        if missing or not self.page_types:
+            raise ValueError(
+                f"CUDA BLHNC is missing cacheable layer ranges: {sorted(missing)}."
+            )
+        self.num_slots = 1
+        self.width = len(self.page_types)
+        self.slot_shard_size = sum(self.page_types)
+        self.tensor_size_lists = np.asarray([self.page_types], dtype=np.uint64)
+        self.direct_column_strides = tuple(strides)
+        self.block_stride_lists = np.asarray(strides, dtype=np.uint64)
+        self.base_ptrs = np.asarray(list(buffers), dtype=np.uint64)
+        self.buffer_sizes = np.asarray(list(buffers.values()), dtype=np.uint64)
 
     def _build_cuda_blnhc_layout(self, kvcaches) -> None:
         """One column per physical block_stride segment on CUDA BLNHC.
@@ -1609,6 +1746,11 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 "Direct block/group id lengths differ: "
                 f"blocks={len(vllm_block_ids)}, groups={len(group_ids)}"
             )
+        column_strides = getattr(self, "direct_column_strides", self.page_types)
+        if hasattr(self, "direct_column_strides") and any(
+            block < 0 or block >= self.num_blocks for block in vllm_block_ids
+        ):
+            raise ValueError("CUDA BLHNC block id is outside the cache allocation.")
         block_ids = np.asarray(vllm_block_ids, dtype=np.uint64)
         group_ids_np = np.asarray(group_ids, dtype=np.int64)
         addrs = np.zeros(
@@ -1620,14 +1762,14 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 continue
             selected = np.flatnonzero(group_ids_np == gid)
             for pair in pairs:
-                for type_id, page in enumerate(self.page_types):
+                for type_id in range(self.width):
                     if not self.group_owns_type.get((int(gid), type_id)):
                         continue
                     base = self._column_base(int(gid), type_id, pair)
                     if base is None:
                         continue
                     addrs[selected, pair * self.width + type_id] = (
-                        base + block_ids[selected] * page
+                        base + block_ids[selected] * column_strides[type_id]
                     )
         return np.ascontiguousarray(addrs)
 
@@ -2584,6 +2726,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if (
             layout_name.startswith("B")
             and not is_cuda_blnhc_layout(self._kv_cache_config)
+            and not (
+                current_platform.is_cuda()
+                and layout_name == "BLHNC"
+                and not self.use_layerwise
+            )
             and not is_npu_layer_major_blnhc(self._kv_cache_config)
         ):
             raise ValueError(
@@ -2597,9 +2744,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.kv_caches = kv_caches
 
         launch_config = self.launch_config
-        if not self.use_layerwise and is_npu_layer_major_blnhc(self._kv_cache_config):
-            # KVCacheLayout defaults use_layerwise to True. Pin whole-store
-            # so that default does not rebuild this layout as layerwise.
+        if not self.use_layerwise and (
+            layout_name == "BLHNC" or is_npu_layer_major_blnhc(self._kv_cache_config)
+        ):
+            # The layout defaults to layerwise even on the direct connector.
             launch_config = copy.deepcopy(self.launch_config)
             launch_config["use_layerwise"] = False
         self.kv_cache_layout = HybridLinearAttentionLayout(
