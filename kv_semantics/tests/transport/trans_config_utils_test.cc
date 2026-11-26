@@ -25,12 +25,12 @@
 // TransConfigUtils / 结构化配置 DT.
 //
 // 测试因子分解：
-//   F1 配置结构 ∈ {Retry, Recovery, Probe, FlowControl, Connection}
-//   F2 取值类别 ∈ {设计默认值, 合法边界(0/1/16/1024/4096), 越界(17/1025/4097),
-//                  非法零值, 非法文本, 非法关系约束(busyFloor>=maxInflight)}
+//   F1 配置结构 ∈ {Recovery, Connection}
+//   F2 取值类别 ∈ {设计默认值, 合法边界(0/1/16), 越界(17),
+//                  非法零值, 非法文本, X>=1 关系边界}
 //   F3 入口     ∈ {Validate() 直调, LoadTransportConfig 文件, 客户端 LoadFromFile 文件}
 // 断言面：Validate 返回码（非法值 INVALID_ARGUMENT，禁止静默回退）、
-//         默认值快照、文件解析字段落位、legacy 键同步、派生上限。
+//         默认值快照、文件解析字段落位、legacy 键同步。
 
 #include <cstdio>
 #include <fstream>
@@ -100,10 +100,6 @@ TEST(TransConfigUtilsTest, RecoveryConfigBoundaries)
         EXPECT_EQ(cfg.Validate().code, StatusCode::INVALID_ARGUMENT);
     }
 }
-
-// ─── ProbeConfig 边界值分析 + 派生上限 ───
-
-// ─── FlowControlConfig 关系约束（busyFloor 关系边界） ───
 
 // ─── ConnectionConfig 边界（X >= 1） ───
 

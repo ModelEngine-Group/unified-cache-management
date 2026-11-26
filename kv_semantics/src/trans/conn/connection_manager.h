@@ -216,7 +216,6 @@ private:
     Status CreateGroupConnections(const NodeEndpoint& endpoint, std::uint32_t qpNum,
                                    std::vector<TransProvider::ConnectionHandle>& handles,
                                    ServerKvCapabilities& capabilities);
-    void TeardownGroup(const std::shared_ptr<ConnectionGroup>& group);
     Status RemoveGroup(const NodeEndpoint& endpoint, bool& removed);
     void EraseRecoverState(std::uint32_t groupId);
 };

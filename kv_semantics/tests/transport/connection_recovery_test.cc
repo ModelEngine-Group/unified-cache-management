@@ -31,9 +31,11 @@
 //   F4 三态         ∈ {GREEN, YELLOW, RED} × {updating=true/false}
 //   F5 UpdateGroups ∈ {fail-fast, 删除无匹配, 删除有匹配, 新增, 全等skip,
 //                       属性替换, 部分失败, 重复推送}
-//   F6 选路         ∈ {排除集跨Group优先, 同Group兜底, 排空无候选}
+//   F6 异步 UpdateGroups ∈ {worker 完成, fail-fast 无副作用, 严格 FIFO,
+//                             分摊公平(恢复穿插), 关停取消, updating 跨 tick,
+//                             同步包装, 内联回退}
 // 断言面：状态迁移、句柄删除恰好一次、计数器清零、窗口标志、三态聚合、
-//         fail-fast、幂等收敛。
+//         fail-fast、幂等收敛、future 终态。
 
 #include "conn/connection_manager.h"
 #include <atomic>
