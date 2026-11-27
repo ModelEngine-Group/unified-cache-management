@@ -513,7 +513,19 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
         ctx->keys.push_back(std::move(resolvedKey));
     }
     ctx->entryStatus.assign(keys.size(), Status::OK());
-    ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
+    if (opType == AsuOpType::QUERY) {
+        ctx->queryResult.exists.assign(keys.size(), 0);
+        std::lock_guard<std::mutex> lock{mutex_};
+        const auto& sizes = config_.namespaceValueSizes;
+        if (!sizes.empty()) {
+            auto& valueSizes = ctx->queryResult.valueSizes;
+            valueSizes.reserve(keys.size());
+            for (const auto& key : ctx->keys) {
+                auto it = sizes.find(key.gnsid);
+                valueSizes.push_back(it == sizes.end() ? 0 : it->second);
+            }
+        }
+    }
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }
