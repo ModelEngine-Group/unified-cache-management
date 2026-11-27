@@ -2880,6 +2880,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return finished_recving
 
+    def reset_cache(self) -> bool:
+        """Invalidate this participant's local Cache tier only."""
+        reset = getattr(getattr(self, "store", None), "reset_cache", None)
+        return bool(reset()) if callable(reset) else False
+
     def get_finished(
         self,
         finished_req_ids: set[str],
@@ -4356,6 +4361,26 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             connector_metadata (dict): the connector metadata.
         """
         self.connector.bind_connector_metadata(connector_metadata)
+
+    def reset_cache(self) -> bool:
+        """Reset only a single-host, non-PP deployment's local Cache tier."""
+        try:
+            parallel = self._vllm_config.parallel_config
+            if (
+                parallel.pipeline_parallel_size != 1
+                or parallel.world_size > parallel.local_world_size
+                or parallel.distributed_executor_backend not in ("mp", "uni")
+            ):
+                logger.warning(
+                    "UCM Cache reset supports only single-host mp/uni without PP. "
+                    "For Posix-hit benchmarks, start all workers with "
+                    "cache_load_backend_only=true instead of calling reset."
+                )
+                return False
+            return bool(self.connector.reset_cache())
+        except Exception as e:
+            logger.warning(f"UCM cache reset failed: {type(e).__name__}: {e}")
+            return False
 
     @_record_connector_interface_duration
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):

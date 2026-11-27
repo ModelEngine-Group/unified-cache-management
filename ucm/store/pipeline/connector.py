@@ -199,6 +199,10 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def check(self, task: Task) -> bool:
         return self.store_.Check(task.task_id)
 
+    def reset_cache(self) -> bool:
+        """Clear the Cache tier while keeping the stacked backend intact."""
+        return self.store_.ResetCache()
+
 
 def _cache_ds3fs_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore

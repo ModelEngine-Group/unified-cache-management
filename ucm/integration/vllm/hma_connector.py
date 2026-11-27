@@ -965,6 +965,22 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
         logger.info("Init UCM FAWA connector.")
 
+    def reset_cache(self) -> bool:
+        """Synchronously invalidate both FA and WA Cache tiers."""
+        if self.fa_store is None:
+            return False
+        if self.window_group_ids and self.wa_store is None:
+            return False
+        fa_reset = getattr(self.fa_store, "reset_cache", None)
+        wa_reset = getattr(self.wa_store, "reset_cache", None)
+        if not callable(fa_reset) or (
+            self.wa_store is not None and not callable(wa_reset)
+        ):
+            return False
+        fa_cleared = bool(fa_reset())
+        wa_cleared = self.wa_store is None or bool(wa_reset())
+        return fa_cleared and wa_cleared
+
     def _init_fawa_request_hasher(self, vllm_config, role) -> None:
         """Keep scheduler and worker keys compatible with the upstream layout."""
         if self.is_v41_layout or self.is_ascend_layout:

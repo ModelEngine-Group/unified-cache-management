@@ -37,11 +37,13 @@ template <typename BufferT = Buffer>
 class BufferManager {
     BufferT buffer_;
     StoreV1* backend_{nullptr};
+    bool loadBackendOnly_{false};
 
 public:
     Status Setup(const Config& config)
     {
         backend_ = config.storeBackend;
+        loadBackendOnly_ = config.loadBackendOnly;
         return buffer_.Setup(config);
     }
     BufferT* GetTransBuffer() { return &buffer_; }
@@ -54,7 +56,7 @@ public:
         indexes.reserve(num);
         StopWatch sw;
         for (size_t i = 0; i < num; ++i) {
-            if (buffer_.Exist(blocks[i], 0)) {
+            if (!loadBackendOnly_ && buffer_.Exist(blocks[i], 0)) {
                 hits[i] = true;
             } else {
                 misses.push_back(blocks[i]);
@@ -82,7 +84,7 @@ public:
         missIdx.reserve(num);
         StopWatch sw;
         for (size_t i = 0; i < num; ++i) {
-            if (!buffer_.Exist(blocks[i], 0)) {
+            if (loadBackendOnly_ || !buffer_.Exist(blocks[i], 0)) {
                 missBlocks.push_back(blocks[i]);
                 missIdx.push_back(i);
             }
@@ -105,7 +107,7 @@ public:
         StopWatch sw;
         ssize_t bufferHitIdx = -1;
         for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
-            if (buffer_.Exist(blocks[i], 0)) {
+            if (!loadBackendOnly_ && buffer_.Exist(blocks[i], 0)) {
                 bufferHitIdx = i;
                 break;
             }
@@ -129,6 +131,9 @@ public:
         // buffer_.Touch(blocks, num);
         if (backend_) { backend_->Prefetch(blocks, num); }
     }
+
+    /* Invalidates this store's cache tier only; the backend stays untouched. */
+    void Reset() { buffer_.Reset(); }
 
 private:
     void ReportLookupStats(const StopWatch& sw, size_t hits, size_t misses)

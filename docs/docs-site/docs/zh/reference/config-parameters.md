@@ -67,6 +67,14 @@ enable_metrics: true
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | 兼容旧配置 | Cache2 在每个 Cache 域内统一使用共享控制面和每个 worker 独立的 memfd 数据段。 |
 
+Cache2 运行时 reset 仅支持不开 PP 的单机 `mp`/`uni` 场景。Ray 和 external launcher 不做拓扑推断，直接拒绝 reset。不支持 PP（包括单机 PP）和跨机 TP 清理；这些场景下 vLLM connector 直接返回 false，不执行局部清理。reset 只使本机 DRAM 缓存失效，保留 backend 文件，调用前需停止 Cache 流量。不新增 scheduler 与 worker 之间的清理通信。各 DP engine 清理各自的本机 Cache，能否覆盖全部 DP 取决于 vLLM 的请求分发。
+
+PP 或跨机 TP 场景需要测试 Posix 命中时，请在启动服务时，为所有 worker 的 `ucm_connector_config` 配置 `cache_load_backend_only: true`，并使用 Posix backend。直接以此模式测试，不调用 UCM reset。该参数只控制 UCM Cache 层，vLLM HBM prefix cache 的复用需单独配置。
+
+| 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
+| --- | --- | --- | --- | --- |
+| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 测试模式：查询 backend，对无人引用的 Cache2 slot 原地重新加载。与旧 Cache 一致，正在被引用的 Ready slot 和进行中的加载可以共用。必须配置 backend，并在所有 worker 上启用。 |
+
 ## Posix 容量回收
 
 回收配置不预留磁盘空间。共享存储命名空间必须协调 GC 归属，不能由多个独立实例同时按自身预算回收。
