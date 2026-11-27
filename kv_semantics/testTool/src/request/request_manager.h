@@ -34,8 +34,9 @@
 struct OrcTask {
     /** 任务操作类型（batch 头或单 key 行的 optype） */
     OrcOp op{OrcOp::GET};
-    /** 任务级节点标识（batch 头或单 key 行的 nsid） */
-    std::uint64_t nsid{0};
+    /** 任务级请求 namespace 名（必填非空；batch 头或单 key 行的 ns；经 IoOptions.kvns 传给 kv
+     * client） */
+    std::string ns;
     /** 任务内逐条原始数据（每条对应一个 kv entry） */
     std::vector<RequestOrc> entries;
 };
@@ -55,8 +56,9 @@ using FlowStep = std::variant<OrcTask, SleepStep>;
 /**
  * 输入管理器：解析 input.txt 全部指令并缓存为步骤序列，供执行侧按序取用。
  * 解析规则（见 input/readme.md）：行首尾 trim（空格与 \t）、空行跳过、sleep 行解析为独立暂停步骤、
- * batch 头（可带 nsid=x / nsid x，缺省 0）开始至 /batch 结束聚合（文件结束时未闭合的 batch
- * 属非法输入，报错退出）、单行先试四整数再试三整数；entry 字段须满足 kv 协议约束
+ * batch 头（必带非空 ns=x / ns x）开始至 /batch 结束聚合（文件结束时未闭合的 batch
+ * 属非法输入，报错退出）、单行四字段（ns key offset length，ns 为必填非空的 namespace
+ * 名字符串）；entry 字段须满足 kv 协议约束
  * （key 低 64 位非全 0、offset/length 512 字节对齐、length 非 0 且不超 24 位上限），
  * 违规启动即报错；
  * 任何非法输入数据（未知 op、字段解析失败等）不跳过不静默继续，直接返回启动错误提示管理员修正。
@@ -74,6 +76,36 @@ public:
     const FlowStep &GetStep(std::size_t index) const;
 
 private:
+    /** 解析单行并按当前状态分派（批内行 / 顶层行）；失败填 err 返回 false */
+    bool ProcessLine(std::size_t lineNo, const std::string &line, std::string &err);
+
+    /** 批内行处理：/batch 闭合当前批，其余行解析为批内 entry（op 与 ns 继承批头） */
+    bool HandleBatchBody(std::size_t lineNo, const std::string &line,
+                         const std::vector<std::string> &tokens, std::string &err);
+
+    /** 顶层行处理：sleep 暂停 / batch 头开始聚合 / 单 key 行独立任务 */
+    bool HandleTopLevel(std::size_t lineNo, const std::string &line,
+                        const std::vector<std::string> &tokens, std::string &err);
+
+    /** 批闭合：空批告警忽略（无数据可执行，不属数据错误），非空批作为一个任务入步骤序列 */
+    void CloseBatch(std::size_t lineNo);
+
+    /** batch 头（op 后接 batch）：初始化批聚合状态，开始收集批内行 */
+    bool BeginBatch(OrcOp op, const std::vector<std::string> &fields, std::size_t lineNo,
+                    const std::string &line, std::string &err);
+
+    /** 单 key 行组装为独立任务入步骤序列 */
+    bool AppendSingleTask(OrcOp op, const std::vector<std::string> &fields, const std::string &line,
+                          std::size_t lineNo, std::string &err);
+
+    /** entry 协议约束校验（fail-fast）：违规组装 err 报错，不等到运行期任务失败 */
+    bool CheckEntry(const RequestOrc &entry, std::size_t lineNo, const std::string &line,
+                    std::string &err);
+
     /** 已解析的步骤序列（与 input 文件行序一致） */
     std::vector<FlowStep> steps_;
+
+    /** 批聚合状态：batch 头置位开始收集批内行，/batch 闭合复位 */
+    bool inBatch_{false};
+    OrcTask batchTask_;
 };

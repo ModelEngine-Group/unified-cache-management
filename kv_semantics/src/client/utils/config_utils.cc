@@ -223,11 +223,16 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             config.attrs["batch_topk_affinity.dynamic_adjust_enabled"] = value;
         } else if (key == "transport.asuIds" || key == "transport.asu_ids" || key == "asuIds" ||
                    key == "asu_ids") {
+            std::string asuIdList;
             for (const auto& asuIdText : SplitConfigValue(value, ',')) {
                 TransportConfig transportConfig;
                 transportConfig.nodeId = ParseConfigUint64(asuIdText);
+                if (!asuIdList.empty()) { asuIdList += ','; }
+                asuIdList += std::to_string(transportConfig.nodeId);
                 config.transportConfigs.emplace_back(std::move(transportConfig));
             }
+            KV_INFO("KV client config: asu_ids=[{}] -> {} transport config(s)", asuIdList,
+                    config.transportConfigs.size());
         } else {
             NodeId nodeId{0};
             std::string attrKey;
@@ -271,7 +276,12 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
         }
 
         auto iter = asuInfos.find(transportConfig.nodeId);
-        if (iter == asuInfos.end()) { continue; }
+        if (iter == asuInfos.end()) {
+            KV_WARN("asu_info.{} not configured for asu_id {} (from asu_ids); "
+                    "transport for this node will have no endpoints",
+                    transportConfig.nodeId, transportConfig.nodeId);
+            continue;
+        }
         ApplyAsuInfoToTransportConfig(iter->second, transportConfig);
     }
     return Status::OK();

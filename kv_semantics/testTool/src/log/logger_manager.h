@@ -28,71 +28,74 @@
 #include <spdlog/async_logger.h>
 #include <spdlog/spdlog.h>
 #include <string>
-
-class ConfigUtil;
+#include "utils/log_config_util.h"
 
 /**
- * 日志管理器：异步日志的初始化 / 获取 / 关闭入口；统一管理两类 logger——
- * 全量日志（滚动文件 + 可选控制台 sink，LOG_xxx 宏输出）与请求明细日志（perf=off 时
- * put/get/exist/delete 任务的明细行，LOG_INFO_REQ 宏输出），两者配置完全同款
- * （pattern / 级别沿用 log.pattern / log.level），仅 sink 不同（请求明细落 readlogdir
- * 追加文件），共用同一异步线程池；两类 logger 获取方式对称（GetLogger / GetReqLogger）。
+ * 日志管理器：三个行为一致的异步 logger 的初始化 / 获取 / 关闭入口——主日志
+ * （LOG_xxx 宏）、get 明细日志（LOG_INFO_GET 宏）与其余操作明细日志
+ * （LOG_INFO_OTHER 宏）；pattern / 级别 / 控制台 / 滚动清理统一配置（对三个
+ * logger 同款生效），目录与文件名独立配置（见 LogConfigUtil），共用同一异步
+ * 线程池。
  */
 class LoggerManager {
 public:
-    /**
-     * 从传入的配置实例读取 log 参数并初始化异步日志（显式注入，不访问配置单例）；
-     * 全量日志的 sink 随配置组装（log.console=on 时附控制台 sink）；请求明细日志仅
-     * perf=off 时创建（perf=on 压测模式关闭明细输出）；失败填充 err（内部已自清理）
-     */
-    static bool Init(const ConfigUtil &config, std::string &err);
+    static bool Init(const LogConfigUtil &logConfig, std::string &err);
     /** 冲刷并释放全部日志资源；队列残留消息全部落盘后线程池才退出，可重复调用 */
     static void Shutdown();
     /**
-     * 进程退出专用收尾：flush 日志并停自有线程池（drain 队列保证消息落盘），
-     * 不调 spdlog::shutdown()——kv client 库线程存在退出期不终止的既有缺陷
-     * （FAKE WorkerPool 无停止路径、库侧 spdlog 全局池/flusher 生命周期纠缠），
-     * 优雅关闭会永久阻塞挂死。调用方随后以 std::_Exit 终止进程跳过静态析构；
-     * 库侧修复后本方法可恢复为转调 Shutdown()
+     * 进程退出专用收尾：flush 日志并停自有线程池，不调 spdlog::shutdown()——
+     * kv client 库线程退出期不终止，优雅关闭会永久阻塞；调用方随后以 std::_Exit
+     * 终止进程
      */
     static void ShutdownForExit();
-    /** 获取全局 logger；未初始化或已关闭时返回 nullptr */
-    static std::shared_ptr<spdlog::logger> GetLogger();
-    /** 获取请求明细日志 logger；未初始化（perf=on）或已关闭时返回 nullptr */
-    static std::shared_ptr<spdlog::logger> GetReqLogger();
+    /** 获取主日志 logger */
+    static std::shared_ptr<spdlog::logger> GetLogger() { return logger_; }
+    /** 获取 get 明细日志 logger */
+    static std::shared_ptr<spdlog::logger> GetGetLogger() { return getLogger_; }
+    /** 获取其余操作明细日志 logger（put/exist/delete） */
+    static std::shared_ptr<spdlog::logger> GetOtherLogger() { return otherLogger_; }
 
     LoggerManager() = delete;  // 静态工具类，禁止实例化
 
 private:
+    static void CreateLogger(const LogConfigUtil &logConfig, spdlog::level::level_enum level,
+                             const char *name, const std::string &dir, const std::string &fileName,
+                             std::shared_ptr<spdlog::logger> &out);
+
     /** 异步日志线程池（单写线程保证各文件内写入顺序） */
     inline static std::shared_ptr<spdlog::details::thread_pool> threadPool_;
-    /** 全局异步 logger（注册名 "main"） */
     inline static std::shared_ptr<spdlog::logger> logger_;
-    /** 请求明细日志异步 logger（注册名 "req"；perf=on 时不创建，保持 nullptr） */
-    inline static std::shared_ptr<spdlog::logger> reqLogger_;
+    inline static std::shared_ptr<spdlog::logger> getLogger_;
+    inline static std::shared_ptr<spdlog::logger> otherLogger_;
 };
 
-// ============================================================================
-// 日志输出宏：统一出口；未初始化或已关闭时安全跳过。格式语法同 fmt。
-// ============================================================================
-#define LOG_IMPL(LEVEL, ...)                                                   \
-    do {                                                                       \
-        std::shared_ptr<spdlog::logger> logLg_ = ::LoggerManager::GetLogger(); \
-        if (logLg_ != nullptr) { logLg_->log(LEVEL, __VA_ARGS__); }            \
+#define LOG_IMPL(LEVEL, ...)                                                                   \
+    do {                                                                                       \
+        std::shared_ptr<spdlog::logger> logLg_ = ::LoggerManager::GetLogger();                 \
+        if (logLg_ != nullptr) {                                                               \
+            logLg_->log(spdlog::source_loc{__FILE__, __LINE__, __func__}, LEVEL, __VA_ARGS__); \
+        }                                                                                      \
     } while (0)
 
-/** 输出 debug 级别日志（fmt 格式） */
 #define LOG_DEBUG(...) LOG_IMPL(spdlog::level::debug, __VA_ARGS__)
-/** 输出 info 级别日志（fmt 格式） */
 #define LOG_INFO(...) LOG_IMPL(spdlog::level::info, __VA_ARGS__)
-/** 输出 warn 级别日志（fmt 格式） */
 #define LOG_WARN(...) LOG_IMPL(spdlog::level::warn, __VA_ARGS__)
-/** 输出 error 级别日志（fmt 格式） */
 #define LOG_ERROR(...) LOG_IMPL(spdlog::level::err, __VA_ARGS__)
 
-/** 输出一行请求明细日志（fmt 格式，落 readlogdir 独立目录；未启用或已关闭时安全跳过） */
-#define LOG_INFO_REQ(...)                                                         \
-    do {                                                                          \
-        std::shared_ptr<spdlog::logger> reqLg_ = ::LoggerManager::GetReqLogger(); \
-        if (reqLg_ != nullptr) { reqLg_->info(__VA_ARGS__); }                     \
+#define LOG_INFO_GET(...)                                                                      \
+    do {                                                                                       \
+        std::shared_ptr<spdlog::logger> getLg_ = ::LoggerManager::GetGetLogger();              \
+        if (getLg_ != nullptr) {                                                               \
+            getLg_->log(spdlog::source_loc{__FILE__, __LINE__, __func__}, spdlog::level::info, \
+                        __VA_ARGS__);                                                          \
+        }                                                                                      \
+    } while (0)
+
+#define LOG_INFO_OTHER(...)                                                                      \
+    do {                                                                                         \
+        std::shared_ptr<spdlog::logger> otherLg_ = ::LoggerManager::GetOtherLogger();            \
+        if (otherLg_ != nullptr) {                                                               \
+            otherLg_->log(spdlog::source_loc{__FILE__, __LINE__, __func__}, spdlog::level::info, \
+                          __VA_ARGS__);                                                          \
+        }                                                                                        \
     } while (0)
