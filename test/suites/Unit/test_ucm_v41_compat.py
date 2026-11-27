@@ -10,7 +10,6 @@ import types
 import unittest
 from collections import namedtuple
 from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
@@ -90,7 +89,6 @@ def _load_hma_methods(names):
         "dataclass": dataclass,
         "field": field,
         "Task": object,
-        "Future": Future,
         "math": math,
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
@@ -1390,7 +1388,6 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             if request_meta is None:
                 request_meta = {}
             self_obj = types.SimpleNamespace(
-                use_request_async_load=False,
                 _pending_async_load_dispatches={},
                 _async_load_req_ids=set(),
                 hash_block_size=32,
@@ -1425,13 +1422,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             return matched, need_load, request_meta.get("req")
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 3)
-        self.assertFalse(need_load)
+        self.assertTrue(need_load)
         self.assertEqual(matched, 96)
         self.assertEqual(meta.total_hit_block_num, 3)
         self.assertEqual(meta.token_processed, 96)
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 1)
-        self.assertFalse(need_load)
+        self.assertTrue(need_load)
         self.assertEqual(matched, 64)  # WA at 64 exists; WA at 96 misses.
         self.assertEqual(meta.total_hit_block_num, 2)
         self.assertEqual(meta.token_processed, 64)
@@ -1765,7 +1762,6 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     vllm_block_ids=(),
                 )
                 connector = types.SimpleNamespace(
-                    use_request_async_load=True,
                     prefix_replay_tokens=0,
                     _pending_async_load_dispatches={},
                     _async_load_req_ids=set(),
