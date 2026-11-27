@@ -26,9 +26,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace kv {
@@ -36,11 +39,40 @@ namespace kv {
 using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
 using NodeId = std::uint64_t;
+using KvNsId = std::uint32_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
-using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
+using BinaryKey = std::array<std::byte, kCacheKeySizeBytes>;
+// Owns either an encoded key or an engine key awaiting resolution.
+class CacheKey {
+public:
+    CacheKey() = default;
+
+    static CacheKey FromBytes(BinaryKey key) { return CacheKey(key); }
+    static CacheKey FromString(std::string key) { return CacheKey(std::move(key)); }
+
+    const BinaryKey* TryGetBinaryKey() const { return std::get_if<BinaryKey>(&value_); }
+    const std::string* TryGetStringKey() const { return std::get_if<std::string>(&value_); }
+
+    bool operator==(const CacheKey& other) const { return value_ == other.value_; }
+    bool operator!=(const CacheKey& other) const { return !(*this == other); }
+
+private:
+    explicit CacheKey(BinaryKey key) : value_(key) {}
+    explicit CacheKey(std::string key) : value_(std::move(key)) {}
+
+    std::variant<BinaryKey, std::string> value_{BinaryKey{}};
+};
 
 // KV protocol requires 512B alignment for device buffers and offsets.
 constexpr std::uint32_t kAlignmentBytes = 512;
+
+// Legacy single-namespace clients use this id when they are adapted to the
+// multi-namespace ViewUniverse contract. M800 clients must use the XXHASH32
+// value derived from the Ceph pool name instead.
+constexpr KvNsId kDefaultKvNsId = 0;
+// Fixed seed used by every M800 component that derives KvNsId from a Ceph
+// pool name. All producers must agree on this value before encoding a view.
+constexpr KvNsId kKvNsIdHashSeed = 5381;
 
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;
@@ -62,6 +94,12 @@ enum class StatusCode {
     IN_PROGRESS,
     INTERNAL_ERROR,
     CANCELED,
+
+    // No healthy node owns the key: the primary ring owner is unavailable and the
+    // secondary ring owner is unavailable as well (or is the same node).
+    NO_AVAILABLE_NODE,
+    // A pooled connection already exists for the node but its endpoints changed.
+    ENDPOINT_CHANGED,
 
     // Entry status codes keep raw entry result values in the low byte.
     ENTRY_RETRY_ADVISED = 0x0100 | 0x01,
@@ -95,6 +133,15 @@ struct Status {
     static Status Error(StatusCode c, std::string msg) { return Status{c, std::move(msg)}; }
 };
 
+// Per-request namespace and work that must finish before IO dispatch.
+struct IoOptions {
+    // Base storage namespace for the request. The client may refine it per engine key
+    // using cache group, pool, or pipeline stage information.
+    std::string kvns;
+    // Runs once on the client worker; captured resources must remain valid until completion.
+    std::function<Status()> prerequisite;
+};
+
 struct QueryResult {
     std::vector<std::uint8_t> exists;
     std::uint32_t prefixHitKeys{0};
@@ -104,6 +151,9 @@ enum class MemoryType {
     HOST = 0,
     HOST_PINNED = 1,
     DEVICE = 2,
+    // Page aligned process memory. The transport pins it when the provider registers the
+    // region, so no accelerator runtime has to be involved.
+    HOST_PLAIN = 3,
 };
 
 struct MemoryRegion {
@@ -146,7 +196,7 @@ enum class Protocol {
     TCP = 2,
 };
 
-enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
+enum class TransProviderType { AICPU, FAKE, AIV, CPU, HCCP_KV_OVER_ROCE, UNSUPPORTED };
 
 // Channel selection policy used by the connection manager.
 enum class SelectionPolicy : std::uint8_t {
@@ -187,6 +237,7 @@ struct NodeEndpoint {
 
 struct NodeInfo {
     std::vector<NodeEndpoint> endpoints;
+    KvNsId localKvNsId{0};
 };
 
 struct TransportConfig {
@@ -237,10 +288,17 @@ struct TransportConfig {
 
 enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
 
+enum class InferenceEngine : std::uint8_t { GENERIC = 0, VLLM_ASCEND = 1, SGLANG = 2 };
+
+struct KeyResolutionConfig {
+    InferenceEngine engine{InferenceEngine::GENERIC};
+};
+
 struct KvClientConfig {
     // Loads client configuration from a key-value file without initializing a client.
     static Status LoadFromFile(const std::string& configPath, KvClientConfig& config);
 
+    KeyResolutionConfig keyResolution;
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
 

@@ -83,9 +83,11 @@ public:
     // Config-driven constructor used by AsuTransportImpl.
     ConnectionManager(TransProvider& provider, const std::string& localIp,
                       const TransportConfig& config);
-    // Legacy constructor kept for direct users/tests; X defaults to 1.
-    ConnectionManager(TransProvider& provider, const std::string& localIp,
-                      std::uint32_t timeout = 5000, std::uint32_t maxErrorCount = 1);
+    // Legacy constructor kept for direct users/tests; the default X stays at
+    // the baseline 2 (the config-driven path carries the X=1 design default
+    // via ConnectionConfig.maxErrorCount).
+    ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout = 5000,
+                      std::uint32_t maxErrorCount = 2, std::int32_t deviceId = -1);
     ~ConnectionManager();
 
     Status AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num);
@@ -177,6 +179,9 @@ private:
     // QP count per group for dynamic endpoint adds (the only knob still
     // needed from the config after the ctor extracts the rest).
     std::uint32_t qpNum_{1};
+    // Device the provider runs on. The recover thread must bind it before it
+    // calls back into the provider. A negative value means "no binding".
+    std::int32_t deviceId_{-1};
 
     void RecoverLoop();
     void RunRecoverySweep();

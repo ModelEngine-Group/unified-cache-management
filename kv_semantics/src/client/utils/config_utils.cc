@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "logger.h"
 #include "parser_common.h"
 #include "status_utils.h"
 
@@ -158,10 +159,28 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
         } else if (key == "view.config_path" || key == "viewConfigPath" ||
                    key == "view_config_path") {
             config.attrs["view.config_path"] = value;
+        } else if (key.rfind("view.", 0) == 0) {
+            // View provider and scheduler settings are consumed through the
+            // generic attrs map, including the M800 role-specific keys.
+            config.attrs[key] = value;
         } else if (key == "waitTimeoutMs" || key == "wait_timeout_ms") {
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
+        } else if (key == "inference.engine") {
+            if (value == "vllm_ascend") {
+                config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
+            } else if (value == "sglang") {
+                config.keyResolution.engine = InferenceEngine::SGLANG;
+            } else {
+                config.keyResolution.engine = InferenceEngine::GENERIC;
+                if (value != "generic") {
+                    KV_WARN(
+                        "Unrecognized inference.engine='{}'; using generic key handling "
+                        "without namespace field extraction",
+                        value);
+                }
+            }
         } else if (key == "client.useBatchIoForSingleKey" ||
                    key == "client.use_batch_io_for_single_key") {
             config.useBatchIoForSingleKey = ParseClientBool(value);

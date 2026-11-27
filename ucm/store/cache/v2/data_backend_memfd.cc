@@ -65,12 +65,6 @@ constexpr size_t kHugeTlb1GBytes = 1ULL << 30;
 #ifndef MFD_HUGE_1GB
 #define MFD_HUGE_1GB (30U << MFD_HUGE_SHIFT)
 #endif
-#ifndef UCM_RUNTIME_ASCEND_A5
-#define UCM_RUNTIME_ASCEND_A5 0
-#endif
-
-constexpr bool kRegisterHostMemory = UCM_RUNTIME_ASCEND_A5 == 0;
-
 /* Deterministic across processes, unlike std::hash. */
 uint64_t HashName(const std::string& name)
 {
@@ -134,9 +128,9 @@ Status MemfdDataBackend::Setup(const BackendOptions& options)
     deadline_ = options.deadline;
     UC_INFO(
         "memfd setup: device={} ranks={} rank_bytes={} base_stride={} host_device={} "
-        "page_policy=hugetlb-auto first_attempt={} alignment_bytes={} register_host={}",
+        "page_policy=hugetlb-auto first_attempt={} alignment_bytes={}",
         deviceId_, options.rankCount, options.rankBytes, rankStride_, requireHostDeviceAddress_,
-        tryHugeTlb1G_ ? "hugetlb-1g" : "hugetlb-2m", allocationAlignment, kRegisterHostMemory);
+        tryHugeTlb1G_ ? "hugetlb-1g" : "hugetlb-2m", allocationAlignment);
     return Status::OK();
 }
 
@@ -415,10 +409,6 @@ Expected<MemfdDataBackend::PageBacking> MemfdDataBackend::PageBackingOf(int32_t 
 
 Status MemfdDataBackend::RegisterSegment(Segment& segment)
 {
-    /* A5 copies from ordinary host mappings and must not consume device host-
-     * registration resources. Other platforms retain registration, including
-     * the optional device-visible alias used by SDMA Direct. */
-    if (!kRegisterHostMemory) { return Status::OK(); }
     /* Registration acts on the process's current device context, which nothing
      * else here establishes; without it a standalone store could register the
      * segment against the wrong device, or get an unusable SDMA alias. */

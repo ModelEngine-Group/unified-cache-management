@@ -28,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "router/config.h"
@@ -37,6 +38,7 @@ namespace kv {
 using Key = std::string;
 using NodeId = std::uint64_t;
 using HashFunction = std::function<std::uint64_t(const Key&)>;
+using UnavailableNodeSet = std::unordered_set<NodeId>;
 
 constexpr NodeId kInvalidNodeId = UINT64_MAX;
 
@@ -47,9 +49,17 @@ public:
 
     // Destroys the router interface.
     virtual ~Router() = default;
-    // Routes cache keys to node identifiers.
+    // Routes cache keys on the single ring, ignoring node health.
     virtual std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
         const std::vector<Key>& keys) const;
+    // Routes cache keys while allowing a router implementation to exclude a
+    // set of nodes. The default contract preserves legacy behavior by ignoring
+    // unavailableNodes; RingHashRouter implements secondary-hash fallback.
+    // A router that cannot find any available owner omits the key from the result
+    // instead of grouping it under kInvalidNodeId. Task construction treats an
+    // omitted key as unroutable and reports it per entry as NO_AVAILABLE_NODE.
+    virtual std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
+        const std::vector<Key>& keys, const UnavailableNodeSet& unavailableNodes) const;
 
 protected:
     // Builds a router with the supplied hash function.
@@ -60,22 +70,39 @@ protected:
     HashFunction hash_;
 };
 
-// RingHashRouter implements virtual-node consistent hashing.
+// RingHashRouter implements virtual-node consistent hashing with a secondary
+// FNV-1a ring used for failover when the primary owner is unavailable.
 class RingHashRouter final : public Router {
 public:
-    // Builds the ring from the provided node identifiers.
+    // Builds the primary and the secondary ring from the provided node identifiers.
     RingHashRouter(const std::vector<NodeId>& nodeIds, HashFunction hash, RouterConfig config);
+
+    // Keeps the base overload visible when called through a RingHashRouter value.
+    using Router::RouteKeys;
+
+    // Routes with failover: the primary owner is used when available; otherwise the
+    // secondary ring owner is used; when that owner is unavailable as well (or is the
+    // same node) the key has no owner and is omitted from the result.
+    std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
+        const std::vector<Key>& keys, const UnavailableNodeSet& unavailableNodes) const override;
 
 private:
     using RingNode = std::pair<std::uint64_t, NodeId>;
 
     // Returns the ring owner for a cache key.
     NodeId RouteKey(const Key& key) const override;
+    // Returns the failover owner for a cache key, or kInvalidNodeId when no owner is
+    // available. The secondary ring is consulted exactly once (no ring walk, no retry).
+    NodeId RouteKeyWithFailover(const Key& key, const UnavailableNodeSet& unavailableNodes) const;
     // Constructs the consistent-hash ring.
     void Build(const std::vector<NodeId>& nodeIds);
+    // Constructs the secondary failover ring with an independent hash function.
+    void BuildSecondary(const std::vector<NodeId>& nodeIds);
 
     RouterConfig config_;
     std::vector<RingNode> ring_;
+    HashFunction secondaryHash_;
+    std::vector<RingNode> secondaryRing_;
 };
 
 // MaglevRouter implements Maglev lookup-table routing.

@@ -352,6 +352,7 @@ def _install_stubs():
     )
     _install_module(
         "vllm.distributed.parallel_state",
+        get_pp_group=lambda: SimpleNamespace(world_size=1, rank_in_group=0),
         get_world_group=lambda: SimpleNamespace(local_rank=0, rank=0),
     )
     _install_module(
@@ -2790,7 +2791,7 @@ def _create_metrics_test_store(monkeypatch, kind, launch_config, store_config):
     connector._role = KVConnectorRole.SCHEDULER
     # A non-owner scheduler does not need a GPU layout or shared-memory setup.
     connector._vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(data_parallel_rank=1)
+        parallel_config=SimpleNamespace(data_parallel_rank=1, tensor_parallel_size=1)
     )
     calls = []
 
@@ -3367,31 +3368,25 @@ def test_fawa_records_submitted_save_bytes():
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
-    header = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.h").read_text(
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "load_queue.h").read_text(
         encoding="utf-8"
     )
-    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc").read_text(
-        encoding="utf-8"
-    )
-
-    assert "double h2dBatchStartTp_{0.0};" not in header
-    assert "firstH2dReadyTp" not in header
-    assert "firstH2dReadyTp" not in source
-    assert "double h2dBatchStartTp = 0.0;" not in source
-    assert "double& h2dBatchStartTp" not in header
-    assert "double& h2dBatchStartTp" not in source
-    assert "h2dBatchStartTp_" not in source
-    assert "auto tpH2dSyncStart = NowTime::Now();" in source
-    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;" in source
+    synchronize = source.split("Status SynchronizeH2d(", 1)[1].split(
+        "void FinishShard(", 1
+    )[0]
+    start = synchronize.index("const auto startTp = NowTime::Now();")
+    sync = synchronize.index("auto s = stream.Synchronize();")
+    duration = synchronize.index('NAME_TO_METRIC_ID("cache_h2d_sync_ms")')
+    elapsed = synchronize.index("(NowTime::Now() - startTp) * 1e3")
+    assert start < sync < duration < elapsed
     assert "cache_h2d_bandwidth_gbps" not in source
-    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;" not in source
 
 
 def test_cache_store_uses_single_shard_counter_per_operation():
-    cache_dir = REPO_ROOT / "ucm" / "store" / "cache" / "cc"
+    cache_dir = REPO_ROOT / "ucm" / "store" / "cache" / "v2"
     trans_manager = (cache_dir / "trans_manager.h").read_text(encoding="utf-8")
-    load_queue = (cache_dir / "load_queue.cc").read_text(encoding="utf-8")
-    dump_queue = (cache_dir / "dump_queue.cc").read_text(encoding="utf-8")
+    load_queue = (cache_dir / "load_queue.h").read_text(encoding="utf-8")
+    dump_queue = (cache_dir / "dump_queue.h").read_text(encoding="utf-8")
     buffer_manager = (cache_dir / "buffer_manager.h").read_text(encoding="utf-8")
     source = trans_manager + load_queue + dump_queue + buffer_manager
 
@@ -3404,107 +3399,22 @@ def test_cache_store_uses_single_shard_counter_per_operation():
     assert 'NAME_TO_METRIC_ID("cache_lookup_miss_blocks_total")' in buffer_manager
 
 
-def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
-    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc").read_text(
+def test_cache_dump_d2h_metrics_measure_stream_synchronize():
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "dump_queue.h").read_text(
         encoding="utf-8"
     )
-
-    stream_header = (REPO_ROOT / "ucm" / "shared" / "trans" / "stream.h").read_text(
-        encoding="utf-8"
-    )
-    cuda_header = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.h"
-    ).read_text(encoding="utf-8")
-    cuda_source = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.cc"
-    ).read_text(encoding="utf-8")
-    ascend_header = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.h"
-    ).read_text(encoding="utf-8")
-    ascend_source = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.cc"
-    ).read_text(encoding="utf-8")
-
-    assert "struct StreamEventTimer" not in stream_header
-    assert "RecordEventTimerStart" not in stream_header
-    assert "RecordEventTimerEnd" not in stream_header
-    assert "EventElapsedTimeMs" not in stream_header
-    assert "DestroyEventTimer" not in stream_header
-
-    assert "RecordEventTimerStart" not in cuda_header
-    assert "RecordEventTimerEnd" not in cuda_header
-    assert "EventElapsedTimeMs" not in cuda_header
-    assert "DestroyEventTimer" not in cuda_header
-    assert "CudaEventTimer" not in cuda_source
-    assert "cudaEventCreate(&eventTimer->start)" not in cuda_source
-    assert "cudaEventRecord(eventTimer->start, stream_)" not in cuda_source
-    assert "cudaEventRecord(eventTimer->end, stream_)" not in cuda_source
-    assert "cudaEventSynchronize(eventTimer->end)" not in cuda_source
-    assert (
-        "cudaEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
-        not in cuda_source
-    )
-
-    assert "RecordEventTimerStart" not in ascend_header
-    assert "RecordEventTimerEnd" not in ascend_header
-    assert "EventElapsedTimeMs" not in ascend_header
-    assert "DestroyEventTimer" not in ascend_header
-    assert "AscendEventTimer" not in ascend_source
-    assert "aclrtCreateEvent(&eventTimer->start)" not in ascend_source
-    assert "aclrtRecordEvent(eventTimer->start, stream_)" not in ascend_source
-    assert "aclrtRecordEvent(eventTimer->end, stream_)" not in ascend_source
-    assert "aclrtSynchronizeEvent(eventTimer->end)" not in ascend_source
-    assert (
-        "aclrtEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
-        not in ascend_source
-    )
-
-    assert "eventReadyTp->store(NowTime::Now(), std::memory_order_release);" in source
-    assert "auto ready = eventReadyTp->load(std::memory_order_acquire);" in source
-    assert "auto tpSyncStart = NowTime::Now();" in source
-    assert "auto tpSyncStream = NowTime::Now();" in source
-    assert "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;" in source
-    assert "auto tpBackendSubmitStart = NowTime::Now();" in source
-    assert "(tpEnd - tpBackendSubmitStart) * 1e3" in source
-    assert 'NAME_TO_METRIC_ID("cache_d2h_callback_wait_ms")' not in source
-    assert "auto dumpStartTp = NowTime::Now();" in source
-    assert "std::shared_ptr<std::atomic<double>> d2hEndTp" not in source
-    assert "auto endCbStatus = stream.AppendCallback" not in source
-    assert "d2hEndTp" not in source
-    assert "auto tp = NowTime::Now();" not in source
-    assert "auto d2hStartTp = tpMakeBuffer;" not in source
-    assert "d2hStartTp = std::max(d2hStartTp, ready);" not in source
-    assert "tpSyncStream - ready" not in source
-    assert "end - ready" not in source
-    assert "Trans::StreamEventTimer d2hEventTimer" not in source
-    assert "RecordEventTimerStart" not in source
-    assert "RecordEventTimerEnd" not in source
-    assert "EventElapsedTimeMs" not in source
-    assert "DestroyEventTimer" not in source
-    assert "auto copyStream = stream.NextStream();" not in source
-    assert "DeviceToHostAsync(stream, shard.addrs.data(), host)" in source
-    assert "if (eventReadyTp && copiedShards > 0)" not in source
+    complete = source.split("Status CompleteD2h(", 1)[1].split(
+        "Status SubmitBackendDump(", 1
+    )[0]
+    start = complete.index("const auto startTp = NowTime::Now();")
+    sync = complete.index("auto s = stream.Synchronize();")
+    duration = complete.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
+    ready = complete.index("handle.MarkReady()")
+    assert start < sync < duration < ready
+    assert "(NowTime::Now() - startTp) * 1e3" in complete
+    assert "if (copiedShards > 0)" in complete
+    assert 'NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms")' not in complete
     assert "cache_d2h_bandwidth_gbps" not in source
-
-    d2h_duration_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
-    sync_start_pos = source.index("auto tpSyncStart = NowTime::Now()")
-    sync_pos = source.index("auto s = stream.Synchronize()")
-    sync_end_pos = source.index("auto tpSyncStream = NowTime::Now()")
-    d2h_ms_pos = source.index(
-        "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;"
-    )
-    backend_submit_start_pos = source.index(
-        "auto tpBackendSubmitStart = NowTime::Now()"
-    )
-    prereq_block_pos = source.index("if (eventReadyTp)")
-    ready_load_pos = source.index("auto ready = eventReadyTp->load", prereq_block_pos)
-    backend_submit_pos = source.index(
-        'NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms")'
-    )
-
-    assert sync_start_pos < sync_pos < sync_end_pos < backend_submit_start_pos
-    assert sync_end_pos < d2h_ms_pos < d2h_duration_pos < backend_submit_pos
-    assert prereq_block_pos < ready_load_pos < backend_submit_pos
 
 
 def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
@@ -3514,8 +3424,8 @@ def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
     sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc",
-            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc",
+            REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "load_queue.h",
+            REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "dump_queue.h",
             REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "load_queue.cc",
             REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "dump_queue.cc",
             REPO_ROOT

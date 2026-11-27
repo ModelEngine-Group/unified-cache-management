@@ -73,7 +73,7 @@ protected:
     }
 
     /* Pre-seed the per-(reqID, layer) tables exactly as the engine would after
-       SetBlocksMap + AddIndexerMap ran. This lets the scatter logic find the
+       SetBlocksMap ran. This lets the scatter logic find the
        block tables / docs tables it expects without going through the heavy
        TaskManager + ACL load path. */
     void SeedBlockTables(const std::string& reqID, int layerNum,
@@ -88,7 +88,6 @@ protected:
         // entries, because FinishOneLayerPrefetch writes [pairIdx] directly.
         engine->mPrefetchBlockTableIdx[reqID].assign(
             layerNum, std::vector<int>(docsTableContents.size() + 8, -1));
-        engine->mIndexerSlot[reqID].assign(layerNum, 0);
         for (int layer = 0; layer < layerNum; ++layer) {
             int idx = 0;
             for (int blockID : docsTableContents) {
@@ -360,45 +359,6 @@ TEST_F(ScatterLogicTest, SetTopkIndicesStoresTensorPerReqID)
     EXPECT_TRUE(torch::equal(engine->mAllTopkIndicesTensor["req1"], tensor2));
 }
 
-/* ---------------- Get* accessors ---------------- */
-
-TEST_F(ScatterLogicTest, GetAccessorsReturnSeededState)
-{
-    engine = MakeEngine(/*layerNum=*/2);
-    SeedBlockTables("req1", /*layerNum=*/2, /*docsTableContents=*/{10, 20});
-    engine->mReqUseBlockTable["req1"] = {1, 2, 3};
-    engine->mSparseSeqLen["req1"] = 42;
-    // mHBMMangers[reqID][layerID] must exist for GetTokenBlockMap / GetBlockTokenMap.
-    engine->mHBMMangers["req1"].push_back(std::make_unique<HBMManager>());
-    engine->mHBMMangers["req1"].push_back(std::make_unique<HBMManager>());
-    engine->mHBMMangers["req1"][0]->mGlobalToSlot = {7, 8};
-    engine->mHBMMangers["req1"][0]->mSlotToGlobal = {9, 10};
-    engine->mHBMMangers["req1"][1]->mGlobalToSlot = {11};
-    engine->mHBMMangers["req1"][1]->mSlotToGlobal = {12};
-
-    EXPECT_EQ(engine->GetTokenBlockMap(/*layerID=*/0, "req1"), (std::vector<int>{7, 8}));
-    EXPECT_EQ(engine->GetBlockTokenMap(/*layerID=*/0, "req1"), (std::vector<int>{9, 10}));
-    EXPECT_EQ(engine->GetTokenBlockMap(/*layerID=*/1, "req1"), (std::vector<int>{11}));
-    EXPECT_EQ(engine->GetBlockTokenMap(/*layerID=*/1, "req1"), (std::vector<int>{12}));
-    EXPECT_EQ(engine->GetIndexerTokensMap(/*layerID=*/0, "req1"), (std::map<int, int>{
-                                                                      {0, 10},
-                                                                      {1, 20}
-    }));
-    EXPECT_EQ(engine->GetIndexerBlockMap(/*layerID=*/0, "req1"), (std::map<int, int>{
-                                                                     {10, 0},
-                                                                     {20, 1}
-    }));
-    EXPECT_EQ(engine->GetReqUseBlockTable("req1"), (std::vector<int>{1, 2, 3}));
-    EXPECT_EQ(engine->GetSparseSeqLen("req1"), 42);
-}
-
-TEST_F(ScatterLogicTest, GetSparseSeqLenReturnsZeroForUnknownReqID)
-{
-    engine = MakeEngine(/*layerNum=*/1);
-    // operator[] default-constructs an int = 0 for unknown keys.
-    EXPECT_EQ(engine->GetSparseSeqLen("ghost"), 0);
-}
-
 /* ---------------- DelReqIDRun integration ---------------- */
 
 TEST_F(ScatterLogicTest, DelReqIDRunClearsPrefetchIdxAndBlocksMap)
@@ -413,8 +373,7 @@ TEST_F(ScatterLogicTest, DelReqIDRunClearsPrefetchIdxAndBlocksMap)
     EXPECT_EQ(engine->mPromptLen.count("req1"), 0u);
     EXPECT_EQ(engine->mBlocksMap.count("req1"), 0u);
     EXPECT_EQ(engine->mPrefetchIdx.count("req1"), 0u);
-    // BUG-FOCUS: mAllBlocksHash is NOT cleared (documented bug #9).
-    // (Not seeded here so it is gone anyway; covered in test_gsa_prefetch_engine.)
+    // mAllBlocksHash erasure (L-4 fixed) is covered in test_gsa_prefetch_engine.
 }
 
 /* ---------------- SetKvTensor / SetKvTensorIndex ---------------- */

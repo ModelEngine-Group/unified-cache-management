@@ -46,6 +46,14 @@ struct Config {
     std::string aicpuHcommProtocol;
     std::vector<std::string> aicpuLocalAddrs;
     std::optional<std::uint64_t> aicpuSendTimeoutMs;
+    // HCCP KV-over-RoCE options, read from asu_hccp_kv_roce_lib_path and
+    // asu_hccp_kv_roce_max_connections when the backend is hccp_kv_over_roce.
+    std::string hccpKvRoceLibPath;
+    std::optional<std::uint64_t> hccpKvRoceMaxConnections;
+    // Numeric overrides for HccpKvRoceInitConfig, keyed by the ABI field name
+    // in snake_case (for example "mem_size"). The provider fills every field
+    // that is absent here from the defaults documented in the ABI header.
+    std::unordered_map<std::string, std::int64_t> hccpKvRoceInit;
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};
@@ -53,6 +61,8 @@ struct Config {
     ssize_t sharedProviderMode{0};
     bool sc{true};
     std::unordered_map<std::string, std::string> clientAttrs;
+    // Provider specific knobs forwarded verbatim into TransportConfig::attrs.
+    std::unordered_map<std::string, std::string> roceAttrs;
 };
 
 }  // namespace UC::AsuStore

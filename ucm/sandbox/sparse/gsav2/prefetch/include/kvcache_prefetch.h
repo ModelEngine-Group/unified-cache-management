@@ -57,43 +57,97 @@ class __attribute__((visibility("hidden"))) UCMKVPrefetch {
 private:
     UC::StoreV1* mStoreV1_{nullptr};
     uint32_t mLayerNum = 78;
-
-    enum class PrefetchStatus : int32_t {
-        GSA_PREFETCH_DONE = 0,
-        GSA_STORE_EMPTY,
-        GSA_BLOCKID_EMPTY,
-        GSA_HANDLE_ERROR,
-        GSA_LOOKUP_ERROR
-    };
+    uint32_t mTensorCount = 4;
 
 public:
     UCMKVPrefetch() {}
 
     ~UCMKVPrefetch() {}
 
-    void StoreInit(uintptr_t storePtr, uint32_t layerNum)
+    void StoreInit(uintptr_t storePtr, uint32_t layerNum, uint32_t tensorCount)
     {
         mStoreV1_ = reinterpret_cast<UC::StoreV1*>(storePtr);
         if (mStoreV1_ == nullptr) { throw std::runtime_error("storeV1 is null"); }
         mLayerNum = layerNum;
+        mTensorCount = tensorCount;
     }
 
-    int32_t UCMLoadSSD(const std::vector<UC::Detail::BlockId>& blockIds)
+    /**
+     * @brief Submit an asynchronous SSD load for the given blocks.
+     *
+     * The submitted task carries no destination addresses (empty
+     * Shard::addrs): cache-style stores treat it as a cache-warming prefetch,
+     * stores that require caller-provided destinations reject it with
+     * InvalidParam instead of crashing.
+     *
+     * @param blockIds Block identifiers to load.
+     * @return int64_t task handle (> 0) on accept, to be passed to
+     *         UCMCheck/UCMWait; negative UC::Status code on rejection
+     *         (e.g. -50000 InvalidParam).  0 is never returned (0 is the
+     *         invalid handle).
+     */
+    int64_t UCMLoadSSD(const std::vector<UC::Detail::BlockId>& blockIds)
     {
-        if (mStoreV1_ == nullptr) { return static_cast<int32_t>(PrefetchStatus::GSA_STORE_EMPTY); }
-
-        if (blockIds.empty()) { return static_cast<int32_t>(PrefetchStatus::GSA_BLOCKID_EMPTY); }
+        if (mStoreV1_ == nullptr) {
+            return static_cast<int64_t>(UC::Status::Error("storeV1 is null").Underlying());
+        }
+        if (blockIds.empty()) {
+            return static_cast<int64_t>(UC::Status::InvalidParam("blockIds is empty").Underlying());
+        }
         UC::Detail::TaskDesc task;
         task.reserve(blockIds.size() * mLayerNum);
 
         for (const auto& blockId : blockIds) {
             for (uint32_t layerID = 0; layerID < mLayerNum; layerID++) {
-                task.emplace_back(UC::Detail::Shard{blockId, layerID, {}});
+                task.emplace_back(
+                    UC::Detail::Shard{blockId, layerID, std::vector<void*>(mTensorCount, nullptr)});
             }
         }
+        task.brief = "UCMLoadSSD";
         auto loadHandle = mStoreV1_->Load(std::move(task));
-        if (!loadHandle) { return static_cast<int32_t>(PrefetchStatus::GSA_HANDLE_ERROR); }
-        return static_cast<int32_t>(PrefetchStatus::GSA_PREFETCH_DONE);
+        if (!loadHandle) { return static_cast<int64_t>(loadHandle.Error().Underlying()); }
+        auto handle = loadHandle.Value();
+        if (handle == 0) {
+            return static_cast<int64_t>(
+                UC::Status::Error("store returned an invalid task handle").Underlying());
+        }
+        return static_cast<int64_t>(handle);
+    }
+
+    /**
+     * @brief Non-blocking poll of a task submitted by UCMLoadSSD.
+     *
+     * @param taskId Handle returned by UCMLoadSSD.
+     * @return 1 = task finished (fetch the outcome with UCMWait);
+     *         0 = task still running;
+     *         negative = UC::Status error code (e.g. -50005 NotFound once the
+     *         handle has been consumed by UCMWait).
+     */
+    int32_t UCMCheck(uint64_t taskId)
+    {
+        if (mStoreV1_ == nullptr) { return UC::Status::Error("storeV1 is null").Underlying(); }
+        if (taskId == 0) { return UC::Status::InvalidParam("invalid task handle").Underlying(); }
+        auto res = mStoreV1_->Check(static_cast<UC::Detail::TaskHandle>(taskId));
+        if (!res) { return res.Error().Underlying(); }
+        return res.Value() ? 1 : 0;
+    }
+
+    /**
+     * @brief Blocking wait for a task submitted by UCMLoadSSD.
+     *
+     * One-shot: the handle is consumed by the wait, subsequent UCMCheck /
+     * UCMWait calls on it return NotFound.
+     *
+     * @param taskId Handle returned by UCMLoadSSD.
+     * @return 0 = task finished successfully; negative = UC::Status error
+     *         code (failure, timeout or unknown handle).
+     */
+    int32_t UCMWait(uint64_t taskId)
+    {
+        if (mStoreV1_ == nullptr) { return UC::Status::Error("storeV1 is null").Underlying(); }
+        if (taskId == 0) { return UC::Status::InvalidParam("invalid task handle").Underlying(); }
+        auto s = mStoreV1_->Wait(static_cast<UC::Detail::TaskHandle>(taskId));
+        return s.Underlying();
     }
 
     std::vector<uint8_t> UCMLookup(const std::vector<UC::Detail::BlockId>& blockIds)

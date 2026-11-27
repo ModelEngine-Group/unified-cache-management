@@ -27,6 +27,7 @@
 using ::TaskInfo;
 using ucmprefetch::GSAPrefetchEngineC;
 using ucmprefetch::PrefetchShmLayout;
+using ucmprefetch::PrefetchTopkView;
 using ucmprefetch_test::CleanupShmFor;
 using ucmprefetch_test::MakeModelInfo;
 using ucmprefetch_test::MakeSizeInfo;
@@ -98,7 +99,7 @@ protected:
         const std::string reqID = "req1";
         engine->mHBMMangers[reqID].resize(engine->mTopkIndexerNum);
         for (int t = 0; t < engine->mTopkIndexerNum; ++t) {
-            engine->mHBMMangers[reqID][t] = std::make_unique<HBMManager>();
+            engine->mHBMMangers[reqID][t] = std::make_unique<HBMManagerLayered>();
             engine->mHBMMangers[reqID][t]->init(/*dramTensorCount=*/2,
                                                 /*hbmCapacity=*/32, /*hbmImmutableSize=*/32,
                                                 /*topkSize=*/2, engine->mLogger);
@@ -210,7 +211,8 @@ TEST_F(PrefetchH2DTest, WritePrefetchResultWritesCountsAndDataToShm)
     layout.loadSlotSize = layout.countSize + layout.maxLoadNum * sizeof(int);
     layout.totalSize =
         layout.missTokenSize + layout.loadSlotSize + engine->mSpaTopkLen * sizeof(int);
-    engine->WritePrefetchResult(reqID, /*i=*/0, /*layerID=*/0, useBlockTable, layout);
+    engine->WritePrefetchResult(/*i=*/0, /*layerID=*/0, useBlockTable, layout,
+                                engine->mMissGlobalToken[reqID][0], engine->mLoadSlot[reqID][0]);
     size_t offset = 4;
     uint8_t* shmBase = static_cast<uint8_t*>(engine->mPrefetchResultShm) + offset;
     uint32_t missCount = 0, slotCount = 0;
@@ -241,7 +243,8 @@ TEST_F(PrefetchH2DTest, WritePrefetchResultClampsToMaxLoadNum)
     layout.loadSlotSize = layout.countSize + layout.maxLoadNum * sizeof(int);
     layout.totalSize =
         layout.missTokenSize + layout.loadSlotSize + engine->mSpaTopkLen * sizeof(int);
-    engine->WritePrefetchResult(reqID, 0, 0, useBlockTable, layout);
+    engine->WritePrefetchResult(0, 0, useBlockTable, layout, engine->mMissGlobalToken[reqID][0],
+                                engine->mLoadSlot[reqID][0]);
     uint8_t* shmBase = static_cast<uint8_t*>(engine->mPrefetchResultShm) + 4;
     uint32_t missCount = 0;
     std::memcpy(&missCount, shmBase, 4);
@@ -264,12 +267,13 @@ TEST_F(PrefetchH2DTest, ProcessPrefetchRequestProcessesTopkAndWritesShm)
     // Values in [0, dramTensorCount-1] = [0, 1] (DRAM path, all hits).
     auto topkList = torch::zeros({1, 1, engine->mSpaTopkLen}, torch::dtype(torch::kInt32));
     auto acc = topkList.accessor<int32_t, 3>();
-    for (int j = 0; j < engine->mSpaTopkLen; ++j) {
+    for (uint32_t j = 0; j < engine->mSpaTopkLen; ++j) {
         acc[0][0][j] = j % 2;  // values 0, 1 (both in DRAM range)
     }
     TaskInfo taskInfo{};
     taskInfo.reqIdList = {reqID};
-    taskInfo.topkLenList = {engine->mSpaTopkLen};  // == mSpaTopkLen -> size check passes
+    taskInfo.topkLenList = {
+        static_cast<int>(engine->mSpaTopkLen)};  // == mSpaTopkLen -> size check passes
     taskInfo.topkList = topkList;
     PrefetchShmLayout layout{};
     layout.versionSize = 4;
@@ -279,7 +283,12 @@ TEST_F(PrefetchH2DTest, ProcessPrefetchRequestProcessesTopkAndWritesShm)
     layout.loadSlotSize = layout.countSize + layout.maxLoadNum * sizeof(int);
     layout.totalSize =
         layout.missTokenSize + layout.loadSlotSize + engine->mSpaTopkLen * sizeof(int);
-    engine->ProcessPrefetchRequest(taskInfo, /*i=*/0, /*layerID=*/0, layout);
+    PrefetchTopkView topkView{topkList.data_ptr<int>(), topkList.stride(0), topkList.stride(1),
+                              topkList.numel()};
+    std::vector<int> oneTopkListScratch;
+    std::vector<int> useBlockTableScratch;
+    engine->ProcessPrefetchRequest(taskInfo, topkView, /*i=*/0, /*layerID=*/0, layout,
+                                   oneTopkListScratch, useBlockTableScratch);
     // After processing, mMissGlobalToken[reqID][0] is populated.
     // All topk values (0,1) are in DRAM range -> some may be misses (first access).
     EXPECT_GE(engine->mMissGlobalToken[reqID][0].size(), 0u);
@@ -302,7 +311,11 @@ TEST_F(PrefetchH2DTest, ProcessPrefetchRequestSkipsZeroTopkLen)
     layout.loadSlotSize = layout.countSize + layout.maxLoadNum * sizeof(int);
     layout.totalSize =
         layout.missTokenSize + layout.loadSlotSize + engine->mSpaTopkLen * sizeof(int);
-    engine->ProcessPrefetchRequest(taskInfo, /*i=*/0, /*layerID=*/0, layout);
+    PrefetchTopkView topkView{};
+    std::vector<int> oneTopkListScratch;
+    std::vector<int> useBlockTableScratch;
+    engine->ProcessPrefetchRequest(taskInfo, topkView, /*i=*/0, /*layerID=*/0, layout,
+                                   oneTopkListScratch, useBlockTableScratch);
     // No mutation of mMissGlobalToken (no entry created).
     EXPECT_EQ(engine->mMissGlobalToken.count("req1"), 0u);
 }

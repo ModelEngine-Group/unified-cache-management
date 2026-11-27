@@ -46,8 +46,11 @@ namespace {
 struct CacheKeyHasher {
     std::size_t operator()(const kv::CacheKey& key) const
     {
-        return std::hash<std::string_view>{}(
-            std::string_view(reinterpret_cast<const char*>(key.data()), key.size()));
+        if (const auto* bytes = key.TryGetBinaryKey()) {
+            return std::hash<std::string_view>{}(
+                std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+        }
+        return std::hash<std::string_view>{}(*key.TryGetStringKey());
     }
 };
 
@@ -94,7 +97,8 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId,
+                          const kv::IoOptions& = {}) override
     {
         if (!initialized_) { return NotInitialized(); }
         if (!state_->queryStatus.ok()) { return state_->queryStatus; }
@@ -118,22 +122,24 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
+    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
+                         const kv::IoOptions& = {}) override
     {
         state_->lastLoadEntries = entries;
         return Submit(entries, taskId);
     }
 
     kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
-                          std::function<kv::Status()> prerequisite) override
+                          const kv::IoOptions& options = {}) override
     {
-        state_->lastStoreWait = std::move(prerequisite);
+        state_->lastStoreWait = options.prerequisite;
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
     }
 
-    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
+    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId,
+                           const kv::IoOptions& = {}) override
     {
         for (const auto& key : keys) { storedKeys_.erase(key); }
         return Submit(keys.size(), taskId);
@@ -561,6 +567,26 @@ TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
     ASSERT_TRUE(status.Failure());
 }
 
+TEST(UCAsuStoreTest, CpuBackendRequiresTheGidIndex)
+{
+    // The provider never picks a GID table entry on its own, so a cpu backend
+    // without the index has to be rejected while the store is set up instead of
+    // failing on the first connection attempt.
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"cpu"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+
+    // The same configuration is accepted by a backend that ignores the RoCE
+    // knobs, which shows the rejection comes from the missing index alone.
+    UC::AsuStore::AsuStore fakeStore;
+    auto fakeConfig = MakeBaseConfig();
+    fakeConfig.Set("asu_ids", std::vector<ssize_t>{1001});
+    EXPECT_TRUE(fakeStore.Setup(fakeConfig).Success());
+}
+
 TEST(UCAsuStoreTest, ParsesKvNamespaces)
 {
     {
@@ -943,6 +969,106 @@ TEST(UCAsuStoreTest, SchedulerUsesNegativeDeviceId)
     ASSERT_TRUE(store.Setup(config).Success());
     ASSERT_FALSE(state->initConfigs.empty());
     EXPECT_EQ(state->initConfigs.back().deviceId, -1);
+}
+
+TEST(UCAsuStoreTest, ParsesHccpBackendAndPropagatesOptions)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"192.168.0.11", "192.168.0.12"});
+    config.Set("asu_ports", std::vector<ssize_t>{19001, 19002});
+    config.Set("asu_trans_provider_backend", std::string{"hccp_kv_over_roce"});
+    config.Set("asu_hccp_kv_roce_lib_path", std::string{"/opt/hccp/libhccp_kv_over_roce.so"});
+    config.SetNumber("asu_hccp_kv_roce_max_connections", std::uint64_t{3072});
+    config.SetNumber("asu_hccp_kv_roce_mem_size", std::uint64_t{1024});
+    config.SetNumber("asu_hccp_kv_roce_oob_transport", std::uint64_t{1});
+    config.SetNumber("asu_hccp_kv_roce_neg_mtu", std::uint64_t{9});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{2});
+    for (const auto& transportConfig : asuConfig.transportConfigs) {
+        EXPECT_EQ(transportConfig.providerType, kv::TransProviderType::HCCP_KV_OVER_ROCE);
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_lib_path"),
+                  "/opt/hccp/libhccp_kv_over_roce.so");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_max_connections"), "3072");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_mem_size"), "1024");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_oob_transport"), "1");
+        EXPECT_EQ(transportConfig.attrs.at("hccp_kv_roce_neg_mtu"), "9");
+    }
+}
+
+TEST(UCAsuStoreTest, AcceptsHccpBackendAliasWithoutOptions)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+    config.Set("asu_trans_provider_backend", std::string{"hccp"});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.providerType, kv::TransProviderType::HCCP_KV_OVER_ROCE);
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_lib_path"), std::size_t{0});
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_max_connections"), std::size_t{0});
+    EXPECT_EQ(transportConfig.attrs.count("hccp_kv_roce_mem_size"), std::size_t{0});
+}
+
+TEST(UCAsuStoreTest, RejectsHccpInitValueOutOfRange)
+{
+    struct Case {
+        const char* key;
+        std::int64_t value;
+    };
+    const std::vector<Case> cases{
+        {"asu_hccp_kv_roce_neg_mtu",       256                                   },
+        {"asu_hccp_kv_roce_sdk_ioq_depth",
+         static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max()) + 1},
+        {"asu_hccp_kv_roce_oob_transport", 2                                     },
+        {"asu_hccp_kv_roce_mem_size",      -1                                    },
+    };
+    for (const auto& entry : cases) {
+        UC::AsuStore::AsuStore store;
+        UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+        config.Set("asu_trans_provider_backend", std::string{"hccp"});
+        config.SetNumber(entry.key, entry.value);
+
+        EXPECT_TRUE(store.Setup(config).Failure()) << entry.key;
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsHccpMaxConnectionsOutOfRange)
+{
+    const std::vector<std::uint64_t> values{
+        0, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1};
+    for (const auto value : values) {
+        UC::AsuStore::AsuStore store;
+        UseFakeClient(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"10.0.0.7"});
+        config.Set("asu_trans_provider_backend", std::string{"hccp"});
+        config.SetNumber("asu_hccp_kv_roce_max_connections", value);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsHccpWithoutAsuIps)
+{
+    UC::AsuStore::AsuStore store;
+    UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"hccp"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
 }
 
 TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)

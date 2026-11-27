@@ -62,19 +62,19 @@ IoScheduler::IoScheduler(const TransportConfig& config)
 }
 
 std::vector<IoScheduler::ScheduledIoBatch> IoScheduler::SplitForAsu(
-    const BatchView<KVBuffer>& entries, AsuOpType opType) const
+    const BatchView<ResolvedKVBuffer>& entries, AsuOpType opType) const
 {
-    return SplitBatchView<KVBuffer, ScheduledIoBatch>(
+    return SplitBatchView<ResolvedKVBuffer, ScheduledIoBatch>(
         entries, GetSqeIoNum(opType),
-        [](ScheduledIoBatch& batch, BatchView<KVBuffer> view) { batch.entries = view; });
+        [](ScheduledIoBatch& batch, BatchView<ResolvedKVBuffer> view) { batch.entries = view; });
 }
 
 std::vector<IoScheduler::ScheduledKeyBatch> IoScheduler::SplitForAsu(
-    const BatchView<CacheKey>& keys, AsuOpType opType) const
+    const BatchView<ResolvedCacheKey>& keys, AsuOpType opType) const
 {
-    return SplitBatchView<CacheKey, ScheduledKeyBatch>(
+    return SplitBatchView<ResolvedCacheKey, ScheduledKeyBatch>(
         keys, GetSqeIoNum(opType),
-        [](ScheduledKeyBatch& batch, BatchView<CacheKey> view) { batch.keys = view; });
+        [](ScheduledKeyBatch& batch, BatchView<ResolvedCacheKey> view) { batch.keys = view; });
 }
 
 std::size_t IoScheduler::GetSqeIoNum(AsuOpType opType) const

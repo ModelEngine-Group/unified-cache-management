@@ -112,6 +112,27 @@ jobs:
       working-directory: ${{github.workspace}}/build
       run: ctest -C ${{env.BUILD_TYPE}} --output-on-failure
 
+  cpp_roce_compile:
+    if: ${{ inputs.run_checks }}
+    runs-on: ubuntu-latest
+    env:
+      BUILD_TYPE: Debug
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install RDMA headers
+      # Only this job needs the verbs headers: it builds the real device half of
+      # the CPU-over-RoCE provider. The unit tests above run against the stub.
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends libibverbs-dev
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON -DBUILD_KV_CLIENT_PROVIDER_ROCE=ON
+
+    - name: Build the transport library
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target kv_transport -j
+
   cpp_v2_gtest:
     if: ${{ inputs.run_checks }}
     runs-on: ubuntu-latest

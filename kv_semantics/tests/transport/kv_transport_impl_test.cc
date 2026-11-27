@@ -525,7 +525,7 @@ TEST_F(TransportTaskCompletionTest, CancelMarksOnlyUnfinishedEntriesCanceled)
 
 TEST_F(TransportTaskCompletionTest, FailedSubmissionDoesNotInvokeCallback)
 {
-    std::vector<KVBuffer> entries(1);
+    std::vector<ResolvedKVBuffer> entries(1);
     std::uint32_t callbackCount = 0;
 
     auto task = std::make_shared<TransportTask>();

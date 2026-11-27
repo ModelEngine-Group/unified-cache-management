@@ -66,8 +66,7 @@ public:
         return Status::OK();
     }
 
-    /* IO aggregation keeps the cc core's behaviour: one aggregated stream
-     * instead of the rotating set. */
+    /* IO aggregation submits batches through one stream. */
     Status SetupIoAggregation(const int32_t deviceId, const bool useGdr)
     {
         if (useGdr) {

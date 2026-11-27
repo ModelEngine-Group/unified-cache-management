@@ -30,12 +30,23 @@ Provider implementations are selected at build time:
 | `BUILD_KV_CLIENT_PROVIDER_AICPU` | `OFF` | Reserved for the AICPU provider library. |
 | `BUILD_KV_CLIENT_PROVIDER_FAKE` | `ON` | None. |
 | `BUILD_KV_CLIENT_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `KV_CLIENT_AIV_PROVIDER_ROOT`. |
+| `BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE` | `OFF` | CANN (`acl/acl.h`, `libascendcl.so`), found through `KV_CLIENT_CANN_ROOT`, `ASCEND_HOME_PATH`, or the configured Ascend root. |
 
 The configured `transport.provider_type` must be built into `kv_transport`.
+`HCCP_KV_OVER_ROCE` additionally loads an external library at runtime; the library
+must implement the C ABI declared in
+`src/trans_provider/hccp_kv_over_roce/hccp_kv_over_roce_abi.h`.
 For example, real AIV testing needs:
 
 ```bash
 cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON -DBUILD_KV_CLIENT_PROVIDER_AIV=ON -DKV_CLIENT_AIV_PROVIDER_ROOT=/path/to/aiv/provider
+```
+
+Real HCCP KV-over-RoCE testing also needs CANN and the external library:
+
+```bash
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON -DBUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON -DKV_CLIENT_CANN_ROOT=/path/to/cann
+export UCM_HCCP_KV_ROCE_LIB_PATH=/path/to/libhccp_kv_over_roce.so
 ```
 
 The same build can be started from any working directory with:
@@ -243,8 +254,10 @@ standalone file keys. Compatibility aliases are omitted.
 | `client.batch_topk_affinity.top_k` | Number of candidate ASUs for batch top-k affinity; outside the documented supported Router scope. |
 | `client.batch_topk_affinity.dynamic_adjust_enabled` | Parsed dynamic-adjust flag for batch top-k affinity. |
 | `transport.asu_ids` | Comma-separated ASU IDs for which transport configurations are created. |
-| `transport.provider_type` | AICPU, FAKE, or AIV; the provider must be enabled at build time. |
+| `transport.provider_type` | AICPU, FAKE, AIV, or HCCP_KV_OVER_ROCE; the provider must be enabled at build time. |
 | `transport.device_id` | Local logical device ID; AICPU first uses the caller's current ACL device. |
+| `transport.hccp_kv_roce_lib_path` | Path of the external HCCP KV-over-RoCE library; defaults to `UCM_HCCP_KV_ROCE_LIB_PATH` and then `libhccp_kv_over_roce.so`. |
+| `transport.hccp_kv_roce_max_connections` | HBM connection-slot capacity for HCCP_KV_OVER_ROCE; 3072 slots of 512 bytes (1.5 MiB) by default. |
 | `transport.max_inflight_tasks` | Per-transport task capacity. |
 | `transport.max_error_count` | Consecutive channel failure threshold before draining. |
 | `transport.completion_poll_spin_limit` | Empty completion polling rounds before yielding the CPU. |
@@ -257,6 +270,32 @@ standalone file keys. Compatibility aliases are omitted.
 | `transport.flag_buffer_slot_size` | Bytes per response/flag-buffer slot. |
 | `transport.flag_buffer_slot_num` | Number of response/flag-buffer slots. |
 | `asu_info.<id>` | Endpoint configuration for one ASU; multiple endpoints are separated by semicolons. |
+| `inference.engine` | Key and namespace resolution rules; defaults to `generic`. Recognized values are `generic`, `vllm_ascend`, and `sglang` (case-sensitive). Other values log a warning and use generic handling. |
+
+`inference.engine` selects how `CacheKey::FromString` inputs are normalized
+before routing. `CacheKey::FromBytes` preserves the eight encoded bytes and
+uses `IoOptions::kvns` as its namespace without engine-specific parsing.
+
+- `generic` hashes the complete string key and uses the supplied namespace.
+- `vllm_ascend` extracts named `@group:<id>` and `@pp_rank:<id>` fields. For
+  example, base namespace `tenant` and `model@group:2@pp_rank:1@hash` resolve
+  to namespace `tenant_group2_pp1` and key identity `model@hash`. Other fields,
+  including a layer suffix, remain in the identity; no layer offset is added.
+- `sglang` recognizes the direct-linker suffix `_cp<id>_pp<id>_<pool>`.
+  For example, `model_hash_cp0_pp1_indexer_scale` selects namespace
+  `tenant_indexer_scale_pp1` and identity `model_hash_cp0`. The full pool name
+  is retained in the namespace, and CP remains in the key identity. Keys
+  without this suffix are hashed unchanged using the supplied namespace.
+
+Only present fields are appended, including an explicitly supplied PP zero.
+String identities use XXH64, encoded as eight little-endian bytes. Namespaces
+use XXH32 to produce GNSIDs. Both hashes use seed 5381. Load/Store offsets
+are passed through unchanged; layer-slot configuration is no longer used.
+
+Normalized keys carry a per-item global namespace ID (GNSID) as internal
+metadata; public `CacheKey` and `KVBuffer` types remain independent of this
+representation. The protocol-local namespace ID is configured through
+`transport.kv_ns_id`.
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
 `KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`
@@ -477,6 +516,29 @@ and kv-test reports under:
 ```
 
 Set `KV_TEST_SCRIPT_LOG_DIR` to place these artifacts elsewhere.
+
+## HCCP KV-over-RoCE provider
+
+`transport.provider_type=HCCP_KV_OVER_ROCE` uses the Ascend HCCP KV-over-RoCE
+data path. The provider is compiled only when
+`BUILD_KV_CLIENT_PROVIDER_HCCP_KV_OVER_ROCE=ON` and loads the implementation
+library at runtime. See
+[HCCP KV-over-RoCE trans provider](hccp-kv-over-roce-provider.md) for the full
+configuration, the ABI contract, the HBM sizing and the limits.
+
+```text
+transport.provider_type=HCCP_KV_OVER_ROCE
+transport.device_id=0
+transport.hccp_kv_roce_lib_path=/path/to/libhccp_kv_over_roce.so
+transport.hccp_kv_roce_max_connections=3072
+asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001
+```
+
+`hccp_lib_path` and `hccp_max_connections` are accepted as legacy aliases for
+the two HCCP keys, and `UCM_HCCP_KV_ROCE_LIB_PATH` overrides the default library
+name. `transport.hccp_kv_roce_<field>` overrides the matching
+`HccpKvRoceInitConfig` field; omitted fields keep the ABI defaults listed in the
+provider guide.
 
 ## Command behavior
 

@@ -13,28 +13,31 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "kv_metrics/metrics.h"
 #include "router/router.h"
+#include "transport/asu_transport_pool.h"
 #include "utils/config_utils.h"
 
 namespace kv::test {
 
 static CacheKey MakeCacheKey(std::string_view text)
 {
-    CacheKey key{};
+    BinaryKey key{};
     if (text.size() <= key.size()) {
         if (!text.empty()) { std::memcpy(key.data(), text.data(), text.size()); }
-        return key;
+        return CacheKey::FromBytes(key);
     }
     const auto hash = std::hash<std::string_view>{}(text);
     std::memcpy(key.data(), &hash, key.size());
-    return key;
+    return CacheKey::FromBytes(key);
 }
 
 MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(value); }
@@ -73,12 +76,17 @@ struct TestState {
     std::vector<NodeId> registerCalls;
     std::vector<NodeId> providerBindCalls;
     std::vector<KVBuffer> submittedEntries;
+    std::vector<CacheKey> submittedKeys;
+    std::vector<ResolvedCacheKey> submittedResolvedKeys;
+    std::vector<std::pair<std::uint32_t, std::vector<std::size_t>>> submittedNamespaceGroups;
     std::vector<NodeId> unregisterCalls;
     bool failRegister{false};
     bool failProviderBind{false};
     bool returnPartialRegister{false};
     bool mismatchRegisterResultCount{false};
     bool failUnregister{false};
+    std::unordered_set<NodeId> unhealthyNodes;
+    std::vector<NodeId> shutdownCalls;
     std::vector<NodeId> queryCalls;
     std::unordered_map<NodeId, std::size_t> queryKeyCounts;
     std::unordered_map<NodeId, std::vector<CacheKey>> queryKeys;
@@ -210,13 +218,20 @@ public:
 
     Status Shutdown() override
     {
+        state_->shutdownCalls.emplace_back(config_.nodeId);
         initialized_ = false;
         return Status::OK();
     }
 
-    Status CheckHealth() override { return initialized_ ? Status::OK() : NotInitialized(); }
+    Status CheckHealth() override
+    {
+        if (state_->unhealthyNodes.count(config_.nodeId) != 0) {
+            return Status::Error(StatusCode::CONNECTION_ERROR, "fake transport is unhealthy");
+        }
+        return initialized_ ? Status::OK() : NotInitialized();
+    }
 
-    virtual Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
+    virtual Status RunQuery(BatchView<ResolvedCacheKey> keys, QueryResult& result)
     {
         if (!initialized_) { return NotInitialized(); }
         if (state_->failFirstQuery && !state_->firstQueryFailed) {
@@ -229,7 +244,7 @@ public:
         auto& routedKeys = state_->queryKeys[config_.nodeId];
         routedKeys.reserve(routedKeys.size() + keys.size);
         for (std::size_t index = 0; index < keys.size; ++index) {
-            routedKeys.emplace_back(keys[index]);
+            routedKeys.emplace_back(CacheKey::FromBytes(keys[index].keyBytes));
         }
         auto failureIter = state_->queryFailures.find(config_.nodeId);
         if (failureIter != state_->queryFailures.end()) { return failureIter->second; }
@@ -237,8 +252,9 @@ public:
         result.exists.clear();
         result.exists.reserve(keys.size);
         for (std::size_t index = 0; index < keys.size; ++index) {
-            result.exists.emplace_back(keys[index] == MakeCacheKey("k15") ||
-                                       keys[index] == MakeCacheKey("k25"));
+            result.exists.emplace_back(
+                keys[index].keyBytes == *MakeCacheKey("k15").TryGetBinaryKey() ||
+                keys[index].keyBytes == *MakeCacheKey("k25").TryGetBinaryKey());
         }
         result.prefixHitKeys = 0;
         return Status::OK();
@@ -249,7 +265,19 @@ public:
         if (!task) {
             return Status::Error(StatusCode::INVALID_ARGUMENT, "fake transport task is null");
         }
-        state_->submittedEntries = task->entries;
+        state_->submittedNamespaceGroups.emplace_back(task->namespaceId, task->originalIndices);
+        state_->submittedEntries.clear();
+        state_->submittedKeys.clear();
+        state_->submittedResolvedKeys.clear();
+        for (const auto& entry : task->entries) {
+            state_->submittedEntries.push_back(
+                {CacheKey::FromBytes(entry.key.keyBytes), entry.buffer, entry.offset, entry.mrKey});
+            state_->submittedResolvedKeys.push_back(entry.key);
+        }
+        for (const auto& key : task->keys) {
+            state_->submittedKeys.push_back(CacheKey::FromBytes(key.keyBytes));
+            state_->submittedResolvedKeys.push_back(key);
+        }
         state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
             case AsuOpType::QUERY: {
@@ -536,11 +564,13 @@ CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
     auto router = kv::CreateRouter(nodeIds, kv::HashFunction{}, kv::RouterConfig{});
     for (std::uint32_t index = 1; index < 1000000; ++index) {
         std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
-        CacheKey cacheKey{};
+        BinaryKey cacheKey{};
         std::memcpy(cacheKey.data(), &combined, sizeof(combined));
-        auto routeKey = std::string(CacheKeyView(cacheKey));
+        auto routeKey = std::string(CacheKeyView(CacheKey::FromBytes(cacheKey)));
         auto routes = router->RouteKeys({routeKey});
-        if (routes.size() == 1 && routes.begin()->first == targetAsuId) { return cacheKey; }
+        if (routes.size() == 1 && routes.begin()->first == targetAsuId) {
+            return CacheKey::FromBytes(cacheKey);
+        }
     }
     return {};
 }
@@ -870,26 +900,30 @@ TEST(KvClientImplTest, Dispatch_WaitFailurePreventsSendAndWorkerContinues)
     bool waited = false;
     ASSERT_TRUE(client
                     ->StoreAsync(entries, taskId,
-                                 [&]() {
-                                     waited = true;
-                                     EXPECT_TRUE(state->submittedOpTypes.empty());
-                                     return Status::Error(StatusCode::IO_ERROR, "wait failed");
-                                 })
+                                 IoOptions{{},
+                                           [&]() {
+                                               waited = true;
+                                               EXPECT_TRUE(state->submittedOpTypes.empty());
+                                               return Status::Error(StatusCode::IO_ERROR,
+                                                                    "wait failed");
+                                           }})
                     .ok());
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::IO_ERROR);
     EXPECT_TRUE(waited);
     EXPECT_TRUE(state->submittedOpTypes.empty());
 
-    ASSERT_TRUE(client->StoreAsync(entries, taskId, []() -> Status { throw 1; }).ok());
+    ASSERT_TRUE(
+        client->StoreAsync(entries, taskId, IoOptions{{}, []() -> Status { throw 1; }}).ok());
     EXPECT_EQ(client->Wait(taskId, 1000, result).code, StatusCode::INTERNAL_ERROR);
     EXPECT_TRUE(state->submittedOpTypes.empty());
 
     ASSERT_TRUE(client
                     ->StoreAsync(entries, taskId,
-                                 [&]() {
-                                     EXPECT_TRUE(state->submittedOpTypes.empty());
-                                     return Status::OK();
-                                 })
+                                 IoOptions{{},
+                                           [&]() {
+                                               EXPECT_TRUE(state->submittedOpTypes.empty());
+                                               return Status::OK();
+                                           }})
                     .ok());
     EXPECT_TRUE(client->Wait(taskId, 1000, result).ok());
     EXPECT_EQ(state->submittedOpTypes.size(), 1U);
@@ -909,7 +943,7 @@ TEST(KvClientImplTest, Dispatch_WaitCallbackUsesStoreProtocols)
                         {
                             KVBuffer{MakeCacheKey("store-single"), {}}
     },
-                        taskId, {})
+                        taskId, IoOptions{{}})
                     .ok());
     TaskResult result;
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
@@ -920,7 +954,7 @@ TEST(KvClientImplTest, Dispatch_WaitCallbackUsesStoreProtocols)
                             KVBuffer{MakeCacheKey("store-batch-0"), {}},
                             KVBuffer{MakeCacheKey("store-batch-1"), {}}
     },
-                        taskId, {})
+                        taskId, IoOptions{{}})
                     .ok());
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
@@ -1261,7 +1295,7 @@ TEST(KvClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
         {
         }
 
-        Status RunQuery(BatchView<CacheKey>, QueryResult& result) override
+        Status RunQuery(BatchView<ResolvedCacheKey>, QueryResult& result) override
         {
             result.exists.clear();
             result.prefixHitKeys = 0;
@@ -2320,6 +2354,425 @@ TEST(KvClientImplTest,
     TaskResult secondTaskResult;
     EXPECT_TRUE(client->Wait(taskId, 100, secondTaskResult).ok());
     EXPECT_EQ(state->storeCalls, std::vector<NodeId>({20, 10}));
+}
+
+TEST(KvClientImplTest, CacheKeyFactoriesOwnInputAndPreserveRepresentation)
+{
+    std::string text = "model@hash@1";
+    const auto engine = CacheKey::FromString(text);
+    text.clear();
+    ASSERT_NE(engine.TryGetStringKey(), nullptr);
+    EXPECT_EQ(*engine.TryGetStringKey(), "model@hash@1");
+    EXPECT_EQ(engine.TryGetBinaryKey(), nullptr);
+    BinaryKey bytes{};
+    bytes[0] = std::byte{7};
+    const auto encoded = CacheKey::FromBytes(bytes);
+    bytes[0] = std::byte{9};
+    ASSERT_NE(encoded.TryGetBinaryKey(), nullptr);
+    EXPECT_EQ((*encoded.TryGetBinaryKey())[0], std::byte{7});
+    EXPECT_EQ(encoded.TryGetStringKey(), nullptr);
+    EXPECT_NE(CacheKey::FromBytes(BinaryKey{}), CacheKey::FromString(std::string(8, '\0')));
+}
+
+TEST(KvClientImplTest, TaskBuild_SkipsGroupsRoutedToUnhealthyNode)
+{
+    // Maglev keeps its affinity and ignores the unavailable set in the router, so the task
+    // builder must skip groups that land on a node whose health check failed.
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "MAGLEV";
+    ASSERT_TRUE(client->Init(config).ok());
+    state->unhealthyNodes.insert(10);
+    state->unhealthyNodes.insert(20);
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({MakeCacheKey("k05"), MakeCacheKey("k15")}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::NO_AVAILABLE_NODE);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{2});
+    for (const auto& entryStatus : result.entryStatus) {
+        EXPECT_EQ(entryStatus.code, StatusCode::NO_AVAILABLE_NODE);
+    }
+    EXPECT_TRUE(state->queryCalls.empty());
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+namespace {
+
+std::uint32_t BaseNamespaceGnsid(std::string_view kvns)
+{
+    auto resolver = CreateDefaultKeyResolver({}, 0);
+    ResolvedCacheKey resolvedKey;
+    EXPECT_TRUE(resolver->Resolve(CacheKey::FromString(""), kvns, resolvedKey).ok());
+    return resolvedKey.gnsid;
+}
+
+NodeEndpoint TestEndpoint(const std::string& ip, std::uint16_t port)
+{
+    NodeEndpoint endpoint;
+    endpoint.ip = ip;
+    endpoint.port = port;
+    endpoint.protocol = Protocol::TCP;
+    return endpoint;
+}
+
+AsuTransportPool::Creator MakePoolCreator(const std::shared_ptr<TestState>& state)
+{
+    return [state](const TransportConfig& config, std::shared_ptr<AsuTransport>& transport) {
+        ++state->createdTransports;
+        auto created = std::make_shared<FakeTransport>(state);
+        auto status = created->Init(config, nullptr);
+        if (!status.ok()) { return status; }
+        transport = created;
+        return Status::OK();
+    };
+}
+
+}  // namespace
+
+TEST(KvClientImplTest, StringKeysUseXxh64WithAsuSeedAndLittleEndianEncoding)
+{
+    auto resolver = CreateDefaultKeyResolver({}, 0);
+    ResolvedCacheKey result;
+    for (const auto& [text, hex] : std::vector<std::pair<std::string, std::string>>{
+             {"",           "cfcac3d5462138af"},
+             {"abc",        "1f4573c6b5c1d119"},
+             {"model@hash", "bcce7875d1eb6ebb"}
+    }) {
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(text), "tenant", result).ok());
+        EXPECT_EQ(CacheKeyToHex(CacheKey::FromBytes(result.keyBytes)), hex);
+        EXPECT_EQ(result.gnsid, BaseNamespaceGnsid("tenant"));
+    }
+}
+
+TEST(KvClientImplTest, BinaryKeysPreserveBytesAndUseTheConfiguredNamespace)
+{
+    const BinaryKey bytes{std::byte{1}, std::byte{2}, std::byte{3}};
+    for (auto engine :
+         {InferenceEngine::GENERIC, InferenceEngine::VLLM_ASCEND, InferenceEngine::SGLANG}) {
+        auto resolver = CreateDefaultKeyResolver({engine}, 6);
+        for (const auto* kvns : {"", "tenant"}) {
+            ResolvedCacheKey result;
+            ASSERT_TRUE(resolver->Resolve(CacheKey::FromBytes(bytes), kvns, result).ok());
+            EXPECT_EQ(result.keyBytes, bytes);
+            EXPECT_EQ(result.gnsid, 6U);
+        }
+    }
+    EXPECT_EQ(BaseNamespaceGnsid(""), 0xa3316a09U);
+}
+
+TEST(KvClientImplTest, VllmNamespaceUsesOnlyPresentGroupAndPpFields)
+{
+    auto resolver = CreateDefaultKeyResolver({InferenceEngine::VLLM_ASCEND}, 0);
+    auto generic = CreateDefaultKeyResolver({}, 0);
+    struct Example {
+        const char* input;
+        const char* identity;
+        const char* kvns;
+    };
+    for (const auto& item : std::vector<Example>{
+             {"model@hash",                                             "model@hash", "tenant"           },
+             {"model@group:0@hash",                                     "model@hash", "tenant_group0"    },
+             {"model@pp_rank:0@hash",                                   "model@hash", "tenant_pp0"       },
+             {"model@group:2@pp_rank:1@hash",                           "model@hash", "tenant_group2_pp1"},
+             {"model@pp_rank:1@group:2@hash",                           "model@hash", "tenant_group2_pp1"},
+             {"model@tp_rank:3@group:2@pp_rank:1@cache_role:kv@hash@7",
+              "model@tp_rank:3@cache_role:kv@hash@7",                                 "tenant_group2_pp1"}
+    }) {
+        ResolvedCacheKey actual, expected;
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(item.input), "tenant", actual).ok());
+        ASSERT_TRUE(generic->Resolve(CacheKey::FromString(item.identity), "", expected).ok());
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
+        EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(item.kvns));
+    }
+}
+
+TEST(KvClientImplTest, SglangPoolAndPpSelectNamespaceButCpRemainsInKey)
+{
+    auto resolver = CreateDefaultKeyResolver({InferenceEngine::SGLANG}, 0);
+    auto generic = CreateDefaultKeyResolver({}, 0);
+    ResolvedCacheKey expected;
+    ASSERT_TRUE(generic->Resolve(CacheKey::FromString("model_hash_tp0_cp0"), "", expected).ok());
+    for (const auto* pool : {"kv", "indexer", "indexer_scale", "swa", "future_custom_pool",
+                             "custom_cp_pool", "custom_pp_pool", "custom_cp1_pp2_pool"}) {
+        ResolvedCacheKey actual;
+        const auto input = std::string("model_hash_tp0_cp0_pp1_") + pool;
+        ASSERT_TRUE(resolver->Resolve(CacheKey::FromString(input), "tenant", actual).ok());
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
+        EXPECT_EQ(actual.gnsid, BaseNamespaceGnsid(std::string("tenant_") + pool + "_pp1"));
+    }
+    ResolvedCacheKey cp1, pp0;
+    ASSERT_TRUE(
+        resolver->Resolve(CacheKey::FromString("model_hash_tp0_cp1_pp1_kv"), "tenant", cp1).ok());
+    EXPECT_NE(cp1.keyBytes, expected.keyBytes);
+    ASSERT_TRUE(
+        resolver->Resolve(CacheKey::FromString("model_hash_tp0_cp0_pp0_kv"), "tenant", pp0).ok());
+    EXPECT_EQ(pp0.keyBytes, expected.keyBytes);
+    EXPECT_EQ(pp0.gnsid, BaseNamespaceGnsid("tenant_kv_pp0"));
+}
+
+TEST(KvClientImplTest, UnrecognizedKeyFormatsRemainUnchanged)
+{
+    auto generic = CreateDefaultKeyResolver({}, 0);
+    for (auto engine : {InferenceEngine::GENERIC, InferenceEngine::SGLANG}) {
+        auto resolver = CreateDefaultKeyResolver({engine}, 6);
+        const auto input = CacheKey::FromString("model@group:2@pp_rank:1@hash@7");
+        ResolvedCacheKey actual, expected;
+        ASSERT_TRUE(resolver->Resolve(input, "base", actual).ok());
+        ASSERT_TRUE(generic->Resolve(input, "base", expected).ok());
+        EXPECT_EQ(actual.keyBytes, expected.keyBytes);
+        EXPECT_EQ(actual.gnsid, expected.gnsid);
+    }
+}
+
+TEST(KvClientImplTest, InvalidNamespaceFieldsLeaveResolverOutputUnchanged)
+{
+    for (const auto& [engine, input] : std::vector<std::pair<InferenceEngine, const char*>>{
+             {InferenceEngine::VLLM_ASCEND, "model@group:x@hash"           },
+             {InferenceEngine::VLLM_ASCEND, "model@pp_rank:-1@hash"        },
+             {InferenceEngine::VLLM_ASCEND, "model@pp_rank:4294967296@hash"},
+             {InferenceEngine::VLLM_ASCEND, "model@group:0@group:1@hash"   },
+             {InferenceEngine::SGLANG,      "model_hash_cp0_ppx_kv"        },
+             {InferenceEngine::SGLANG,      "model_hash_cp0_pp1_"          }
+    }) {
+        auto resolver = CreateDefaultKeyResolver({engine}, 6);
+        ResolvedCacheKey result{BinaryKey{std::byte{7}}, 99};
+        EXPECT_EQ(resolver->Resolve(CacheKey::FromString(input), "base", result).code,
+                  StatusCode::INVALID_ARGUMENT);
+        EXPECT_EQ(result.keyBytes[0], std::byte{7});
+        EXPECT_EQ(result.gnsid, 99U);
+    }
+}
+
+TEST(KvClientImplTest, BinaryRequestsUseTheNamespaceFromTransportConfig)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10, 20});
+    for (auto& transport : config.transportConfigs) { transport.attrs["kv_ns_id"] = "6"; }
+    ASSERT_TRUE(client->Init(config).ok());
+
+    TaskId task = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({MakeCacheKey("k1")}, task).ok());
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(task, 100, result).ok());
+    ASSERT_EQ(state->submittedNamespaceGroups.size(), 1U);
+    EXPECT_EQ(state->submittedNamespaceGroups[0].first, 6U);
+}
+
+TEST(KvClientImplTest, EveryOperationUsesPerKeyNamespacesAndPreservesCallerOffsets)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
+    config.transportConfigs.front().attrs["kv_ns_id"] = "6";
+    ASSERT_TRUE(client->Init(config).ok());
+    const std::vector<KVBuffer> entries{
+        {CacheKey::FromString("model@group:0@pp_rank:0@hash@7"),  {}, 17},
+        {CacheKey::FromString("model@group:1@pp_rank:0@hash@7"),  {}, 31},
+        {CacheKey::FromString("model@group:0@pp_rank:0@other@7"), {}, 47}
+    };
+    const std::vector<CacheKey> keys{entries[0].key, entries[1].key, entries[2].key};
+    auto resolver = CreateDefaultKeyResolver(config.keyResolution, 6);
+    IoOptions options;
+    options.kvns = "tenant";
+    std::vector<ResolvedCacheKey> expected(keys.size());
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        ASSERT_TRUE(resolver->Resolve(keys[i], options.kvns, expected[i]).ok());
+    }
+    EXPECT_EQ(expected[0].keyBytes, expected[1].keyBytes);
+    EXPECT_NE(expected[0].gnsid, expected[1].gnsid);
+    for (int op = 0; op < 4; ++op) {
+        state->submittedNamespaceGroups.clear();
+        TaskId task = kInvalidTaskId;
+        auto status = op == 0   ? client->StoreAsync(entries, task, options)
+                      : op == 1 ? client->LoadAsync(entries, task, options)
+                      : op == 2 ? client->QueryAsync(keys, task, options)
+                                : client->DeleteAsync(keys, task, options);
+        ASSERT_TRUE(status.ok()) << status.message;
+        TaskResult result;
+        ASSERT_TRUE(client->Wait(task, 100, result).ok());
+        ASSERT_EQ(state->submittedNamespaceGroups.size(), 2U);
+        EXPECT_EQ(state->submittedNamespaceGroups[0],
+                  std::make_pair(expected[0].gnsid, std::vector<std::size_t>{0, 2}));
+        EXPECT_EQ(state->submittedNamespaceGroups[1],
+                  std::make_pair(expected[1].gnsid, std::vector<std::size_t>{1}));
+        ASSERT_EQ(state->submittedResolvedKeys.size(), 1U);
+        EXPECT_EQ(state->submittedResolvedKeys[0].keyBytes, expected[1].keyBytes);
+        if (op < 2) { EXPECT_EQ(state->submittedEntries[0].offset, entries[1].offset); }
+        EXPECT_EQ(result.entryStatus.size(), keys.size());
+    }
+    EXPECT_EQ(entries[0].key, keys[0]);
+    EXPECT_EQ(entries[0].offset, 17U);
+    EXPECT_EQ(state->createdTransports, 1U);
+}
+
+TEST(KvClientImplTest, InvalidKeysAreRejectedBeforeAnyOperationIsSubmitted)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
+    ASSERT_TRUE(client->Init(config).ok());
+    const auto key = CacheKey::FromString("model@group:bad@hash");
+    const std::vector<KVBuffer> entries{
+        {key, {}}
+    };
+    TaskId task = 42;
+    EXPECT_EQ(client->StoreAsync(entries, task).code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(task, kInvalidTaskId);
+    EXPECT_EQ(client->LoadAsync(entries, task).code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(client->QueryAsync({key}, task).code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(client->DeleteAsync({key}, task).code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_TRUE(state->submittedOpTypes.empty());
+}
+
+TEST(KvClientImplTest, KeyEngineConfigIsParsedWithoutLayerLayoutParameters)
+{
+    const std::string path = "key-engine-test.conf";
+    for (const auto& [name, engine] : std::vector<std::pair<const char*, InferenceEngine>>{
+             {"vllm_ascend", InferenceEngine::VLLM_ASCEND},
+             {"sglang",      InferenceEngine::SGLANG     },
+             {"generic",     InferenceEngine::GENERIC    },
+             {"other",       InferenceEngine::GENERIC    }
+    }) {
+        {
+            std::ofstream file(path);
+            file << "inference.engine=" << name << "\n";
+        }
+        KvClientConfig config;
+        ASSERT_TRUE(KvClientConfig::LoadFromFile(path, config).ok());
+        EXPECT_EQ(config.keyResolution.engine, engine);
+    }
+    std::remove(path.c_str());
+}
+
+TEST(KvClientImplTest, TaskBuild_PartialRoutingFailureKeepsRoutableEntries)
+{
+    auto config = MakeConfig({10, 20});
+    config.attrs["hash_table.type"] = "MAGLEV";
+    kv::RouterConfig routerConfig;
+    ASSERT_TRUE(kv::BuildRouterConfigFromAttrs(config.attrs, routerConfig).ok());
+    auto router = kv::CreateRouter({10, 20}, kv::HashFunction{}, routerConfig);
+
+    // The client routes the resolved 8-byte key of a binary CacheKey, so the probes
+    // must be built the same way (binary keys pass through resolution unchanged).
+    const auto findKey = [&router](NodeId target) {
+        for (std::uint32_t index = 1; index < 1000000; ++index) {
+            std::uint64_t combined = (static_cast<std::uint64_t>(target) << 32) | index;
+            BinaryKey bytes{};
+            std::memcpy(bytes.data(), &combined, sizeof(combined));
+            const auto routes = router->RouteKeys({std::string(CacheKeyView(bytes))});
+            if (routes.size() == 1 && routes.begin()->first == target) {
+                return CacheKey::FromBytes(bytes);
+            }
+        }
+        return CacheKey::FromBytes(BinaryKey{});
+    };
+    const auto keyFor10 = findKey(10);
+    const auto keyFor20 = findKey(20);
+    ASSERT_NE(keyFor10, CacheKey::FromBytes(BinaryKey{}));
+    ASSERT_NE(keyFor20, CacheKey::FromBytes(BinaryKey{}));
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+    state->unhealthyNodes.insert(10);
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->QueryAsync({keyFor10, keyFor20}, taskId).ok());
+    TaskResult result;
+    const auto status = client->Wait(taskId, 1000, result);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{2});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::NO_AVAILABLE_NODE);
+    EXPECT_TRUE(result.entryStatus[1].ok());
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({20}));
+    ASSERT_TRUE(client->Shutdown().ok());
+}
+
+TEST(AsuTransportPoolTest, ReusesTransportPerNode)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    std::shared_ptr<AsuTransport> second;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+    ASSERT_TRUE(pool.GetOrCreate(config, second).ok());
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(state->createdTransports, 1U);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+}
+
+TEST(AsuTransportPoolTest, ComparesEndpointsAsMultiset)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000), TestEndpoint("10.0.0.2", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+
+    TransportConfig reordered = config;
+    reordered.endpoints = {TestEndpoint("10.0.0.2", 9000), TestEndpoint("10.0.0.1", 9000)};
+    std::shared_ptr<AsuTransport> second;
+    ASSERT_TRUE(pool.GetOrCreate(reordered, second).ok());
+    EXPECT_EQ(first, second);
+    EXPECT_EQ(state->createdTransports, 1U);
+}
+
+TEST(AsuTransportPoolTest, ReportsEndpointChangeAndReplaces)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    TransportConfig config;
+    config.nodeId = 10;
+    config.endpoints = {TestEndpoint("10.0.0.1", 9000)};
+
+    std::shared_ptr<AsuTransport> first;
+    ASSERT_TRUE(pool.GetOrCreate(config, first).ok());
+
+    TransportConfig changed = config;
+    changed.endpoints = {TestEndpoint("10.0.0.2", 9000)};
+    std::shared_ptr<AsuTransport> rejected;
+    EXPECT_EQ(pool.GetOrCreate(changed, rejected).code, StatusCode::ENDPOINT_CHANGED);
+    EXPECT_EQ(pool.Size(), std::size_t{1});
+
+    std::shared_ptr<AsuTransport> replaced;
+    ASSERT_TRUE(pool.Replace(changed, replaced).ok());
+    EXPECT_NE(replaced, first);
+    EXPECT_EQ(state->createdTransports, 2U);
+    EXPECT_EQ(pool.Find(NodeId{10}), replaced);
+}
+
+TEST(AsuTransportPoolTest, ShutdownAllClosesEveryTransportOnce)
+{
+    auto state = std::make_shared<TestState>();
+    AsuTransportPool pool(MakePoolCreator(state));
+    for (const auto nodeId : {10, 20}) {
+        TransportConfig config;
+        config.nodeId = nodeId;
+        config.endpoints = {TestEndpoint("10.0.0." + std::to_string(nodeId), 9000)};
+        std::shared_ptr<AsuTransport> transport;
+        ASSERT_TRUE(pool.GetOrCreate(config, transport).ok());
+    }
+
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(pool.Size(), std::size_t{0});
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
+    ASSERT_TRUE(pool.ShutdownAll().ok());
+    EXPECT_EQ(state->shutdownCalls.size(), std::size_t{2});
 }
 
 }  // namespace kv::test

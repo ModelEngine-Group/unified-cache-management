@@ -45,6 +45,11 @@ protected:
         CleanupShmFor(dpRank);
         logFile = std::make_unique<TempLogFile>();
         store = std::make_unique<MockStoreV1>();
+        /* Indexer slots are 16 bytes (SeedIndexer: mIndexerSizeBytesBlock=16)
+         * inside 256-byte per-layer buffers; the mock's default 4096-byte
+         * payload would overrun them and corrupt the heap. Match the block
+         * size so each slot write stays in bounds. */
+        store->SetHostBufferPayload(/*bytesPerBlock=*/16, /*kvLayerBytes=*/16);
     }
     void TearDown() override
     {
@@ -116,7 +121,7 @@ TEST_F(IndexerMapTest, SetIndexerMapIsNoopWhenOffloadOff)
     auto dsaSBT = torch::zeros({2, 4}, torch::dtype(torch::kInt32));
     engine->SetIndexerMap("req1", blockTableList, remainIdx, prefetchIdx, blockSlot, dsaSBT);
     // offload off -> early return, no state mutation.
-    EXPECT_EQ(engine->mIndexerSlot.count("req1"), 0u);
+    EXPECT_EQ(engine->mBlocksMap.count("req1"), 0u);
 }
 
 TEST_F(IndexerMapTest, SetIndexerMapClearsExistingAndRebuilds)
@@ -136,7 +141,6 @@ TEST_F(IndexerMapTest, SetIndexerMapClearsExistingAndRebuilds)
     engine->SetIndexerMap("req1", blockTableList, remainIdx, prefetchIdx, blockSlot, dsaSBT);
 
     // Existing entries cleared and rebuilt.
-    EXPECT_EQ(engine->mIndexerSlot["req1"].size(), 2u);
     EXPECT_EQ(engine->mIndexerSparseLen, 4u);
     EXPECT_EQ(engine->mUseBlockTableIdx["req1"].size(), 2u);
     EXPECT_EQ(engine->mPrefetchBlockTableIdx["req1"].size(), 2u);
@@ -154,7 +158,7 @@ TEST_F(IndexerMapTest, SetIndexerMapForNewReqIDAvoidsClearBranch)
     auto dsaSBT = torch::zeros({2, 4}, torch::dtype(torch::kInt32));
     // reqID not present -> skip clear branch, go straight to set.
     engine->SetIndexerMap("newReq", blockTableList, remainIdx, prefetchIdx, blockSlot, dsaSBT);
-    EXPECT_EQ(engine->mIndexerSlot["newReq"].size(), 2u);
+    EXPECT_EQ(engine->mUseBlockTableIdx["newReq"].size(), 1u);
 }
 
 /* ---------------- SetIndexerMapForLayer ---------------- */
@@ -191,44 +195,19 @@ TEST_F(IndexerMapTest, UpdateIndexerMapAddAppendsToUseBlockTableIdx)
 {
     engine = MakeEngine(/*layerNum=*/2);
     engine->mUseBlockTableIdx["req1"].assign(2, {0, 1});
-    engine->mIndexerSlot["req1"] = {0, 1};
-    engine->UpdateIndexerMap("req1", /*idx=*/5, /*blockID=*/99, /*type=*/"add");
+    engine->UpdateIndexerMap("req1", /*idx=*/5);
     EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].back(), 5);
     EXPECT_EQ(engine->mUseBlockTableIdx["req1"][1].back(), 5);
     EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].size(), 3u);
 }
 
-TEST_F(IndexerMapTest, UpdateIndexerMapLastDelPopsFromUseBlockTableIdx)
+TEST_F(IndexerMapTest, UpdateIndexerMapSkipsUninitializedReqID)
 {
+    // L-3 fixed: unknown reqID -> judged + skipped. Previously operator[]
+    // inserted an empty outer vector and [layerID] indexed it OOB (UB).
     engine = MakeEngine(/*layerNum=*/1);
-    engine->mUseBlockTableIdx["req1"].assign(1, {0, 1, 2});
-    engine->mIndexerSlot["req1"] = {0, 1, 2};
-    engine->UpdateIndexerMap("req1", 0, 99, "lastdel");
-    EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].size(), 2u);
-    EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].back(), 1);
-}
-
-TEST_F(IndexerMapTest, UpdateIndexerMapDefaultTypeLogsAndDoesNotMutate)
-{
-    engine = MakeEngine(/*layerNum=*/1);
-    engine->mUseBlockTableIdx["req1"].assign(1, {0, 1, 2});
-    engine->mIndexerSlot["req1"] = {0, 1, 2};
-    engine->UpdateIndexerMap("req1", 0, 99, "unknown");
-    EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].size(), 3u);  // unchanged
-}
-
-TEST_F(IndexerMapTest, UpdateIndexerMapAddAppendsToExistingUseBlockTableIdx)
-{
-    // UpdateIndexerMap does NOT guard mUseBlockTableIdx[reqID] existence; calling
-    // it on an unknown reqID would crash (operator[] creates an empty outer vector,
-    // then [layerID] indexes the empty inner vector OOB).  Documented bug #6.
-    // Here we pre-seed the per-layer vectors so the add path is exercised safely.
-    engine = MakeEngine(/*layerNum=*/1);
-    engine->mUseBlockTableIdx["req1"].assign(1, {0, 1});
-    engine->mIndexerSlot["req1"] = {0, 1};
-    engine->UpdateIndexerMap("req1", /*idx=*/7, /*blockID=*/99, /*type=*/"add");
-    EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].back(), 7);
-    EXPECT_EQ(engine->mUseBlockTableIdx["req1"][0].size(), 3u);
+    engine->UpdateIndexerMap("ghost", /*idx=*/5);
+    EXPECT_EQ(engine->mUseBlockTableIdx.count("ghost"), 0u);
 }
 
 /* ---------------- SetLastIndexerBlock ---------------- */
@@ -453,7 +432,7 @@ TEST_F(IndexerMapTest, SetTokensMapLayerZeroClearsAndResizesState)
     engine = MakeEngine(/*layerNum=*/2);
     const std::string reqID = "req1";
     // Pre-seed existing state for req1 (will be cleared because mHBMMangers has it).
-    engine->mHBMMangers[reqID].push_back(std::make_unique<HBMManager>());
+    engine->mHBMMangers[reqID].push_back(std::make_unique<HBMManagerLayered>());
     engine->mAllReqIdSlots[reqID] = {1};
     engine->mReqUseBlockTable[reqID] = {2};
     engine->mMissGlobalToken[reqID] = {{3}};
@@ -466,10 +445,9 @@ TEST_F(IndexerMapTest, SetTokensMapLayerZeroClearsAndResizesState)
     // Pre-seed mAllTopkIndicesTensor so ProcessTokensMapTopk's publish path is safe.
     engine->mAllTopkIndicesTensor[reqID] =
         torch::zeros({engine->mTopkIndexerNum, engine->mSpaTopkLen}, torch::dtype(torch::kInt32));
-    // BUG-FOCUS: SetTokensMap with isNeedInit=false would deref a null
-    // mHBMMangers[reqID][curTopkIndex] (the resize on line 738 creates null
-    // unique_ptrs). Use isNeedInit=true so ProcessTokensMapTopk builds the
-    // manager (line 772) before the deref on line 747.
+    // Keep isNeedInit=true to exercise the full ProcessTokensMapTopk manager
+    // build path. With the L-6 guard in place an isNeedInit=false call would
+    // now be skipped safely (see SetTokensMapSkipsNullManagerWithoutCrash).
     engine->SetTokensMap(/*layerID=*/0, reqID, qTopk, remainBlockTable,
                          /*maxIdx=*/2, slots, /*isNeedInit=*/true);
     // mHBMMangers[req1] resized to mTopkIndexerNum (2).
@@ -488,7 +466,7 @@ TEST_F(IndexerMapTest, SetTokensMapLayerNonZeroReusesExistingManagers)
     // mPromptLen (only layer-0 sets it).
     engine = MakeEngine(/*layerNum=*/2);
     const std::string reqID = "req1";
-    engine->mHBMMangers[reqID].push_back(std::make_unique<HBMManager>());
+    engine->mHBMMangers[reqID].push_back(std::make_unique<HBMManagerLayered>());
     auto qTopk = torch::zeros({1, 1, 2}, torch::dtype(torch::kInt32));
     std::vector<int> remainBlockTable = {0, 1, 2, 3, 4, 5, 6, 7};
     std::vector<int> slots = {10, 20};
@@ -496,11 +474,13 @@ TEST_F(IndexerMapTest, SetTokensMapLayerNonZeroReusesExistingManagers)
         torch::zeros({engine->mTopkIndexerNum, engine->mSpaTopkLen}, torch::dtype(torch::kInt32));
     engine->SetTokensMap(0, reqID, qTopk, remainBlockTable, 2, slots, true);
     // After layer-0, mHBMMangers[reqID] has mTopkIndexerNum entries; [0] is
-    // initialized, [1] is null.  We do NOT call SetTokensMap for layer 1 here
-    // because that would deref the null [1] (documented bug #7).  Instead we
-    // verify the layer-0 side effects are visible.
+    // initialized, [1] is null.  L-6 guard: a layer-1 call (isNeedInit=false,
+    // topkLayerMap identity -> curTopkIndex=1 -> null manager) is now skipped
+    // safely instead of dereferencing null (old bug #7).
+    engine->SetTokensMap(/*layerID=*/1, reqID, qTopk, remainBlockTable, 2, slots, false);
     EXPECT_EQ(engine->mHBMMangers[reqID].size(), static_cast<size_t>(engine->mTopkIndexerNum));
-    EXPECT_EQ(engine->mPromptLen[reqID], 2);
+    EXPECT_EQ(engine->mHBMMangers[reqID][1], nullptr);  // skipped, not built
+    EXPECT_EQ(engine->mPromptLen[reqID], 2);            // only layer-0 sets it
 }
 
 // NOTE: The isNeedInit=true -> ProcessTokensMapTopk path on layerNum=1 engines
@@ -509,3 +489,37 @@ TEST_F(IndexerMapTest, SetTokensMapLayerNonZeroReusesExistingManagers)
 // variant was found to be sensitive to HBMManager init parameter ratios and
 // is omitted to keep the suite stable; the layerNum=2 test exercises the
 // same source lines.
+
+// L-6: ProcessTokensMapTopk early-exit (tensor validation failure) leaves the
+// manager null; SetTokensMap must log + skip LastChunkMove, not crash. This
+// directly exercises RunLastChunkMoveGuarded's null branch via layer 1 of a
+// fresh engine (identity topkLayerMap -> curTopkIndex=1 -> manager null).
+TEST_F(IndexerMapTest, SetTokensMapSkipsNullManagerWithoutCrash)
+{
+    engine = MakeEngine(/*layerNum=*/2);
+    const std::string reqID = "req1";
+    auto qTopk = torch::zeros({1, 1, 2}, torch::dtype(torch::kInt32));
+    std::vector<int> remainBlockTable = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<int> slots = {10, 20};
+    engine->mAllTopkIndicesTensor[reqID] =
+        torch::zeros({engine->mTopkIndexerNum, engine->mSpaTopkLen}, torch::dtype(torch::kInt32));
+    // Build manager[0] via layer-0 init, then hit the null manager[1].
+    engine->SetTokensMap(0, reqID, qTopk, remainBlockTable, 2, slots, true);
+    ASSERT_NE(engine->mHBMMangers[reqID][0], nullptr);
+    ASSERT_EQ(engine->mHBMMangers[reqID][1], nullptr);
+    engine->SetTokensMap(1, reqID, qTopk, remainBlockTable, 2, slots, false);
+    SUCCEED() << "null manager skipped without crash";
+}
+
+// L-6: stale reqID after DelReqIDRun (entry erased) must not re-insert an
+// empty mHBMMangers[reqID] vector via operator[] before the guard rejects it.
+TEST_F(IndexerMapTest, SetTokensMapUnknownReqIDSkipsWithoutInserting)
+{
+    engine = MakeEngine(/*layerNum=*/2);
+    auto qTopk = torch::zeros({1, 1, 2}, torch::dtype(torch::kInt32));
+    std::vector<int> remainBlockTable = {0, 1, 2, 3};
+    std::vector<int> slots = {10, 20};
+    // "ghost" was never initialized (simulates post-DelReqIDRun stale call).
+    engine->SetTokensMap(/*layerID=*/1, "ghost", qTopk, remainBlockTable, 2, slots, false);
+    EXPECT_EQ(engine->mHBMMangers.count("ghost"), 0u);  // no operator[] insertion
+}

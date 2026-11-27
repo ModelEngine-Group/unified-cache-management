@@ -283,7 +283,7 @@ TEST(ConnectionManagerTest, AddGroupCreatesGroupWithChannels)
     g_createCount = 0;
     g_deleteCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
 
     auto status = mgr.AddGroup(MakeEndpoint(), 3);
     EXPECT_TRUE(status.ok()) << status.message;
@@ -297,7 +297,7 @@ TEST(ConnectionManagerTest, AddGroupQueriesCapabilitiesOnceUsingFirstHandle)
     g_capabilityQueryCount = 0;
     StubTransProvider provider;
     provider.serverCapabilities.batchStoreKeys = 77;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
 
     const auto status = mgr.AddGroup(MakeEndpoint(), 3);
 
@@ -320,7 +320,7 @@ TEST(ConnectionManagerTest, AddGroupRollsBackConnectionsWhenCapabilityQueryFails
     g_capabilityQueryCount = 0;
     StubTransProvider provider;
     provider.capabilityStatus = Status::Error(StatusCode::IO_ERROR, "capability query failure");
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
 
     const auto status = mgr.AddGroup(MakeEndpoint(), 3);
 
@@ -335,7 +335,7 @@ TEST(ConnectionManagerTest, AddGroupReturnsProviderCreateError)
 {
     StubTransProvider provider;
     provider.createStatus = Status::Error(StatusCode::IO_ERROR, "provider create failure");
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
 
     const auto status = mgr.AddGroup(MakeEndpoint(), 3);
 
@@ -346,7 +346,7 @@ TEST(ConnectionManagerTest, AddGroupReturnsProviderCreateError)
 TEST(ConnectionManagerTest, AddGroupFailsAfterShutdown)
 {
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.Shutdown();
 
     auto status = mgr.AddGroup(MakeEndpoint(), 1);
@@ -358,7 +358,7 @@ TEST(ConnectionManagerTest, SelectConnectionRoundRobinCyclesThroughChannels)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
     mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
 
@@ -381,7 +381,7 @@ TEST(ConnectionManagerTest, SelectConnectionLeastLoadedPicksLowestInflight)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
     mgr.SetRoutingPolicy(RoutingPolicy::LEAST_LOADED);
 
@@ -401,7 +401,7 @@ TEST(ConnectionManagerTest, SelectConnectionLeastLoadedPicksLowestInflight)
 TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenNoChannels)
 {
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
 
     auto ch = mgr.SelectConnection();
     EXPECT_EQ(ch, nullptr);
@@ -410,7 +410,7 @@ TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenNoChannels)
 TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrAfterShutdown)
 {
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
     mgr.Shutdown();
 
@@ -423,7 +423,7 @@ TEST(ConnectionManagerTest, ReportFailureDefaultThresholdIsOne)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 1);
 
     auto ch = mgr.SelectConnection();
@@ -443,7 +443,7 @@ TEST(ConnectionManagerTest, ReportFailureAtThresholdMarksForDrain)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 1);
 
     auto ch = mgr.SelectConnection();
@@ -524,7 +524,7 @@ TEST(ConnectionManagerTest, ShutdownClearsAllResources)
 {
     g_deleteCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
 
     auto status = mgr.Shutdown();
@@ -537,7 +537,7 @@ TEST(ConnectionManagerTest, TotalInflightCountSumsCorrectly)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
 
     auto ch0 = mgr.SelectConnection();
@@ -553,7 +553,7 @@ TEST(ConnectionManagerTest, LeastLoadedAlwaysPicksLowestWhileRoundRobinCycles)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 2);
 
     mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
@@ -580,7 +580,7 @@ TEST(ConnectionManagerTest, SelectConnectionRoundRobinAcrossMultipleGroups)
 {
     g_createCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint("10.0.0.1"), 2);
     mgr.AddGroup(MakeEndpoint("10.0.0.2"), 2);
 
@@ -603,7 +603,7 @@ TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenAllChannelsAtMaxIn
     g_createCount = 0;
     StubTransProvider provider;
     provider.serverCapabilities.ioQueueDepth = 3;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 2);
     mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
 
@@ -623,7 +623,7 @@ TEST(ConnectionManagerTest, ShutdownIsIdempotent)
 {
     g_deleteCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 3);
 
     auto status1 = mgr.Shutdown();
@@ -640,7 +640,7 @@ TEST(ConnectionManagerTest, ReportFailureMultipleTimesDoesNotDuplicateInDrainLis
     g_createCount = 0;
     g_deleteCount = 0;
     StubTransProvider provider;
-    ConnectionManager mgr(provider, "", 5000);
+    ConnectionManager mgr(provider, "", 5000, 1);
     mgr.AddGroup(MakeEndpoint(), 1);
 
     {

@@ -19,6 +19,8 @@ enable_metrics: true
 
 以下字段写在 YAML 根级，模型或引擎特定限制在说明中标出。
 
+在 CUDA 环境下，带有 indexer 缓存的模型自动使用整存整取模式（`use_layerwise=false`），并在 Connector 支持时启用请求级异步加载。该组合要求 vLLM 设置 `pipeline_parallel_size=1`；启用流水线并行时初始化会报错。设置 `use_layerwise=true` 不能绕过此限制。
+
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
 | `use_layerwise` | 选填 | bool | 默认 `true` | 是否启用分层（逐层）加载和保存模式。推荐设置为 `true`，DeepSeek v4 系列模型推荐设置为 `false`。 |
@@ -56,16 +58,14 @@ enable_metrics: true
 
 ## Cache 主机缓冲阶段
 
-仅适用于包含 Cache 的流水线。共享缓冲按共享域规划，非共享缓冲按同机 worker 总量规划。
+仅适用于包含 Cache 的流水线。Cache2 按 Cache 域规划容量，并在域内本机 worker 间分摊。
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
-| `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 原生 Cache Store 启用共享 buffer 时默认为 256 GiB，`share_buffer_enable` 为 false 时默认为每个 worker 32 GiB。启用共享 buffer 且省略容量时，vLLM connector 会提供 128 GiB。MLA 默认启用共享 buffer。显式设置正数容量会覆盖原生默认值；非共享模式需汇总主机上所有 worker 的预算。启用流水线并行时，配置的容量还会按节点内共享该 buffer 的 PP stage 数均分；若整除结果为 0，启动时直接报错。 |
-| `use_dpc` | 选填 | bool | 默认 `false` | 非共享 buffer 模式下主机缓冲的分配方式。默认大页内存（传统 DirectIO 路径）；`true`：驱动内存接口（DPC 路径），可显式开启。 |
+| `cache_buffer_capacity_gb` | 选填 | int | 默认 `160` | 原生调用方按 Cache 域配置容量，单位 GiB。vLLM 按节点预算分配给本机 DP 域和 FA/WA store，PP stage store 进一步分摊。外部 DP 服务配置每个实例的预算。Cache2 将每个域的容量均分给域内本机 worker。vLLM 对每个 store 分摊的容量低于 1 GiB 时启动报错。 |
 | `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
-| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 即使在 cache 层命中还是会强制从 SSD 上加载，仅供测试使用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
-| `share_buffer_enable` | 选填 | bool | MLA 默认启用，GQA 默认不启用 | 是否启用共享内存。MLA 如果不用 shm 或 GQA 用 shm 都会导致性能下降。 |
+| `share_buffer_enable` | 选填 | bool | 兼容旧配置 | Cache2 在每个 Cache 域内统一使用共享控制面和每个 worker 独立的 memfd 数据段。 |
 
 ## Posix 容量回收
 
