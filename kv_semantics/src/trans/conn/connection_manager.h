@@ -59,7 +59,17 @@ public:
     Status AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num);
     Status Shutdown();
 
-    std::shared_ptr<ConnectionChannel> SelectConnection();
+    // Two-level failover selection: candidates in groups other than the
+    // excluded channels' groups are preferred; same-group non-excluded
+    // channels are the fallback. Exclusion uses channel object identity.
+    std::shared_ptr<ConnectionChannel> SelectConnection(
+        const std::vector<ConnectionChannel*>& excludedChannels = {});
+    // Original-channel retry acquisition: succeeds only while the preferred
+    // channel is still ACTIVE and under its inflight limit; does not reset
+    // the caller's channel field.
+    std::shared_ptr<ConnectionChannel> AcquireChannel(
+        const std::shared_ptr<ConnectionChannel>& preferred);
+
     std::shared_ptr<ConnectionChannel> GetActiveConnection();
     void SetRoutingPolicy(RoutingPolicy policy);
     void ReportFailure(const std::shared_ptr<ConnectionChannel>& channel);
@@ -104,6 +114,9 @@ private:
     void RebuildChannelCache();
     std::shared_ptr<ConnectionChannel> SelectByRoundRobin();
     std::shared_ptr<ConnectionChannel> SelectByLeastLoaded();
+    std::shared_ptr<ConnectionChannel> SelectByPolicyLocked(
+        const std::vector<std::shared_ptr<ConnectionChannel>>& candidates);
+
 };
 
 }  // namespace kv

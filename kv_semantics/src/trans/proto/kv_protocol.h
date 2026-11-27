@@ -57,10 +57,30 @@ constexpr std::size_t kMaxDeleteBatchNumber = 254;
 constexpr std::size_t kMaxExistBatchNumber = 256;
 constexpr std::size_t kCqeDwordCount = 4;
 
+class BufferManager;
+struct TransportSubBatchContext;
+
 class SqeRequest {
 public:
     virtual ~SqeRequest() = default;
+
+    // Retry repack hook: overridden by concrete requests so the re-packed SQE
+    // carries the fresh CID and the new response buffer/MR. The default is a
+    // no-op for requests without response fields.
+    virtual void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
+                            std::uint32_t responseMrKey)
+    {
+        (void)newCid;
+        (void)responseBufferAddr;
+        (void)responseMrKey;
+    }
 };
+
+// Shared flag-buffer sizing/allocation for sub-batches (used by both initial
+// submission and retry repacking).
+Status AllocateSubBatchFlagBuffer(KvOpcode opcode, std::size_t batchNum,
+                                  BufferManager& flagBufferManager,
+                                  TransportSubBatchContext& subBatchContext);
 
 class KvStoreRequest : public SqeRequest {
 public:
@@ -75,7 +95,11 @@ public:
     bool lr{false};
     std::uint32_t length{0};
     BinaryKey key{};
-};
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t, std::uint32_t) override
+    {
+        cid = newCid;
+    }};
 
 class KvRetrieveRequest : public SqeRequest {
 public:
@@ -88,7 +112,11 @@ public:
     bool lr{false};
     std::uint32_t length{0};
     BinaryKey key{};
-};
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t, std::uint32_t) override
+    {
+        cid = newCid;
+    }};
 
 class KvBatchStoreEntry {
 public:
@@ -111,6 +139,14 @@ public:
     bool rflag{false};
     std::uint16_t batch_number{0};
     std::vector<KvBatchStoreEntry> entries;
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
+                    std::uint32_t responseMrKey) override
+    {
+        cid = newCid;
+        response_buffer_addr = responseBufferAddr;
+        response_mr_key = responseMrKey;
+    }
 };
 
 class KvBatchRetrieveEntry {
@@ -132,6 +168,14 @@ public:
     bool rflag{false};
     std::uint16_t batch_number{0};
     std::vector<KvBatchRetrieveEntry> entries;
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
+                    std::uint32_t responseMrKey) override
+    {
+        cid = newCid;
+        response_buffer_addr = responseBufferAddr;
+        response_mr_key = responseMrKey;
+    }
 };
 
 class KvDeleteRequest : public SqeRequest {
@@ -143,7 +187,14 @@ public:
     bool rflag{false};
     std::uint16_t batch_number{0};
     std::vector<BinaryKey> keys;
-};
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
+                    std::uint32_t responseMrKey) override
+    {
+        cid = newCid;
+        response_buffer_addr = responseBufferAddr;
+        response_mr_key = responseMrKey;
+    }};
 
 class KvExistRequest : public SqeRequest {
 public:
@@ -155,7 +206,14 @@ public:
     bool sc{true};
     std::uint16_t batch_number{0};
     std::vector<BinaryKey> keys;
-};
+
+    void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
+                    std::uint32_t responseMrKey) override
+    {
+        cid = newCid;
+        response_buffer_addr = responseBufferAddr;
+        response_mr_key = responseMrKey;
+    }};
 
 class KvKeepAliveRequest : public SqeRequest {
 public:

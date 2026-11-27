@@ -24,12 +24,14 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
+#include "error_classifier.h"
 #include "kv_metrics/metrics.h"
 #include "proto/kv_protocol.h"
 #include "task/io_scheduler.h"
@@ -68,6 +70,11 @@ public:
     bool Poll(const TransportTaskPtr& task);
     bool Cancel(const TransportTaskPtr& task);
 
+    // Non-blocking retry driver: RETRY_BACKOFF sub-batches are picked up by
+    // the completion loop; backoff waits never sleep inside shared threads.
+    bool HasRetryWork(const TransportTaskPtr& task);
+    void ExecuteRetry(const TransportTaskPtr& task);
+
 private:
     Status RegisterBufferMemory(BufferManager& bufferManager, MRHandle& mrHandle);
     Status UnregisterBufferMemory(MRHandle& mrHandle);
@@ -87,7 +94,30 @@ private:
     void BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
                                   std::vector<TransProvider::SendIoBatch>& ioBatches);
     void SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
-                             const std::vector<TransProvider::SendIoBatch>& ioBatches);
+                             const std::vector<TransProvider::SendIoBatch>& ioBatches,
+                             TransportTask& task);
+
+    // Repacks the SQE for one retry attempt: fresh CID, fresh response
+    // buffer/MR, fresh send slot. Keeps SQE registration and context fields
+    // consistent so responses cannot mismatch.
+    Status PrepareRetryRequest(TransportSubBatchContext& subBatchContext);
+    // Drives one due retry sub-batch: channel selection (same-channel for
+    // busy, failover excluding attempted channels), repack, send.
+    void ExecuteOneRetry(TransportTask& task, TransportSubBatchContext& subBatchContext);
+    // Classifies one failure and routes it (pending retry or terminal);
+    // returns true when the sub-batch is pending its next attempt.
+    bool RouteSubBatchFailure(TransportTask& task, TransportSubBatchContext& subBatchContext,
+                              const ErrorDecision& decision);
+    // Releases the failed attempt's slots and channel inflight while keeping
+    // the channel field for the next acquisition.
+    void ReleaseAttemptResources(TransportSubBatchContext& subBatchContext);
+    // Terminal completion for a failed attempt that will not be retried;
+    // preserves the original error.
+    void CompleteFailedSubBatch(TransportTask& task, TransportSubBatchContext& subBatchContext);
+    // Unsent total-deadline closure: unfinished non-in-flight sub-batches are
+    // terminated with TIMEOUT without recording channel failures.
+    void FinalizeUnsentOnTaskDeadline(TransportTask& task);
+    std::chrono::steady_clock::time_point ComputeAttemptDeadline(const TransportTask& task) const;
 
     void AbortSubBatchesBeforeSend(TransportTask& task,
                                    std::vector<TransportSubBatchContext>& subBatchContexts);
