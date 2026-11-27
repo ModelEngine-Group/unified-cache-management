@@ -1,0 +1,38 @@
+name: Release delivery status
+
+on:
+  workflow_run:
+    workflows: ['UCM Tag Release · Stable, Prerelease, Draft, and Nightly']
+    types: [in_progress, completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: ucm-release-operations-${{ github.repository }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'v') &&
+      (github.event.action == 'in_progress' || github.event.workflow_run.conclusion != 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Update the Checklist from the Tag workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/release-operations/delivery.py observe

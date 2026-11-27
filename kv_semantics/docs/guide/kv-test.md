@@ -257,6 +257,32 @@ standalone file keys. Compatibility aliases are omitted.
 | `transport.flag_buffer_slot_size` | Bytes per response/flag-buffer slot. |
 | `transport.flag_buffer_slot_num` | Number of response/flag-buffer slots. |
 | `asu_info.<id>` | Endpoint configuration for one ASU; multiple endpoints are separated by semicolons. |
+| `inference.engine` | Key and namespace resolution rules; defaults to `generic`. Recognized values are `generic`, `vllm_ascend`, and `sglang` (case-sensitive). Other values log a warning and use generic handling. |
+
+`inference.engine` selects how `CacheKey::FromString` inputs are normalized
+before routing. `CacheKey::FromBytes` preserves the eight encoded bytes and
+uses `IoOptions::kvns` as its namespace without engine-specific parsing.
+
+- `generic` hashes the complete string key and uses the supplied namespace.
+- `vllm_ascend` extracts named `@group:<id>` and `@pp_rank:<id>` fields. For
+  example, base namespace `tenant` and `model@group:2@pp_rank:1@hash` resolve
+  to namespace `tenant_group2_pp1` and key identity `model@hash`. Other fields,
+  including a layer suffix, remain in the identity; no layer offset is added.
+- `sglang` recognizes the direct-linker suffix `_cp<id>_pp<id>_<pool>`.
+  For example, `model_hash_cp0_pp1_indexer_scale` selects namespace
+  `tenant_indexer_scale_pp1` and identity `model_hash_cp0`. The full pool name
+  is retained in the namespace, and CP remains in the key identity. Keys
+  without this suffix are hashed unchanged using the supplied namespace.
+
+Only present fields are appended, including an explicitly supplied PP zero.
+String identities use XXH64, encoded as eight little-endian bytes. Namespaces
+use XXH32 to produce GNSIDs. Both hashes use seed 5381. Load/Store offsets
+are passed through unchanged; layer-slot configuration is no longer used.
+
+Normalized keys carry a per-item global namespace ID (GNSID) as internal
+metadata; public `CacheKey` and `KVBuffer` types remain independent of this
+representation. The protocol-local namespace ID is configured through
+`transport.kv_ns_id`.
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
 `KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`

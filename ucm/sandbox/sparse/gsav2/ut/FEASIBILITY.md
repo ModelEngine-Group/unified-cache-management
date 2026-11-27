@@ -15,7 +15,7 @@
 |---|---------|--------------|
 | 1 | Mock 掉 C++ 扩展（`gsa_prefetch`、`torch.ops._C_ascend`）与 vllm/vllm_ascend 重依赖 | UT 无法脱离真实推理进程运行，覆盖率无法度量 |
 | 2 | 使用 `importlib.reload` 技巧覆盖 `gsa.py` 平台分支（L30–43） | NPU 机器上 else 分支（L38–43 共 6 行）永不执行 → **行覆盖率上限 ≈ 99.8%，无法达 100%** |
-| 3 | 对模块级常量做 monkeypatch 矩阵（`IS_INDEXER_OFFLOAD`、`PTOPK_PREFETCH_ENABLE`、`IS_PERFORMANCE_LOG` 等 10+ 个） | 大量 if 分支只有单侧被覆盖，分支覆盖率跌到 ~70% |
+| 3 | 对模块级常量做 monkeypatch 矩阵（`IS_INDEXER_OFFLOAD`、`IS_OPEN_GSA`、`IS_PERFORMANCE_LOG` 等 10+ 个） | 大量 if 分支只有单侧被覆盖，分支覆盖率跌到 ~70% |
 | 4 | 慢超时分支（30s/120s 等待）用假时钟或小 timeout 参数覆盖 | 若干 while/timeout 分支要么测不到，要么单测跑 30+ 分钟 |
 
 预计交付规模：**~160 个用例 / 5 个测试文件 + conftest**，其中 `gsa.py` 占约 60% 用例量。
@@ -141,7 +141,7 @@ gsa.py 在 import 时把常量绑定到自身命名空间，逐用例 patch 即�
 
 | 常量 | 默认值 | 需覆盖的取值 |
 |------|-------|-------------|
-| `PTOPK_PREFETCH_ENABLE` | True | True / False（所有入口函数的双侧早退） |
+| `IS_OPEN_GSA` | True | True / False（所有入口函数的双侧早退） |
 | `IS_INDEXER_OFFLOAD` | False | True / False（约 20 处 if） |
 | `IS_PERFORMANCE_LOG` | True | True / False（关键流程需双跑） |
 | `IS_SHARED_MEMCPY`、`PREFETCH_TYPE`、`STREAM_NUM` 等 | — | 按需 |
@@ -149,7 +149,7 @@ gsa.py 在 import 时把常量绑定到自身命名空间，逐用例 patch 即�
 | `VLLM_ASCEND_VERSION`（allocate_slots 三分支） | "0.18" | "0.18" / "0.13" / "other" |
 | `UCM_LOOKUP_MAX_RETRY` | 10000 | patch 为 2，快速触发 lookup 超时分支 |
 | `INDEXER_PREFETCH_TOKENS` / `INDEXER_SPARSE_RATE` / `INDEXER_PREFETCH_RATIO` | 32768 等 | 调小以构造 indexer 分支 |
-| `VLLM` 侧 flag（`gsa.PTOPK_PREFETCH_ENABLE` 与 `prefetch_engine.PTOPK_PREFETCH_ENABLE` 是两个独立绑定） | — | 分别 patch |
+| `VLLM` 侧 flag（`gsa.IS_OPEN_GSA`；`prefetch_engine` 的 PTOPK 门控已随开关合并移除） | — | patch gsa 模块 |
 
 ### 4.5 关键测试技术
 
@@ -188,12 +188,12 @@ gsa.py 在 import 时把常量绑定到自身命名空间，逐用例 patch 即�
 132 行，构造器占 80%。要点：
 - `enable_sparse_sfa_c8` False/True × `get_ascend_device_type()` A5/非 A5（stub 可编程返回）4 组合，覆盖 dtype/k_dim/v_dim 与 packed_head_dim 分支；
 - `GSAPrefetchEngineC` mock 断言入参列表（12 项配置 + 5 项 dims + log 路径）；
-- `update_topk_index` / `del_finish_meta` 的 flag True/False 与 `PTOPK_PREFETCH_ENABLE` 双侧（patch 模块内绑定）。
+- `del_finish_meta` 的 flag True/False（`update_topk_index` 已随缺陷 A3 整体删除；prefetch_engine 的 PTOPK 门控已随开关合并移除）。
 约 7 用例。
 
 ### 5.5 gsa.py —— ⚠️ 行 100% / 分支 >90% 可达，但有 6 个已知硬点，均有对策
 
-**易覆盖部分（~80% 分支）**：`GSABlockTable/GSASharedCPUPool/GSAReqBlockTable/GSAHashRequest` 等小类、`GSAReqStat` 的全部谓词（step/stage/is_gsa/is_indexer_sparse/is_last_chunk×PD混用与PD分离/is_decode_only/get_seq_len/get_spase_len/init_mask/get_indexer_sparse_len/get_indexer_remain_len/add_req_new×preempt分支/update_req_state）、`GSAMetaData.get_model_input/trans_input_tensor`、`compute_parent_block_hash`、`inject_store_v1_ptr`、`print_log`、scheduler 侧接口（`estimate_num_slots_sparsed`×4 分支、`estimate_free_slots_sparse`×3 分支、`allocate_slots`×3 版本分支×preempt 分支、`begin_sch_flag`、`update_scheduler_free_slot` 双分支）。
+**易覆盖部分（~80% 分支）**：`GSABlockTable/GSASharedCPUPool/GSAReqBlockTable/GSAHashRequest` 等小类、`GSAReqStat` 的全部谓词（step/stage/is_gsa/is_indexer_sparse/is_last_chunk×PD混用与PD分离/is_decode_only/get_seq_len/get_spase_len/init_mask/get_indexer_sparse_len/get_indexer_remain_len/add_req_new×preempt分支/update_req_state）、`GSAMetaData.get_model_input/trans_input_tensor`、`compute_parent_block_hash`、`print_log`、scheduler 侧接口（`estimate_num_slots_sparsed`×4 分支、`estimate_free_slots_sparse`×3 分支、`allocate_slots`×3 版本分支×preempt 分支、`begin_sch_flag`、`update_scheduler_free_slot` 双分支）。
 
 **中高难度部分与对策**（用例设计清单，节选）：
 

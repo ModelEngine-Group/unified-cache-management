@@ -38,6 +38,7 @@ Prefix Cache integration status by model. All three engine columns describe comp
 <tr><th scope="row">GLM-5</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">GLM-5.1</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 <tr><th scope="row">GLM-5.2</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td></tr>
+<tr><th scope="row">GLM-5.3</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unverified">Unverified</span></td></tr>
 <tr><th scope="row">GLM-5.3-Flash</th><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--supported">Supported</span></td><td><span class="ucm-matrix-status ucm-matrix-status--unsupported">Unsupported</span></td></tr>
 </tbody>
 <tbody>
@@ -57,6 +58,61 @@ Prefix Cache integration status by model. All three engine columns describe comp
 </div>
 
 See [Model Tour](../model-tour/index.md) for model families and the [developer guide](../../developer-guide/cache-configuration/index.md) for storage configuration.
+
+## Parallelism support
+
+Per-model support for parallel strategies and their vLLM flags: DP (`--data-parallel-size`), TP (`--tensor-parallel-size`), PP (`--pipeline-parallel-size`), PCP (`--prefill-context-parallel-size`), and DCP (`--decode-context-parallel-size`). EP (`--enable-expert-parallel`) is not listed: it only shards MoE expert weights and leaves attention and the KV cache unaffected, so UCM has no model-specific restriction for it. Values apply to vLLM and vLLM-Ascend; SGLang is not covered here. The table uses ✅ (supported) and ❌ (unsupported).
+
+<div class="ucm-matrix-scroll" tabindex="0" role="region" aria-label="Parallelism support table, horizontally scrollable">
+<table class="ucm-support-table">
+<colgroup><col style="width:40%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:12%"><col style="width:12%"></colgroup>
+<thead><tr><th scope="col">Model</th><th scope="col">DP</th><th scope="col">TP</th><th scope="col">PP</th><th scope="col">PCP</th><th scope="col">DCP</th></tr></thead>
+<tbody>
+<tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">DeepSeek</th></tr>
+<tr><th scope="row">DeepSeek V3/3.1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">DeepSeek R1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">DeepSeek V3.2</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">DeepSeek V4 Pro</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">DeepSeek V4 Flash</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">DeepSeek V4.1 Flash</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+</tbody>
+<tbody>
+<tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">Qwen</th></tr>
+<tr><th scope="row">Qwen2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">Qwen3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">Qwen3-MoE</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">Qwen3-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.5</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.6</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8-Flash-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+</tbody>
+<tbody>
+<tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">GLM</th></tr>
+<tr><th scope="row">GLM-4.x</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">GLM-5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">GLM-5.1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">GLM-5.2</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">GLM-5.3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">GLM-5.3-Flash</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+</tbody>
+<tbody>
+<tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">MiniMax</th></tr>
+<tr><th scope="row">MiniMax-M2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">MiniMax-M2.7</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">MiniMax-M3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">MiniMax-M3.1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+</tbody>
+<tbody>
+<tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">Kimi</th></tr>
+<tr><th scope="row">Kimi-K2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">Kimi-K2.7</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><th scope="row">Kimi-K3</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+</tbody>
+</table>
+</div>
+
+The DeepSeek V4 family and the hybrid linear-attention models support context parallelism through PCP only: PP and DCP are unsupported, and for hybrid linear-attention models PP > 1 is rejected at startup with a plain-language error (the KV hash namespace has no pipeline-stage dimension).
 
 ## Compute platforms and devices
 

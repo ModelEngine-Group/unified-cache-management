@@ -38,7 +38,7 @@ This information serves as a reference for evaluating framework compatibility in
 | GLM-5 | ✅ | ✅ | ❌ |
 | GLM-5.1 | ✅ | ✅ | ❌ |
 | GLM-5.2 | ✅ | ✅ | ✅ |
-| GLM-5.3 | ✅ | ✅ | ❌ |
+| GLM-5.3 | ✅ | ✅ | 🟡 |
 | GLM-5.3-Flash | ✅ | ✅ | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
@@ -66,6 +66,48 @@ This section presents support information for inference enhancement features, in
 | Qwen2.5 | ✅ | ✅ | ✅ |
 
 > **Note**: See [**Sparse Attention**](../sparse-attention/index.md) and [**ReRoPE**](../rerope/rerope.md) for more details.
+
+### Parallelism Support
+
+This section presents parallel strategy support for each model.
+Values apply to vLLM and vLLM-Ascend; SGLang is not covered here.
+
+- **DP**: `--data-parallel-size`
+- **TP**: `--tensor-parallel-size`
+- **PP**: `--pipeline-parallel-size`
+- **EP**: `--enable-expert-parallel`
+- **PCP**: `--prefill-context-parallel-size`
+- **DCP**: `--decode-context-parallel-size`
+
+| Model | DP | TP | PP | EP | PCP | DCP |
+|-------|:--:|:--:|:--:|:--:|:---:|:---:|
+| DeepSeek V3/3.1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DeepSeek R1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DeepSeek V4 Pro | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| DeepSeek V4 Flash | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| DeepSeek V4.1 Flash | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Qwen2.5 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Qwen3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Qwen3-Moe | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Qwen3-Next | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Qwen3.5 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Qwen3.6 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Qwen3.8 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Qwen3.8-Flash-Next | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| GLM-4.x | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GLM-5 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GLM-5.1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GLM-5.2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GLM-5.3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| GLM-5.3-Flash | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| MiniMax-M2.5 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| MiniMax-M2.7 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| MiniMax-M3 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| MiniMax-M3.1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Kimi-K2.5 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Kimi-K2.7 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Kimi-K3 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
 
 ## Supported Compute Platforms and Devices
 

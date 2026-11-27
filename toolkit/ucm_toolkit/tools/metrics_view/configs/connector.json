@@ -904,31 +904,9 @@
       "unit": "ms"
     },
     {
-      "name": "Layerwise Per-Layer Load Duration: p50",
+      "name": "Layerwise All-Layer Load Duration Sum: avg",
       "type": "promql",
-      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-      "value": "value",
-      "aggregate": "sum",
-      "group_by": [
-        "model_name"
-      ],
-      "unit": "ms"
-    },
-    {
-      "name": "Layerwise Per-Layer Load Duration: p90",
-      "type": "promql",
-      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-      "value": "value",
-      "aggregate": "sum",
-      "group_by": [
-        "model_name"
-      ],
-      "unit": "ms"
-    },
-    {
-      "name": "Layerwise Per-Layer Load Duration: p99",
-      "type": "promql",
-      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "expr": "sum by (model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
       "value": "value",
       "aggregate": "sum",
       "group_by": [
@@ -962,6 +940,50 @@
       "name": "Layerwise All-Layer Load Duration Sum: p99",
       "type": "promql",
       "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Wait Duration Sum: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Wait Duration Sum: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Wait Duration Sum: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Wait Duration Sum: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:layerwise_batch_load_wait_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
       "value": "value",
       "aggregate": "sum",
       "group_by": [

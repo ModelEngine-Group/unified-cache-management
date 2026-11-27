@@ -15,6 +15,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 )
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
+from vllm.v1.request import RequestStatus
 
 try:
     from vllm.v1.core.kv_cache_utils import resolve_kv_cache_block_sizes
@@ -28,7 +29,6 @@ from ucm.integration.vllm.ucm_connector import (
     KVConnectorTransferResults,
     UCMDirectConnector,
     UCMLiteConnector,
-    _check_shm_capacity,
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
@@ -37,7 +37,6 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
-from ucm.store.cache.capabilities import cache_core_version, uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -659,10 +658,18 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
         nested = getattr(spec, "kv_cache_specs", None)
         specs = list(nested.values()) if nested else [spec]
         if not all(getattr(s, "prefix_cacheable", True) for s in specs):
-            if not all(type(s).__name__ == "CircularBufferSpec" for s in specs):
+            if not all(
+                any(cls.__name__ == "CircularBufferSpec" for cls in type(s).__mro__)
+                or (
+                    getattr(s, "sliding_window", None) is not None
+                    and not getattr(s, "prefix_cacheable", True)
+                    and getattr(s, "prefix_replay_tokens", 0) > 0
+                )
+                for s in specs
+            ):
                 raise ValueError(
-                    "Ascend V4.1 UCM requires persisted SWA windows; "
-                    "bounded replay and other transient groups are not supported."
+                    "Ascend V4.1 UCM supports only compressor-ring and SWA "
+                    "bounded-replay transient groups."
                 )
             continue
         if not getattr(group, "enable_kv_transfer", True):
@@ -690,7 +697,8 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
                     raise ValueError("Ascend V4.1 FA page needs one long KV owner.")
                 owner = owners[0]
                 indexer = owner.removesuffix(".long_kv_cache") + ".indexer.k_cache"
-                if members != {owner, indexer}:
+                folded = indexer + "_folded"
+                if members not in ({owner, indexer}, {owner, indexer, folded}):
                     raise ValueError("Unsupported Ascend V4.1 FA page contents.")
             sizes[owner] = tensor.block_stride
             remaining.difference_update(members)
@@ -761,6 +769,7 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
     """Connector metadata carrying FAWA dispatch plans for this step."""
 
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
+    # Preempted requests whose old dump notification can be retired.
     preempted_req_ids: set[str] = field(default_factory=set)
 
 
@@ -1196,11 +1205,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(parallel, name, 1) != 1
                 for name in (
                     "pipeline_parallel_size",
-                    "prefill_context_parallel_size",
                     "decode_context_parallel_size",
                 )
             ):
-                raise ValueError("Ascend V4.1 UCM currently requires PP=PCP=DCP=1.")
+                # PCP>1 is allowed here: after the step's PCP gather every PCP
+                # peer holds a full KV replica and FAWA dump ownership already
+                # spans TP*PCP (see dump_owner_size), so each block is stored
+                # once. DCP shards the KV cache, so DCP>1 stays rejected.
+                raise ValueError("Ascend V4.1 UCM currently requires PP=DCP=1.")
             self.whole_page_sizes = _ascend_v41_whole_page_sizes(self._kv_cache_config)
             # Ascend already expresses block_size in original tokens. Use a
             # complete logical page, even when the engine hashes finer chunks.
@@ -1214,8 +1226,27 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     "Ascend V4.1 needs one positive logical FA block size."
                 )
             self.hash_block_size = self.ascend_base_block_size = block_sizes.pop()
-            if self.prefix_replay_tokens:
-                raise ValueError("Ascend V4.1 UCM does not support bounded replay.")
+            for group_id, group in enumerate(groups):
+                replay_tokens = max(
+                    getattr(spec, "prefix_replay_tokens", 0)
+                    for spec in [group.kv_cache_spec, *self._specs_for_group(group)]
+                )
+                if not replay_tokens:
+                    continue
+                if group_id not in self.transient_group_ids:
+                    raise ValueError(
+                        "Ascend V4.1 replay groups must not be prefix-cacheable."
+                    )
+                self.prefix_replay_tokens = max(
+                    self.prefix_replay_tokens, replay_tokens
+                )
+                replay_block = group.kv_cache_spec.block_size
+                if replay_block <= 0 or self.hash_block_size % replay_block:
+                    raise ValueError(
+                        "Ascend V4.1 bounded replay needs UCM hits aligned to "
+                        f"the replayed SWA block: hash_block_size="
+                        f"{self.hash_block_size}, swa_block_size={replay_block}."
+                    )
         else:
             self.whole_page_sizes = (
                 _v41_whole_page_sizes(self._kv_cache_config)
@@ -1346,6 +1377,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     "DeepSeek V4.1 hash block size must be divisible by the "
                     "KV compression group size: "
                     f"hash_block_size={self.hash_block_size}, "
+                    f"compression_group_size={self.resume_token_alignment}."
+                )
+            if (
+                self.is_ascend_v41_layout
+                and self.prefix_replay_tokens % self.resume_token_alignment
+            ):
+                raise ValueError(
+                    "DeepSeek V4.1 bounded replay window must be divisible by "
+                    "the KV compression group size: "
+                    f"prefix_replay_tokens={self.prefix_replay_tokens}, "
                     f"compression_group_size={self.resume_token_alignment}."
                 )
         # Ascend V4 and V4.1 use runtime page payloads, including FP8 and
@@ -1553,7 +1594,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
         config["tensor_layout"] = "hma"
-        # This selects shared MLA keys versus rank-specific GQA keys in Cache2.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
             config["storage_backends"] = [
@@ -1570,33 +1610,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return name, module_path, config
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
-        if uses_partitioned_cache() or cache_core_version() == 1:
-            configure_cache_capacity(
-                config, self._vllm_config.parallel_config, stores_per_dp=2
-            )
-            if not uses_partitioned_cache() and config.get(
-                "share_buffer_enable", False
-            ):
-                _check_shm_capacity(int(config["cache_buffer_capacity_gb"]) * 2)
-            return
-        if not bool(config.get("share_buffer_enable", False)):
-            return
-
-        # HMA creates two shared-buffer stores, FA and WA, so split the
-        # shared-buffer capacity evenly between them, whether user-set or the
-        # 128GB direct-connector default.
-        if config.get("cache_buffer_capacity_gb") is None:
-            config["cache_buffer_capacity_gb"] = 128
-        capacity = int(config["cache_buffer_capacity_gb"])
-        config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
-        logger.info(
-            f"Set FAWA cache_buffer_capacity_gb to "
-            f"{config['cache_buffer_capacity_gb']}GB by splitting the "
-            f"{capacity}GB shared-buffer capacity across FA/WA stores."
+        configure_cache_capacity(
+            config, self._vllm_config.parallel_config, stores_per_dp=2
         )
-        # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold the FA+WA total.
-        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
@@ -1629,10 +1645,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
-        if label == "WA" and (uses_partitioned_cache() or cache_core_version() == 1):
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
+        if label == "WA":
             # WA loads one boundary snapshot per request.
             config.setdefault("cache_load_exclusive_buffer_number", 512)
         self._set_default_shm_buffer_capacity(config)
@@ -1674,9 +1689,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # Count load/save metrics with the same per-record size as GC.
             self.file_size[label] = gc_size
             self._publish_block_size(gc_size, store_suffix=store_suffix)
-            # MLA stores aggregate TP shards under one logical rank group.
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -1895,6 +1907,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # allocation's one-shot async dispatch must not suppress this attempt.
         self._pending_async_load_dispatches.pop(request.request_id, None)
         self._async_load_req_ids.discard(request.request_id)
+        if request.request_id in self.requests_meta:
+            self.requests_meta.pop(request.request_id)
+        if request.status == RequestStatus.PREEMPTED:
+            # Remember the preemption edge: older vLLM re-admits the request
+            # through scheduled_cached_reqs, newer releases through
+            # scheduled_new_reqs and no longer flag it on CachedRequestData.
+            resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+            if resumed_req_ids is None:
+                resumed_req_ids = self._resumed_req_ids = set()
+            resumed_req_ids.add(request.request_id)
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
@@ -2177,10 +2199,28 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> UCMFAWAConnectorMetadata:
+        # A request cancelled after a forced preemption can already be waiting
+        # for its dump completion. Let get_finished report it after the drain.
+        preempted_req_ids = set(scheduler_output.preempted_req_ids or ()).difference(
+            scheduler_output.finished_req_ids
+        )
+        # Workers drain the old dumps before this step starts. Register this
+        # step's new dump plans only after retiring the preempted ones.
+        self._async_dump_req_ids.difference_update(preempted_req_ids)
+        # vLLM reports a preemption only in the step that frees the blocks.
+        # Newer releases no longer flag the resumed request on CachedRequestData.
+        resumed_req_ids = getattr(self, "_resumed_req_ids", None)
+        if resumed_req_ids is None:
+            resumed_req_ids = self._resumed_req_ids = set()
+        resumed_req_ids.update(preempted_req_ids)
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
         # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
             request_id, vllm_block_ids = request.req_id, request.block_ids
+            # A resumed request is re-admitted here; its complete block table is
+            # already handled by need_load=True. Retire the record so the next
+            # decode step is not mistaken for another resume.
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 # New-request metadata contains the complete block table, including
@@ -2199,7 +2239,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 )
 
         scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
+        # 0.34+ carries no resume field: a resumed request is re-admitted
+        # through scheduled_new_reqs and handled above. Honour the field when
+        # the scheduler still provides it, otherwise fall back to the
+        # preemption record kept by this connector.
+        resume_flags = getattr(scheduled_cached_reqs, "resumed_from_preemption", None)
         for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
+            if resume_flags is not None:
+                resumed_from_preemption = resume_flags[i]
+            elif hasattr(scheduled_cached_reqs, "resumed_req_ids"):
+                resumed_from_preemption = (
+                    request_id in scheduled_cached_reqs.resumed_req_ids
+                )
+            else:
+                resumed_from_preemption = request_id in resumed_req_ids
+            resumed_req_ids.discard(request_id)
             req_meta = self.requests_meta.get(request_id)
             if req_meta:
                 new_block_ids = scheduled_cached_reqs.new_block_ids[i]
@@ -2207,14 +2261,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     new_block_ids = tuple([] for _ in self.group_metas)
                 else:
                     new_block_ids = tuple(new_block_ids)
-                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
-                    resumed_from_preemption = (
-                        scheduled_cached_reqs.resumed_from_preemption[i]
-                    )
-                else:
-                    resumed_from_preemption = (
-                        request_id in scheduled_cached_reqs.resumed_req_ids
-                    )
                 if resumed_from_preemption:
                     req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
                 requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
@@ -2234,11 +2280,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             self.requests_meta.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
+            resumed_req_ids.discard(request_id)
 
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}
 
-        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        self._async_dump_req_ids.update(
+            request_id
+            for request_id, dispatch in requests_dispatch_meta.items()
+            if dispatch.dump_keys
+        )
         return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
 
     def _submit_load_task(
@@ -2623,11 +2674,19 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         self._poll_completed_dump_tasks()
 
+        dump_plans = {
+            request_id: request
+            for request_id, request in metadata.request_meta.items()
+            if request.dump_keys
+        }
+        # Completion is aggregated across workers, including ranks that own
+        # no keys for a given request.
+        self._async_dump_req_ids.update(dump_plans)
+        dump_request_ids = tuple(dump_plans)
         fa_dump_keys: list[bytes] = []
         wa_dump_keys: list[bytes] = []
         fa_ptr_rows: list[np.ndarray] = []
         wa_ptr_rows: list[np.ndarray] = []
-        dump_request_ids: tuple[str] = ()
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         save_bytes = 0
@@ -2636,10 +2695,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # owner key slice (TP*PCP dedup domain); chunk-wise WA assigns one final
             # boundary per request.
             wa_dump_ring_idx = 0
-            for request_id, request in metadata.request_meta.items():
-                if not request.dump_keys:
-                    continue
-                dump_request_ids += (request_id,)
+            for request_id, request in dump_plans.items():
                 key_slice = self._get_mla_dump_slice(request.dump_hash_start)
                 tp_dump_keys = request.dump_keys[key_slice]
                 if tp_dump_keys:
@@ -2706,10 +2762,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     )
                 wa_dump_ring_idx += 1
         else:
-            for request_id, request in metadata.request_meta.items():
-                if not request.dump_keys:
-                    continue
-                dump_request_ids += (request_id,)
+            for request_id, request in dump_plans.items():
                 fa_dump_blocks_by_request[request_id] = set(request.dump_keys)
                 fa_dump_keys.extend(request.dump_keys)
                 fa_ptr_rows.append(
@@ -2852,13 +2905,23 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         for request_ids in finished_chunk_req_ids:
             self.tp_dump_tasks.pop(request_ids, None)
 
-    def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
+    def handle_preemptions(
+        self, kv_connector_metadata: UCMFAWAConnectorMetadata | set[str]
+    ) -> None:
         # Worker side method
         # This hook runs before the next load/forward can overwrite cache data.
         # Drain all previous-step dumps, not only explicitly preempted requests:
         # a running request's sliding-window blocks may also be recycled by the
         # next allocate_slots() call.
         self._drain_best_effort_dump_tasks()
+        preempted_req_ids = (
+            kv_connector_metadata
+            if isinstance(kv_connector_metadata, set)
+            else kv_connector_metadata.preempted_req_ids
+        )
+        if preempted_req_ids:
+            self._rank_consistency.finish_dump(preempted_req_ids)
+            self._async_dump_req_ids.difference_update(preempted_req_ids)
 
     def get_finished(
         self,
@@ -2881,11 +2944,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 "version lacks KVConnectorTransferResults.failed_recving: "
                 f"{sorted(self._failed_fawa_loads)}"
             )
-        self._drain_best_effort_dump_tasks(finished_req_ids)
-        self._rank_consistency.finish_dump(finished_req_ids)
-        finished_sending = set(finished_req_ids)
-        finished_sending.difference_update(pending_async_loads)
-        finished_sending.difference_update(finished_recving)
+        finished_dumps = finished_req_ids & self._async_dump_req_ids
+        self._drain_best_effort_dump_tasks(finished_dumps)
+        self._rank_consistency.finish_dump(finished_dumps)
+        self._async_dump_req_ids.difference_update(finished_dumps)
+        finished_sending = finished_dumps - pending_async_loads - finished_recving
         return finished_sending or None, finished_recving or None
 
     def get_transfer_results(self, finished_req_ids: set[str]):
@@ -2904,14 +2967,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             # timeout/cancel/drain path to run before HBM can be reclaimed.
             self._load_wait_executor.shutdown(wait=True)
             self._load_wait_executor = None
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, object] | None]:
-        # Scheduler side method
-        return True, None
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):

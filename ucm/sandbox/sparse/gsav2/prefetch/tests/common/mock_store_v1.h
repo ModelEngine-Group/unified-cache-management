@@ -9,10 +9,10 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "kvcache_pre_detail.h"
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "type/types.h"
+#include "kvcache_pre_detail.h"
 #include "ucmstore_v1.h"
 
 namespace ucmprefetch_test {
@@ -38,6 +38,9 @@ public:
     struct CallRecord {
         std::string name;
         UC::Detail::TaskDesc task;
+        /* LoadOnToken only: per-shard token filters, recorded so tests can
+         * verify the splice address contract (offset/dstOffset). */
+        std::vector<UC::Detail::TokenFilter> filters;
         UC::Detail::TaskHandle handle{0};
         size_t blockCount{0};
     };
@@ -59,9 +62,24 @@ public:
     bool lookupFails{false};
     bool waitFails{false};
     bool checkFails{false};
+    /* Check -> false (task still running) instead of true (finished). */
+    bool checkRunning{false};
+    /* Check / Wait -> NotFound (e.g. handle already consumed by Wait). */
+    bool checkNotFound{false};
+    bool waitNotFound{false};
     bool loadFails{false};
     bool loadOnTokenFails{false};
     bool dumpFails{false};
+
+    /* Distinct-token payload mode for LoadOnToken (off by default keeps the
+     * historical per-shard constant fill). When on, the fill byte encodes
+     * (shard index, tensor index, source in-block byte offset):
+     *     fill = (shardIdx * 16 + tensorIdx + range.offset + 1) & 0xFF
+     * where range.offset = tokenIdxInBlock * tokenBytes. Two source tokens
+     * therefore never collide inside one splice window, so end-to-end tests
+     * can detect a transposed / mis-ordered token copy through the byte
+     * values alone (the default fill is constant per shard and cannot). */
+    bool distinctTokenPayload{false};
 
     /* Configuration of canned per-shard payloads written into DDR addresses. */
     void SetHostBufferPayload(std::size_t bytesPerBlock, std::size_t kvLayerBytes)
@@ -120,12 +138,19 @@ public:
         /* DDR contract: for shards carrying a host address, write a deterministic
          * per-shard payload (shard index + 1, mod 256) into the address so tests
          * can verify the downstream copy pipeline. This mirrors how the real
-         * store fills the caller-provided DDR staging slots. */
+         * store fills the caller-provided DDR staging slots: the real H2D path
+         * indexes addrs[i] per tensor slot, and callers pad unused slots with
+         * nullptr (see BuildIndexerLoadTask's kStoreTensorCount-padded addrs),
+         * so the mock takes the first NON-NULL slot. Taking addrs[0]
+         * unconditionally would pick the nullptr padding of slot-padded
+         * callers and silently write nothing. */
         for (std::size_t i = 0; i < task.size(); ++i) {
             void* addr = nullptr;
             for (const auto& a : task[i].addrs) {
-                addr = a;
-                break;
+                if (a != nullptr) {
+                    addr = a;
+                    break;
+                }
             }
             if (addr != nullptr && bytesPerBlock_ > 0) {
                 std::memset(addr, static_cast<int>((i + 1) & 0xFF), bytesPerBlock_);
@@ -140,6 +165,7 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         CallRecord r{"LoadOnToken"};
         r.task = task;
+        r.filters = filter;
         r.handle = NextHandle();
         r.blockCount = task.size();
         calls.push_back(std::move(r));
@@ -165,17 +191,19 @@ public:
          * per-tensor TokenRanges from the (virtual) cache slot into
          * dst + range.dstOffset, where dst is the shard's single host
          * address. The mock cannot see the slot contents, so it fills each
-         * covered range with a deterministic payload: (shard index + tensor
-         * index + 1, mod 256). The K leg (ranges[0]) and V leg (ranges[1])
-         * of a shard thus get distinguishable bytes, letting tests verify
-         * the downstream merge pipeline. */
+         * covered range with a deterministic payload. Default mode is a
+         * per-(shard, tensor) constant; distinctTokenPayload derives the
+         * fill from the SOURCE range.offset as well, making every source
+         * token byte-distinguishable inside a splice window. */
         for (std::size_t i = 0; i < task.size(); ++i) {
             auto* dst = static_cast<std::uint8_t*>(task[i].addrs.front());
             const auto& tokenFilter = filter[i];
             for (std::size_t t = 0; t < tokenFilter.ranges.size(); ++t) {
-                const int fill = static_cast<int>((i + t + 1) & 0xFF);
                 for (const auto& range : tokenFilter.ranges[t]) {
                     if (range.length == 0) { continue; }
+                    const int fill = distinctTokenPayload
+                                         ? static_cast<int>((i * 16 + t + range.offset + 1) & 0xFF)
+                                         : static_cast<int>((i + t + 1) & 0xFF);
                     std::memset(static_cast<void*>(dst + range.dstOffset), fill, range.length);
                 }
             }
@@ -194,10 +222,15 @@ public:
         return UC::Detail::TaskHandle{r.handle};
     }
 
-    UC::Expected<bool> Check(UC::Detail::TaskHandle) override
+    UC::Expected<bool> Check(UC::Detail::TaskHandle handle) override
     {
+        std::lock_guard<std::mutex> lock(mu_);
+        CallRecord r{"Check"};
+        r.handle = handle;
+        calls.push_back(std::move(r));
+        if (checkNotFound) { return UC::Status::NotFound(); }
         if (checkFails) { return UC::Status::Error("check-failed-injected"); }
-        return true;
+        return !checkRunning;
     }
 
     UC::Status Wait(UC::Detail::TaskHandle handle) override
@@ -206,6 +239,7 @@ public:
         CallRecord r{"Wait"};
         r.handle = handle;
         calls.push_back(std::move(r));
+        if (waitNotFound) { return UC::Status::NotFound(); }
         if (waitFails) { return UC::Status::Error("wait-failed-injected"); }
         return UC::Status::OK();
     }

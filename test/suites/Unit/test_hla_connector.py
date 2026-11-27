@@ -6,9 +6,13 @@ or establish the safety of every model-selection/state-copy configuration.
 """
 
 import ast
+import concurrent.futures
 import math
+import sys
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,7 +35,10 @@ class FullAttentionSpec(KVCacheSpec):
 
 
 class MLAAttentionSpec(FullAttentionSpec):
-    pass
+    def __init__(self, **kwargs):
+        kwargs.setdefault("is_index_group_leader", False)
+        kwargs.setdefault("tokens_per_state", 1)
+        super().__init__(**kwargs)
 
 
 class MambaSpec(KVCacheSpec):
@@ -84,6 +91,7 @@ def hla():
         "state_group_ids",
         "blnhc_layer_role",
         "blnhc_group_role",
+        "_is_embedded_mtp_layer",
     }
     methods = {
         "KVCacheGroupManager": {
@@ -105,17 +113,38 @@ def hla():
         },
         "UCMHybridLinearAttentionConnector": {
             "_scope_blocks",
+            "_scope_blocks_pcp",
+            "_setup_cp_scoping",
+            "_make_other_rank_hashers",
             "_append_mamba_align_state_block",
             "_generate_hla_dispatch_meta",
+            "update_state_after_alloc",
             "build_connector_meta",
             "start_load_kv",
+            "_start_load_kv_async",
+            "_poll_pending_hla_loads",
+            "get_finished",
+            "get_transfer_results",
+            "request_finished_all_groups",
+            "shutdown",
+            "_supports_request_async_load",
             "_mark_load_failed",
         },
         "UCMHybridLinearAttentionLayerWiseConnector": {
+            "layerwise_engine_config_error",
+            "register_kv_caches",
+            "_build_checkpoint_windows",
             "_submit_layer_load",
+            "_submit_window_load",
+            "_wait_window_load",
+            "_wait_layer_load_pair",
+            "_wait_ple_on_same_layer",
+            "_submit_layer_dump",
+            "_drain_unwaited_loads",
+            "wait_for_layer_load",
+            "save_kv_layer",
             "_plan_row_saves",
             "wait_for_save",
-            "_is_full_cudagraph",
             "start_load_kv",
             "_submit_request_load_tasks_for_row",
             "_wait_row_load",
@@ -130,6 +159,7 @@ def hla():
             "GroupInfo",
             "HLARequestMeta",
             "HLARequestDispatchMeta",
+            "HLAPendingLoad",
         }:
             nodes.append(node)
         elif isinstance(node, ast.ClassDef) and node.name in methods:
@@ -138,6 +168,10 @@ def hla():
                 item
                 for item in node.body
                 if getattr(item, "name", None) in methods[node.name]
+                or (
+                    node.name == "UCMHybridLinearAttentionLayerWiseConnector"
+                    and isinstance(item, ast.Assign)
+                )
             ]
             nodes.append(node)
         elif isinstance(node, ast.Assign) and any(
@@ -151,17 +185,21 @@ def hla():
             "_BLNHC_UNHASHED_ROLES assignment missing from hla_connector.py"
         )
     connector_path = ROOT / "ucm/integration/vllm/ucm_connector.py"
+    connector_names = {
+        "KVCacheSegment",
+        "RequestMeta",
+        "RequestDispatchMeta",
+        "PendingLoadTask",
+        "UCMConnectorMetadata",
+        "build_kv_hash_meta",
+        "_get_sparse_c8_flags",
+        "_record_counter",
+    }
     base_nodes = [
         node
         for node in ast.parse(connector_path.read_text(encoding="utf-8-sig")).body
-        if isinstance(node, ast.ClassDef)
-        and node.name
-        in {
-            "KVCacheSegment",
-            "RequestMeta",
-            "RequestDispatchMeta",
-            "UCMConnectorMetadata",
-        }
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        and node.name in connector_names
     ]
     for node in base_nodes:
         if node.name == "UCMConnectorMetadata":
@@ -178,6 +216,9 @@ def hla():
         "Callable": Callable,
         "List": List,
         "Optional": Optional,
+        # Stand-in for the engine's transfer-results type so the async
+        # failure channel can be asserted without a vllm dependency.
+        "KVConnectorTransferResults": SimpleNamespace,
         "KVCacheSpec": KVCacheSpec,
         "FullAttentionSpec": FullAttentionSpec,
         "MLAAttentionSpec": MLAAttentionSpec,
@@ -189,6 +230,13 @@ def hla():
         "current_platform": SimpleNamespace(
             device_type="npu", is_cuda_alike=lambda: False
         ),
+        "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
+        "Task": object,
+        "Future": Future,
+        "ThreadPoolExecutor": ThreadPoolExecutor,
+        "request_hasher_module": SimpleNamespace(
+            _layout_source_digest=lambda: "test-layout-digest"
+        ),
     }
     future = ast.ImportFrom(
         module="__future__", names=[ast.alias(name="annotations")], level=0
@@ -199,6 +247,13 @@ def hla():
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
     namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
         namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
+    )
+    namespace[
+        "UCMHybridLinearAttentionLayerWiseConnector"
+    ]._supports_request_async_load = classmethod(
+        namespace[
+            "UCMHybridLinearAttentionConnector"
+        ]._supports_request_async_load.__func__
     )
     return SimpleNamespace(**namespace)
 
@@ -225,11 +280,19 @@ def direct_load_connector(hla):
     connector.is_mla = True
     connector.need_load = True
     connector.layer_order = ["mla", "state"]
-    connector.store = object()
+    # store.wait must be callable: async submissions dispatch background
+    # store.wait calls into the (lazy) executor.
+    connector.store = SimpleNamespace(wait=lambda task: None)
     connector._failure_req_ids = set()
     connector._invalid_block_ids = set()
     connector._connector_worker_meta = SimpleNamespace(mark_failed=MagicMock())
     connector._load_bytes_total = 0
+    connector._pending_hla_loads = {}
+    connector._failed_hla_loads = set()
+    connector._finished_async_load_req_ids = set()
+    connector._load_wait_executor = None
+    connector._load_wait_workers = 2
+    connector.use_request_async_load = False
     connector.device = SimpleNamespace(synchronize=MagicMock())
     layout = hla.HybridLinearAttentionLayout.__new__(hla.HybridLinearAttentionLayout)
     layout.direct_group_bytes = {0: 64, 1: 16}
@@ -335,6 +398,221 @@ def test_gqa_direct_load_keeps_all_rank_scoped_keys_in_one_task(direct_load_conn
     assert call.args[2] == [b"kv0", b"kv1", b"state@1", b"state@1"]
     assert call.kwargs == {"distribute_backend_load": False}
     connector._rank_consistency.wait_load.assert_called_once()
+
+
+def test_async_alloc_dispatches_checkpoint_state_only(hla, state_connector):
+    connector = state_connector
+    connector.use_request_async_load = True
+    req_meta = _restore_request_meta(hla)
+    # Async allocation extends the state table with exactly the external-hit
+    # blocks — no scratch tail, so the running slot is out of bounds here.
+    req_meta.group_vllm_block_ids[1] = [21, 22]
+    connector.requests_meta = {"req": req_meta}
+    blocks = SimpleNamespace(get_block_ids=lambda: req_meta.group_vllm_block_ids)
+
+    connector.update_state_after_alloc(
+        SimpleNamespace(request_id="req"), blocks, num_external_tokens=8
+    )
+
+    dispatch = connector._pending_async_load_dispatches["req"]
+    assert dispatch.load_async
+    assert dispatch.load_block_ids == (
+        [b"fa0", b"fa1", b"checkpoint"],
+        [11, 12, 22],
+    )
+    assert dispatch.dump_block_ids == ([], [])
+
+    output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+    metadata = connector.build_connector_meta(output)
+    assert metadata.request_meta["req"] is dispatch
+    assert connector._pending_async_load_dispatches == {}
+
+    output.scheduled_new_reqs = [
+        SimpleNamespace(req_id="req", block_ids=req_meta.group_vllm_block_ids)
+    ]
+    output.num_scheduled_tokens = {"req": 1}
+    resumed = connector.build_connector_meta(output).request_meta["req"]
+    assert resumed.load_block_ids == ([], [])
+    assert not resumed.load_async
+    assert connector.request_finished_all_groups(
+        SimpleNamespace(request_id="req"), req_meta.group_vllm_block_ids
+    ) == (False, None)
+
+
+def test_async_flag_dispatches_all_requests_without_waiting(direct_load_connector):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    sync_data = connector.request_data[0]
+    connector.request_data.append(("async-req", *sync_data[1:]))
+    metadata = connector._get_connector_metadata()
+    metadata.request_meta["req"].load_async = True
+    metadata.request_meta["async-req"] = SimpleNamespace(
+        load_async=True,
+        load_full_attn_count=2,
+        load_block_ids=(list(sync_data[1]), list(sync_data[3])),
+    )
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(request_id=next(iter(requests)))
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit, wait_load=MagicMock()
+    )
+    connector.start_load_kv(SimpleNamespace())
+
+    connector.device.synchronize.assert_not_called()
+    connector._rank_consistency.wait_load.assert_not_called()
+    assert set(connector._pending_hla_loads) == {"req", "async-req"}
+    assert len(connector._pending_hla_loads["async-req"].tasks) == 2
+
+
+def test_async_direct_load_waits_for_mla_and_state_before_completion(
+    hla,
+    direct_load_connector,
+):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    dispatch = connector._get_connector_metadata().request_meta["req"]
+    dispatch.load_async = True
+    # Each background store.wait blocks on its own event, so the test drives
+    # per-task completion exactly like the Store deadline would.
+    done = {"mla": threading.Event(), "state": threading.Event()}
+    waits = []
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(label="mla" if distribute_backend_load else "state")
+
+    connector.store = SimpleNamespace(
+        wait=lambda task: done[task.label].wait(timeout=5)
+    )
+
+    def wait_load(task, wait=None):
+        # Mirror rank_consistency.wait_load: invoke the background wait
+        # callable so its result/failure surfaces here.
+        waits.append(task.label)
+        if wait is not None:
+            wait()
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit,
+        wait_load=wait_load,
+    )
+    connector.start_load_kv(SimpleNamespace())
+    try:
+        connector.device.synchronize.assert_not_called()
+        assert not waits
+        pending = connector._pending_hla_loads["req"]
+        assert len(pending.tasks) == 2
+        assert not any(f.done() for f in pending.wait_futures.values())
+        assert connector.get_finished(set()) == (None, None)
+
+        done["mla"].set()
+        assert connector.get_finished(set()) == (None, None)
+
+        done["state"].set()
+        # Let the background threads observe the events before polling.
+        concurrent.futures.wait(pending.wait_futures.values(), timeout=5)
+        # Finished req ids trigger the cancel-drain path: the request's
+        # loads are drained immediately and reported as complete.
+        assert connector.get_finished({"req"}) == (None, {"req"})
+        assert waits == ["mla", "state"]
+        assert not connector._pending_hla_loads
+        assert not connector._invalid_block_ids
+        hla.ucmmetrics.update_stats.assert_called_with(
+            {
+                "load_bytes_total": 160,  # 2 MLA blocks * 64 + 2 state * 16
+                "load_blocks_num": 4,
+                "load_requests_num": 1,
+            }
+        )
+
+        assert connector.get_finished({"req", "sync-req"}) == (None, None)
+    finally:
+        for event in done.values():
+            event.set()
+        connector.shutdown()
+
+
+def test_synchronous_finished_req_returns_no_async_completion(
+    direct_load_connector,
+):
+    assert direct_load_connector.get_finished({"req"}) == (None, None)
+
+
+def test_async_direct_load_failure_drains_remaining_state(direct_load_connector):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    connector._get_connector_metadata().request_meta["req"].load_async = True
+    state_done = threading.Event()
+
+    def submit(store, requests, keys, shards, ptrs, *, distribute_backend_load):
+        return SimpleNamespace(label="mla" if distribute_backend_load else "state")
+
+    def wait(task):
+        if task.label == "mla":
+            raise RuntimeError("MLA load failed")
+        state_done.wait(timeout=5)
+
+    connector.store = SimpleNamespace(wait=wait)
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=submit,
+        # Mirror rank_consistency.wait_load: invoke the background wait
+        # callable so the injected RuntimeError surfaces and fails the load.
+        wait_load=lambda task, wait=None: None if wait is None else wait(),
+    )
+    connector.start_load_kv(SimpleNamespace())
+
+    assert connector.get_finished(set()) == (None, None)
+    assert "req" in connector._pending_hla_loads
+
+    state_done.set()
+    concurrent.futures.wait(
+        connector._pending_hla_loads["req"].wait_futures.values(), timeout=5
+    )
+    results = connector.get_transfer_results(set())
+    assert results.finished_recving == {"req"}
+    assert results.failed_recving == {"req"}
+    assert not results.finished_sending
+    assert not connector._pending_hla_loads
+    assert not connector._invalid_block_ids
+    connector._connector_worker_meta.mark_failed.assert_called_with("req")
+
+
+def test_async_direct_load_submit_failure_does_not_use_flat_block_ids(
+    direct_load_connector,
+):
+    connector = direct_load_connector
+    connector.use_request_async_load = True
+    connector._get_connector_metadata().request_meta["req"].load_async = True
+
+    def submit(*args, **kwargs):
+        raise RuntimeError("submit failed")
+
+    connector._rank_consistency = SimpleNamespace(submit_load=submit)
+    connector.start_load_kv(SimpleNamespace())
+
+    # An immediate submit failure completes the request in the same call:
+    # it lands in _finished_async_load_req_ids, then flows through
+    # get_transfer_results as failed_recving without flat block ids.
+    results = connector.get_transfer_results(set())
+    assert results.finished_recving == {"req"}
+    assert results.failed_recving == {"req"}
+    assert not results.finished_sending
+    assert not connector._invalid_block_ids
+    connector._connector_worker_meta.mark_failed.assert_called_with("req")
+
+
+def test_request_async_is_scoped_to_direct_hla(hla):
+    assert hla.UCMHybridLinearAttentionConnector._supports_request_async_load()
+    assert (
+        not hla.UCMHybridLinearAttentionLayerWiseConnector._supports_request_async_load()
+    )
 
 
 @pytest.mark.parametrize(
@@ -869,6 +1147,11 @@ def state_connector(hla):
         ],
         compute_mamba_align_state_hash=MagicMock(return_value=b"checkpoint"),
     )
+    connector._pending_async_load_dispatches = {}
+    connector._async_load_req_ids = set()
+    connector._pending_hla_loads = {}
+    connector._failed_hla_loads = set()
+    connector._finished_async_load_req_ids = set()
     return connector
 
 
@@ -911,15 +1194,15 @@ def test_state_restore_selects_checkpoint_and_running_not_scratch(
         state_connector.group_manager.compute_mamba_align_state_hash.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing_checkpoint", "missing_running", "missing_hash"]
-)
-def test_incomplete_state_restore_does_not_append_partial_metadata(
+@pytest.mark.parametrize("failure", ["missing_checkpoint", "missing_hash"])
+def test_state_restore_without_checkpoint_slot_appends_nothing(
     hla, state_connector, failure
 ):
+    # Without the checkpoint slot there is nothing worth restoring: a lone
+    # running-slot seed would compute from state no future request could
+    # reuse, so the whole state restore is skipped.
     tables = {
         "missing_checkpoint": [21],
-        "missing_running": [21, 22],
         "missing_hash": [21, 22, 23],
     }
     if failure == "missing_hash":
@@ -933,6 +1216,25 @@ def test_incomplete_state_restore_does_not_append_partial_metadata(
         keys, blocks, groups, req_meta, "req", 1, 8, "load", 1
     )
     assert (keys, blocks, groups) == ([b"existing"], [7], [0])
+    assert hla.logger.error.called
+
+
+def test_state_restore_tolerates_missing_running_slot(hla, state_connector):
+    # The checkpoint restore (correctness) survives a running slot that is
+    # out of bounds; only the promotion-seeding copy is skipped.
+    req_meta = hla.HLARequestMeta(
+        group_vllm_block_ids=[[], [21, 22]],
+        group_ucm_block_ids=[[], []],
+    )
+    keys, blocks, groups = [b"existing"], [7], [0]
+    state_connector._append_mamba_align_state_block(
+        keys, blocks, groups, req_meta, "req", 1, 8, "load", 1
+    )
+    assert (keys, blocks, groups) == (
+        [b"existing", b"checkpoint"],
+        [7, 22],
+        [0, 1],
+    )
     hla.logger.error.assert_called_once()
 
 
@@ -1209,57 +1511,744 @@ def test_is_npu_layer_major_blnhc(hla):
     assert not hla.is_npu_layer_major_blnhc(config("BLNHC", [ple_only]))
 
 
-class _FakeCUDAGraphMode:
-    """Mirrors vLLM CUDAGraphMode.has_full_cudagraphs() semantics."""
-
-    def __init__(self, name: str):
-        self.name = name
-
-    def has_full_cudagraphs(self) -> bool:
-        return self.name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
-
-
-def _layerwise_start_load_fixture(hla, cudagraph_mode: str):
-    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
-    connector.need_load = True
-    connector.layer_order = ["l0", "l1", "l2", "l3"]
-    connector._vllm_config = SimpleNamespace(
-        compilation_config=SimpleNamespace(
-            cudagraph_mode=_FakeCUDAGraphMode(cudagraph_mode)
+@pytest.mark.parametrize(
+    "architecture,device,expect_direct",
+    [
+        # The gate is platform-wide: on CUDA every architecture falls back to
+        # direct mode -- including the text-only variants and unknown models
+        # that an architecture allowlist would silently miss.
+        ("Qwen3_5ForConditionalGeneration", "cuda", True),
+        ("Qwen3_5ForCausalLM", "cuda", True),
+        ("Glm5NextForConditionalGeneration", "cuda", True),
+        ("Glm5NextForCausalLM", "cuda", True),
+        ("Qwen4ExpForConditionalGeneration", "cuda", True),
+        ("Qwen4ExpForCausalLM", "cuda", True),
+        ("KimiK3ForConditionalGeneration", "cuda", True),
+        ("KimiLinearForCausalLM", "cuda", True),
+        ("UnknownForConditionalGeneration", "cuda", True),
+        ("Qwen3_5ForConditionalGeneration", "npu", False),
+        ("Glm5NextForConditionalGeneration", "npu", False),
+        ("Qwen4ExpForConditionalGeneration", "npu", False),
+        ("KimiK3ForConditionalGeneration", "npu", False),
+        ("KimiLinearForCausalLM", "npu", False),
+        ("UnknownForConditionalGeneration", "npu", False),
+    ],
+)
+def test_layerwise_platform_gate_selects_direct_fallback(
+    hla, architecture, device, expect_direct
+):
+    hla.current_platform.device_type = device
+    hla.current_platform.is_cuda_alike = lambda: device == "cuda"
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(
+            hf_config=SimpleNamespace(architectures=[architecture])
         )
     )
+    fallback_log = (
+        hla.UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error(
+            config
+        )
+    )
+    if expect_direct:
+        assert fallback_log == (
+            "Layerwise mode is not supported on "
+            f"{device.upper()}; falling back to direct mode."
+        )
+    else:
+        assert fallback_log is None
+
+
+def test_checkpoint_windows_exclude_indexers_and_keep_mtp_and_tail(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    specs = {
+        "linear0": MambaSpec(mamba_cache_mode="align"),
+        "index0": MLAAttentionSpec(is_index_group_leader=False, tokens_per_state=4),
+        "full0": MLAAttentionSpec(is_index_group_leader=True),
+        "linear1": MambaSpec(mamba_cache_mode="align"),
+        "index1": MLAAttentionSpec(is_index_group_leader=False, tokens_per_state=4),
+        # Dense Kimi MLA leaves is_index_group_leader at its default False.
+        "full1": MLAAttentionSpec(),
+        "mtp_linear": MambaSpec(mamba_cache_mode="align"),
+        "mtp_full": FullAttentionSpec(),
+        "tail": MambaSpec(mamba_cache_mode="align"),
+    }
+    connector.layer_order = list(specs)
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[group(spec, name) for name, spec in specs.items()]
+    )
+
+    connector._build_checkpoint_windows()
+
+    assert connector.checkpoint_windows == [
+        ["linear0", "index0", "full0"],
+        ["linear1", "index1", "full1"],
+        ["mtp_linear", "mtp_full"],
+        ["tail"],
+    ]
+    assert connector._checkpoint_to_window == {
+        "full0": 0,
+        "full1": 1,
+        "mtp_full": 2,
+    }
+
+
+def test_checkpoint_windows_are_empty_for_a_linear_only_stage(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.layer_order = ["linear0", "linear1"]
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            group(MambaSpec(mamba_cache_mode="align"), name)
+            for name in connector.layer_order
+        ]
+    )
+    connector._build_checkpoint_windows()
+    assert connector.checkpoint_windows == []
+    assert connector._checkpoint_to_window == {}
+
+
+def test_flash_next_layer_order_keeps_ple_before_checkpoint_and_mtp_last(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    names = ["full3", "linear2", "ple2", "mtp_full"]
+    layout = SimpleNamespace(
+        slot_shard_size=16,
+        tensor_size_list=[16],
+        num_slots=1,
+        layer_anchors={name: object() for name in names},
+        layer_name_to_id={
+            "full3": 3,
+            "linear2": 2,
+            "ple2": 2,
+            "mtp_full": 0,
+        },
+        layer_name_to_slot={name: 0 for name in names},
+    )
+    mtp_group = group(FullAttentionSpec(), "mtp_full")
+    mtp_group.is_eagle_group = True
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            group(MambaSpec(mamba_cache_mode="align"), "linear2", "ple2"),
+            group(FullAttentionSpec(), "full3"),
+            mtp_group,
+        ]
+    )
+
+    def register_common(_kv_caches):
+        connector.layer_to_group = {
+            "linear2": 0,
+            "ple2": 0,
+            "full3": 1,
+            "mtp_full": 2,
+        }
+        connector.layer_to_slot = layout.layer_name_to_slot
+        return layout, None, None
+
+    connector._register_common = register_common
+    connector._create_store_bound = MagicMock()
+    connector._build_checkpoint_windows = MagicMock()
+
+    connector.register_kv_caches({})
+
+    assert connector.layer_order == ["linear2", "ple2", "full3", "mtp_full"]
+
+
+def test_flash_next_layer_order_keeps_target_layers_in_a_mixed_mtp_group(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    linear_names = [
+        "linear0",
+        "linear1",
+        "linear2",
+        "linear4",
+        "linear5",
+        "linear6",
+    ]
+    names = [*linear_names, "full3", "full7", "mtp_full"]
+    layout = SimpleNamespace(
+        slot_shard_size=16,
+        tensor_size_list=[16],
+        num_slots=1,
+        num_hidden_layers=8,
+        layer_anchors={name: object() for name in names},
+        layer_name_to_id={
+            "linear0": 0,
+            "linear1": 1,
+            "linear2": 2,
+            "full3": 3,
+            "linear4": 4,
+            "linear5": 5,
+            "linear6": 6,
+            "full7": 7,
+            "mtp_full": 8,
+            # Mixed-group member that never gets anchored.
+            "mtp_index": 8,
+        },
+        layer_name_to_slot={name: 0 for name in names},
+    )
+    # The eagle flag covers the target attention layers too.
+    mixed_group = group(FullAttentionSpec(), "full3", "full7", "mtp_full", "mtp_index")
+    mixed_group.is_eagle_group = True
+    connector._kv_cache_config = SimpleNamespace(
+        kv_cache_groups=[
+            *[
+                group(MambaSpec(mamba_cache_mode="align"), name)
+                for name in linear_names
+            ],
+            mixed_group,
+        ]
+    )
+
+    def register_common(_kv_caches):
+        connector.layer_to_group = {name: 0 for name in linear_names}
+        connector.layer_to_group.update({"full3": 1, "full7": 1, "mtp_full": 1})
+        connector.layer_to_slot = layout.layer_name_to_slot
+        return layout, None, None
+
+    connector._register_common = register_common
+    connector._create_store_bound = MagicMock()
+
+    connector.register_kv_caches({})
+
+    assert connector.layer_order == [
+        "linear0",
+        "linear1",
+        "linear2",
+        "full3",
+        "linear4",
+        "linear5",
+        "linear6",
+        "full7",
+        "mtp_full",
+    ]
+    # full3's save hook batches only the layers before it.
+    assert connector.checkpoint_windows == [
+        ["linear0", "linear1", "linear2", "full3"],
+        ["linear4", "linear5", "linear6", "full7"],
+        ["mtp_full"],
+    ]
+
+
+def test_layer_hook_submits_own_load_before_waiting(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector._connector_metadata = object()
+    connector.kv_cache_layout = SimpleNamespace(ple_layer_name=None)
+    connector.layer_order = ["linear0", "linear1", "linear2", "full3"]
+    connector.layer_pos = {name: pos for pos, name in enumerate(connector.layer_order)}
+    connector.layer_to_group = {name: 0 for name in connector.layer_order}
+    connector.layer_to_group["full3"] = 1
+    connector.layer_to_slot = {name: 0 for name in connector.layer_order}
+    connector._waited_layers = set()
+    connector._waited_group_slots = set()
+    connector._record_load_bytes = MagicMock()
+    events = []
+    submitted = set()
+
+    def submit(pos):
+        if 0 <= pos < len(connector.layer_order) and pos not in submitted:
+            submitted.add(pos)
+            events.append(("submit", pos))
+
+    connector._submit_layer_load = submit
+
+    def record_wait(pair):
+        events.append(("wait", pair))
+
+    connector._wait_layer_load_pair = record_wait
+
+    # A hook-order gap left full3's position unsubmitted when its wait fires.
+    connector.wait_for_layer_load("full3")
+
+    assert events == [("submit", 3), ("wait", (1, 0))]
+    connector._record_load_bytes.assert_called_once()
+
+
+def test_layer_hook_waits_same_layer_ple_once(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector._connector_metadata = object()
+    connector.kv_cache_layout = SimpleNamespace(ple_layer_name="ple2")
+    connector.layer_order = ["linear2", "ple2"]
+    connector.layer_pos = {"linear2": 0, "ple2": 1}
+    connector.layer_name_to_id = {"linear2": 2, "ple2": 2}
+    connector.layer_to_group = {"linear2": 0, "ple2": 1}
+    connector.layer_to_slot = {"linear2": 0, "ple2": 0}
+    connector._waited_layers = set()
+    connector._waited_group_slots = set()
+    events = []
+    submitted = set()
+
+    def submit(pos):
+        if 0 <= pos < len(connector.layer_order) and pos not in submitted:
+            submitted.add(pos)
+            events.append(("submit", pos))
+
+    connector._submit_layer_load = submit
+    connector._wait_layer_load_pair = lambda pair: events.append(("wait", pair))
+
+    connector.wait_for_layer_load("linear2")
+    connector.wait_for_layer_load("linear2")
+
+    # Position 0 was never submitted; the hook must submit before waiting.
+    assert events == [
+        ("submit", 0),
+        ("wait", (0, 0)),
+        ("submit", 1),
+        ("wait", (1, 0)),
+    ]
+    assert connector._waited_layers == {"linear2", "ple2"}
+
+
+def _start_load_connector(hla, windows):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = True
+    connector.layer_order = [name for window in windows for name in window]
+    connector.checkpoint_windows = windows
+    connector.kv_cache_layout = SimpleNamespace(ple_layer_name=None)
     connector.device = SimpleNamespace(synchronize=MagicMock())
     connector._reset_transfer_state = MagicMock()
     connector._prepare_load_plan = MagicMock()
     connector._get_connector_metadata = MagicMock(
         return_value=hla.UCMConnectorMetadata(request_meta={})
     )
-    submitted: list[int] = []
-    drained: list[bool] = []
-    connector._submit_layer_load = lambda pos: submitted.append(pos)
-    connector._drain_unwaited_loads = lambda: drained.append(True)
     connector._record_load_bytes = MagicMock()
-    return connector, submitted, drained
+    return connector
 
 
-@pytest.mark.parametrize(
-    "cudagraph_mode",
-    ["FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"],
-)
-def test_layerwise_full_cudagraph_loads_all_positions_before_forward(
-    hla, cudagraph_mode
-):
-    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
+def test_ascend_start_load_prefetches_two_layers(hla):
+    connector = _start_load_connector(hla, [["l0"], ["l1"], ["l2"], ["l3"]])
+    events = []
+    connector._submit_layer_load = lambda pos: events.append(("submit", pos))
+
     connector.start_load_kv(SimpleNamespace())
-    assert submitted == [0, 1, 2, 3]
-    assert drained == [True]
-    connector._record_load_bytes.assert_called_once()
 
-
-@pytest.mark.parametrize("cudagraph_mode", ["NONE", "PIECEWISE"])
-def test_layerwise_non_full_keeps_depth2_prefetch(hla, cudagraph_mode):
-    connector, submitted, drained = _layerwise_start_load_fixture(hla, cudagraph_mode)
-    connector.start_load_kv(SimpleNamespace())
-    assert submitted == [0, 1]
-    assert drained == []
+    assert events == [("submit", 0), ("submit", 1)]
     connector._record_load_bytes.assert_not_called()
+
+
+def test_ascend_layer_load_pipelines_each_layer(hla):
+    windows = [
+        ["linear0", "full0"],
+        ["linear1", "full1"],
+        ["tail_linear"],
+    ]
+    connector = _start_load_connector(hla, windows)
+    connector._connector_metadata = object()
+    connector.layer_pos = {name: pos for pos, name in enumerate(connector.layer_order)}
+    connector.layer_to_group = {name: 0 for name in connector.layer_order}
+    connector.layer_to_slot = connector.layer_pos
+    connector._submitted_positions = set()
+    connector._submitted_group_slots = set()
+    connector._waited_group_slots = set()
+    connector._waited_layers = set()
+    events = []
+
+    def submit(pos):
+        if (
+            0 <= pos < len(connector.layer_order)
+            and pos not in connector._submitted_positions
+        ):
+            connector._submitted_positions.add(pos)
+            events.append(("submit", pos))
+
+    connector._submit_layer_load = submit
+    connector._wait_layer_load_pair = lambda pair: events.append(("wait", pair[1]))
+    connector._record_load_bytes = lambda: events.append(("record",))
+
+    connector.start_load_kv(SimpleNamespace())
+    assert events == [("submit", 0), ("submit", 1)]
+
+    connector.wait_for_layer_load("linear0")
+    connector.wait_for_layer_load("linear0")
+    assert events[2:] == [("wait", 0), ("submit", 2)]
+    in_flight = {
+        pos
+        for pos in connector._submitted_positions
+        if (0, pos) not in connector._waited_group_slots
+    }
+    assert in_flight == {1, 2}
+
+    connector.wait_for_layer_load("full0")
+    connector.wait_for_layer_load("linear1")
+    connector.wait_for_layer_load("full1")
+    connector.wait_for_layer_load("tail_linear")
+    assert events == [
+        ("submit", 0),
+        ("submit", 1),
+        ("wait", 0),
+        ("submit", 2),
+        ("wait", 1),
+        ("submit", 3),
+        ("wait", 2),
+        ("submit", 4),
+        ("wait", 3),
+        ("wait", 4),
+        ("record",),
+    ]
+
+
+def test_wait_for_save_submits_tail_without_checkpoint(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.need_load = False
+    connector._connector_metadata = object()
+    connector.layer_order = ["linear0", "full0", "tail0", "tail1"]
+    connector.checkpoint_windows = [["linear0", "full0"], ["tail0", "tail1"]]
+    connector._checkpoint_to_window = {"full0": 0}
+    connector._dumped_layers = {"linear0", "full0"}
+    connector._deferred_dump_layers = set()
+    connector._dump_plan = None
+    connector._dumped_group_slots = set()
+    connector._submitted_group_slots = set()
+    connector._waited_group_slots = set()
+    connector._dump_tasks = []
+    connector.is_save = False
+    connector._ensure_dump_plan = MagicMock()
+    dumped = []
+    connector._submit_layer_dump = lambda name: dumped.append(name)
+    connector._submit_unowned_slot_dumps = MagicMock()
+    connector._submit_commit_dump = MagicMock()
+    connector._wait_dump_tasks = MagicMock()
+    connector._record_load_bytes = MagicMock()
+
+    connector.wait_for_save()
+
+    assert dumped == ["tail0", "tail1"]
+    connector._wait_dump_tasks.assert_called_once_with()
+
+
+def test_checkpoint_save_batches_window_and_defers_commit_layers(hla):
+    connector = hla.UCMHybridLinearAttentionLayerWiseConnector()
+    connector.checkpoint_windows = [
+        ["linear0", "index0", "full0"],
+        ["linear1", "full1"],
+    ]
+    connector._checkpoint_to_window = {"full0": 0, "full1": 1}
+    connector._connector_metadata = object()
+    connector._dumped_layers = set()
+    connector._deferred_dump_layers = {"full0"}
+    dumped = []
+
+    def submit(name):
+        dumped.append(name)
+        connector._dumped_layers.add(name)
+
+    connector._submit_layer_dump = submit
+    connector.save_kv_layer("linear0", None, None)
+    assert dumped == []
+
+    connector.save_kv_layer("full0", None, None)
+    connector.save_kv_layer("full0", None, None)
+    assert dumped == ["linear0", "index0"]
+    assert "full0" not in connector._dumped_layers
+
+    connector.save_kv_layer("full1", None, None)
+    connector.save_kv_layer("full1", None, None)
+    assert dumped == ["linear0", "index0", "linear1", "full1"]
+
+
+# ---------------------------------------------------------------------------
+# Pure-PCP scoping: _scope_blocks dump grid and replica dedup.
+#
+# PCP policy (see UCMHybridLinearAttentionConnector._scope_blocks_pcp): no
+# hash changes; replicated content spreads across the PCP axis (MLA slice
+# grid widens to tp_size x pcp_world_size, each TP position's KDA / non-MLA
+# shard dump spreads across its PCP ranks), except TP=1 where every PCP
+# rank stores its full KDA section under a pcp_rank namespace; loads are
+# never sliced except for that TP=1 namespace.
+# ---------------------------------------------------------------------------
+
+
+def _cp_scope_connector(hla, tp_rank, tp_size, pcp_rank, pcp_world_size, is_mla=True):
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector.tp_rank = tp_rank
+    connector.tp_size = tp_size
+    connector.is_mla = is_mla
+    connector.pcp_rank = pcp_rank
+    connector.pcp_world_size = pcp_world_size
+    connector.request_hasher = lambda key: b"rk:" + key
+    return connector
+
+
+def _cp_scope_ids(n_mla=12, n_kda=3):
+    mla = [bytes([i]) for i in range(n_mla)]
+    kda = [bytes([0x80 + i]) for i in range(n_kda)]
+    return mla + kda, list(range(n_mla + n_kda)), [0] * n_mla + [1] * n_kda, n_mla
+
+
+def test_scope_blocks_pcp_dump_slices_partition_the_grid(hla):
+    """MLA dump slices over the tp x pcp grid are disjoint and complete."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    mla_ids = set(ucm[:n])
+    seen = set()
+    for pcp_rank in range(2):
+        for tp_rank in range(4):
+            connector = _cp_scope_connector(hla, tp_rank, 4, pcp_rank, 2)
+            grid = 4 * 2
+            g = pcp_rank * 4 + tp_rank
+            expected = ucm[n * g // grid : n * (g + 1) // grid]
+            _, scoped, _, _ = connector._scope_blocks(ucm, vllm, groups, n, True)
+            rank_mla = [key for key in scoped if key in mla_ids]
+            assert rank_mla == expected
+            assert not seen & set(rank_mla)
+            seen.update(rank_mla)
+    assert seen == mla_ids
+
+
+def test_scope_blocks_pcp_spreads_kda_across_pcp_ranks(hla):
+    """KDA shards spread across a TP position's PCP ranks; union = one copy."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    for tp_rank in (0, 1):
+        seen_scoped = set()
+        seen_context = set()
+        for pcp_rank in (0, 1):
+            connector = _cp_scope_connector(hla, tp_rank, 4, pcp_rank, 2)
+            context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+                ucm, vllm, groups, n, True
+            )
+            grid = 4 * 2
+            g = pcp_rank * 4 + tp_rank
+            mla_len = n * (g + 1) // grid - n * g // grid
+            kda_raw = ucm[n:]
+            start = len(kda_raw) * pcp_rank // 2
+            end = len(kda_raw) * (pcp_rank + 1) // 2
+            expected_raw = kda_raw[start:end]
+            assert context[mla_len:] == expected_raw
+            if tp_rank == 0:
+                assert scoped[mla_len:] == expected_raw
+            else:
+                assert scoped[mla_len:] == [b"rk:" + key for key in expected_raw]
+            assert scoped_vllm[mla_len:] == vllm[n:][start:end]
+            assert scoped_groups[mla_len:] == groups[n:][start:end]
+            seen_scoped.update(scoped[mla_len:])
+            seen_context.update(context[mla_len:])
+        if tp_rank == 0:
+            assert seen_context == set(ucm[n:])
+        else:
+            assert seen_scoped == {b"rk:" + key for key in ucm[n:]}
+
+
+def test_scope_blocks_pcp_loads_are_never_sliced(hla):
+    """Every PCP rank loads the full MLA set plus its own KDA namespace."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2)
+        _, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, n, False
+        )
+        assert scoped[:n] == ucm[:n]
+        assert scoped[n:] == [b"rk:" + key for key in ucm[n:]]
+        assert scoped_vllm == vllm
+        assert scoped_groups == groups
+
+
+def test_scope_blocks_without_pcp_matches_tp_only_scoping(hla):
+    """pcp_world_size=1 keeps the historical TP-only behavior."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    connector = _cp_scope_connector(hla, 1, 4, 0, 1)
+    _, scoped, _, _ = connector._scope_blocks(ucm, vllm, groups, n, True)
+    start, end = n * 1 // 4, n * 2 // 4
+    assert scoped[: end - start] == ucm[start:end]
+    assert scoped[end - start :] == [b"rk:" + key for key in ucm[n:]]
+
+
+def test_scope_blocks_non_mla_pcp_spreads_dump_across_pcp_ranks(hla):
+    ucm = [b"a", b"b"]
+    vllm, groups = [11, 22], [0, 0]
+    scoped_by_pcp = []
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2, is_mla=False)
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, 0, True
+        )
+        expected = ucm[pcp_rank : pcp_rank + 1]
+        assert context == expected
+        assert scoped == [b"rk:" + key for key in expected]
+        assert scoped_vllm == vllm[pcp_rank : pcp_rank + 1]
+        assert scoped_groups == groups[pcp_rank : pcp_rank + 1]
+        scoped_by_pcp.extend(scoped)
+    assert scoped_by_pcp == [b"rk:" + b"a", b"rk:" + b"b"]
+    for pcp_rank in (0, 1):
+        connector = _cp_scope_connector(hla, 1, 4, pcp_rank, 2, is_mla=False)
+        _, scoped_load, _, _ = connector._scope_blocks(ucm, vllm, groups, 0, False)
+        assert scoped_load == [b"rk:" + key for key in ucm]
+
+
+def test_scope_blocks_tp1_pcp_kda_full_section_per_rank_namespace(hla):
+    """TP=1+PCP: every PCP rank stores its FULL KDA section under a
+    pcp_rank namespace on both dump and load -- self-consistent for any
+    content distribution (sharded or replicated); MLA still spreads
+    across the pcp grid."""
+    ucm, vllm, groups, n = _cp_scope_ids()
+    mla_ids = set(ucm[:n])
+    seen_mla = set()
+    for pcp_rank in range(3):
+        prefix = b"shard%d:" % pcp_rank
+        connector = hla.UCMHybridLinearAttentionConnector()
+        connector.tp_rank = 0
+        connector.tp_size = 1
+        connector.is_mla = True
+        connector.pcp_rank = pcp_rank
+        connector.pcp_world_size = 3
+        connector._pcp_shard_hasher = lambda key, p=prefix: p + key
+        connector.request_hasher = lambda key: b"rk:" + key
+        expected_kda = (
+            list(ucm[n:]) if pcp_rank == 0 else [prefix + key for key in ucm[n:]]
+        )
+        # dump: MLA slice across the pcp grid; KDA full under its namespace.
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, n, True
+        )
+        mla_len = n * (pcp_rank + 1) // 3 - n * pcp_rank // 3
+        assert scoped[:mla_len] == ucm[n * pcp_rank // 3 : n * (pcp_rank + 1) // 3]
+        assert context[mla_len:] == ucm[n:]
+        assert scoped[mla_len:] == expected_kda
+        assert scoped_vllm[mla_len:] == vllm[n:]
+        assert scoped_groups[mla_len:] == groups[n:]
+        seen_mla.update(scoped[:mla_len])
+        # load: full MLA set + this rank's namespace KDA section.
+        _, scoped_load, scoped_vllm_load, _ = connector._scope_blocks(
+            ucm, vllm, groups, n, False
+        )
+        assert scoped_load[:n] == ucm[:n]
+        assert scoped_load[n:] == expected_kda
+        assert scoped_vllm_load == vllm
+    assert seen_mla == mla_ids
+
+
+def test_scope_blocks_non_mla_tp1_pcp_splits_gqa_and_gdn(hla):
+    """TP=1+PCP non-MLA: GQA stays shared (spread on dump); GDN state takes
+    the pcp_rank namespace with a full section per rank, dump and load."""
+    ucm = [b"a", b"b", b"s0", b"s1", b"s2"]
+    vllm = [10, 11, 20, 21, 22]
+    groups = [0, 0, 1, 1, 1]
+    for pcp_rank in range(2):
+        prefix = b"shard%d:" % pcp_rank
+        connector = hla.UCMHybridLinearAttentionConnector()
+        connector.tp_rank = 0
+        connector.tp_size = 1
+        connector.is_mla = False
+        connector.pcp_rank = pcp_rank
+        connector.pcp_world_size = 2
+        connector._state_group_ids = {1}
+        connector._pcp_shard_hasher = lambda key, p=prefix: p + key
+        connector.request_hasher = lambda key: b"rk:" + key
+        expected_gdn = (
+            list(ucm[2:]) if pcp_rank == 0 else [prefix + key for key in ucm[2:]]
+        )
+        # dump: GQA spread (1 of 2 blocks each), GDN full under the namespace.
+        context, scoped, scoped_vllm, scoped_groups = connector._scope_blocks(
+            ucm, vllm, groups, 0, True
+        )
+        assert scoped == ucm[pcp_rank : pcp_rank + 1] + expected_gdn
+        assert context == ucm[pcp_rank : pcp_rank + 1] + ucm[2:]
+        assert scoped_vllm == vllm[pcp_rank : pcp_rank + 1] + vllm[2:]
+        assert scoped_groups == [0, 1, 1, 1]
+        # load: full GQA set + this rank's namespaced GDN section.
+        _, scoped_load, scoped_vllm_load, _ = connector._scope_blocks(
+            ucm, vllm, groups, 0, False
+        )
+        assert scoped_load == ucm[:2] + expected_gdn
+        assert scoped_vllm_load == vllm
+
+
+def _cp_vllm_config(tp=1, pcp=1, dcp=1):
+    return SimpleNamespace(
+        model_config=SimpleNamespace(model="test-model", dtype="bfloat16"),
+        parallel_config=SimpleNamespace(
+            tensor_parallel_size=tp,
+            prefill_context_parallel_size=pcp,
+            decode_context_parallel_size=dcp,
+        ),
+        speculative_config=None,
+        additional_config={},
+        cache_config=SimpleNamespace(cache_dtype="auto"),
+        attention_config=SimpleNamespace(),
+    )
+
+
+def test_build_kv_hash_meta_has_no_pcp_field(hla):
+    """build_kv_hash_meta stays CP-free: non-hybrid models never see the
+    suffix, and the tp field already separates tp1+pcp2 from tp2+pcp1."""
+    tp1_meta = hla.build_kv_hash_meta(_cp_vllm_config(pcp=2), 0)
+    tp2_meta = hla.build_kv_hash_meta(_cp_vllm_config(tp=2), 0)
+    assert "pcp" not in tp1_meta
+    assert tp1_meta != tp2_meta
+
+
+class _FakeMetaHasher:
+    def __init__(self, meta):
+        self.meta_bytes = meta.encode()
+        self.seed = b"seed:" + self.meta_bytes
+
+
+def _patch_hasher_modules(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.request_hasher",
+        SimpleNamespace(RequestHasher=_FakeMetaHasher),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.ucm_connector",
+        SimpleNamespace(build_kv_hash_meta=lambda cfg, rank: f"meta:{rank}"),
+    )
+
+
+def test_setup_cp_scoping_scheduler_tp1_rebuilds_hasher_with_suffix(hla, monkeypatch):
+    """At TP=1+PCP the scheduler's own hasher carries the suffix: rank 0's
+    shard keys ARE the scheduler's chain and state hashes."""
+    _patch_hasher_modules(monkeypatch)
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config(pcp=2))
+    assert connector.request_hasher.meta_bytes == b"meta:0:pcp=2"
+    assert connector._seed == b"seed:meta:0:pcp=2"
+    assert connector.pcp_world_size == 2
+    assert connector.pcp_rank == 0  # scheduler never touches the group
+    assert connector._pcp_shard_hasher is None
+
+
+def test_setup_cp_scoping_scheduler_never_touches_the_pcp_group(hla):
+    """The scheduler process does not initialize the PCP group under the
+    multiprocess executor: the pcp size must come from parallel_config.
+    TP>1 needs no hasher rebuild at all."""
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config(tp=8, pcp=2))
+    assert connector.pcp_world_size == 2
+    assert connector.pcp_rank == 0
+    assert connector._pcp_shard_hasher is None
+
+
+def test_setup_cp_scoping_dcp_guard_fires_before_the_pcp_early_return(hla):
+    """pcp=1 + dcp>1 must raise instead of silently returning."""
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    with pytest.raises(ValueError, match="pure PCP only"):
+        connector._setup_cp_scoping(_cp_vllm_config(dcp=2))
+
+
+def test_setup_cp_scoping_pcp1_scheduler_is_a_noop(hla):
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._role = hla.KVConnectorRole.SCHEDULER
+    connector._setup_cp_scoping(_cp_vllm_config())
+    assert connector.pcp_world_size == 1
+    assert connector.pcp_rank == 0
+    assert connector._pcp_shard_hasher is None
+
+
+def test_make_other_rank_hashers_covers_pcp_shards_at_tp1(hla, monkeypatch):
+    """State shards live per-TP at TP>1 and per-pcp-shard at TP=1+PCP; the
+    base is_mla shortcut no longer skips hybrid KDA namespaces."""
+    _patch_hasher_modules(monkeypatch)
+    connector = hla.UCMHybridLinearAttentionConnector()
+    tp_hashers = connector._make_other_rank_hashers(_cp_vllm_config(tp=4))
+    assert [hasher.meta_bytes for hasher in tp_hashers] == [
+        b"meta:1",
+        b"meta:2",
+        b"meta:3",
+    ]
+    pcp_hashers = connector._make_other_rank_hashers(_cp_vllm_config(pcp=3))
+    assert [hasher.meta_bytes for hasher in pcp_hashers] == [
+        b"meta:1:pcp=3",
+        b"meta:2:pcp=3",
+    ]
+    assert connector._make_other_rank_hashers(_cp_vllm_config()) == []

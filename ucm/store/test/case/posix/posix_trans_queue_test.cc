@@ -41,6 +41,7 @@ TEST_F(UCPosixTransQueueTest, TransBlock)
 {
     using namespace UC::PosixStore;
     Config config;
+    config.ioDirect = false;
     config.tensorSize = 32768 * 64;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize;
@@ -146,6 +147,7 @@ TEST_F(UCPosixTransQueueTest, TransBlockLayerWise)
     using namespace UC::PosixStore;
     constexpr size_t nShards = 8;
     Config config;
+    config.ioDirect = false;
     config.tensorSize = 4096;
     config.shardSize = config.tensorSize;
     config.blockSize = config.shardSize * nShards;

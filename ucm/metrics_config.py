@@ -32,7 +32,6 @@ from ucm.shared.metrics import ucmmetrics
 logger = init_logger(__name__)
 
 METRIC_TYPES = ("counter", "gauge", "histogram")
-VLLM_EXCLUDED_METRICS = {"interval_lookup_hit_rates"}
 MULTIPROC_CONSUMER = "multiproc"
 VLLM_CONNECTOR_CONSUMER = "vllm_connector"
 ENABLE_METRICS_CONFIG_KEY = "enable_metrics"
@@ -131,7 +130,7 @@ def get_metric_definitions(config: dict[str, Any] | None) -> list[MetricDefiniti
                 vllm_connector_buckets = tuple(
                     float(bucket) for bucket in vllm_connector_buckets
                 )
-            vllm_connector_enabled = _metric_vllm_connector_enabled(name, item)
+            vllm_connector_enabled = _metric_vllm_connector_enabled(item)
             definitions.append(
                 MetricDefinition(
                     name=name,
@@ -263,10 +262,8 @@ def _as_bool(value: Any, default: bool) -> bool:
     return bool(value)
 
 
-def _metric_vllm_connector_enabled(name: str, item: dict[str, Any]) -> bool:
-    if "vllm_connector_enabled" in item:
-        return _as_bool(item.get("vllm_connector_enabled"), True)
-    return name not in VLLM_EXCLUDED_METRICS
+def _metric_vllm_connector_enabled(item: dict[str, Any]) -> bool:
+    return _as_bool(item.get("vllm_connector_enabled"), True)
 
 
 def _vllm_connector_value_scale(name: str, item: dict[str, Any]) -> float:

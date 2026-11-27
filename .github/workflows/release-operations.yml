@@ -1,0 +1,59 @@
+name: Release operations
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, edited, labeled, milestoned, demilestoned, closed, reopened]
+  pull_request_target:
+    types: [opened, edited, reopened, closed, ready_for_review, converted_to_draft]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ucm-release-operations-${{ github.repository }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: >-
+      (github.event_name != 'issue_comment' ||
+       (github.event.comment.user.type != 'Bot' &&
+        github.event.issue.pull_request == null &&
+        contains(github.event.issue.labels.*.name, 'release') &&
+          (startsWith(github.event.comment.body, '/release_init') ||
+           startsWith(github.event.comment.body, '/update') ||
+           startsWith(github.event.comment.body, '/release_check')))) &&
+      (github.event_name != 'issues' || github.event.action != 'labeled' ||
+       contains(fromJSON('["release","release-bug-archive","requirement","bug"]'), github.event.label.name))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute version operation
+        id: command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UCM_PROJECT_TOKEN: ${{ secrets.UCM_PROJECT_TOKEN }}
+        run: python .github/release-operations/controller.py
+      - name: Finalize command status
+        if: >-
+          ${{ always() && github.event_name == 'issue_comment' &&
+              (steps.command.outcome == 'failure' || steps.command.outcome == 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UCM_COMMAND_OUTCOME: ${{ steps.command.outcome }}
+        run: python .github/release-operations/controller.py --finalize "${UCM_COMMAND_OUTCOME}"

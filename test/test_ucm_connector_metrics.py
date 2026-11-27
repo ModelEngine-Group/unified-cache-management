@@ -352,6 +352,7 @@ def _install_stubs():
     )
     _install_module(
         "vllm.distributed.parallel_state",
+        get_pp_group=lambda: SimpleNamespace(world_size=1, rank_in_group=0),
         get_world_group=lambda: SimpleNamespace(local_rank=0, rank=0),
     )
     _install_module(
@@ -566,11 +567,6 @@ def _metrics_config(consumers=None):
                 "documentation": "Cache load duration in ms.",
                 "buckets": [1, 5],
             },
-            {
-                "name": "interval_lookup_hit_rates",
-                "documentation": "Prefer vLLM external prefix cache metrics.",
-                "buckets": [0.1, 0.5, 1.0],
-            },
         ],
     }
 
@@ -627,7 +623,6 @@ def test_config_definitions_register_enable_list_and_metric_names():
         "test_health",
         "load_duration",
         "cache_load_duration_ms",
-        "interval_lookup_hit_rates",
     ]
     assert by_name["load_duration"].vllm_connector_name == "ucm:load_duration"
     assert by_name["load_duration"].vllm_connector_buckets == (50, 100)
@@ -636,14 +631,12 @@ def test_config_definitions_register_enable_list_and_metric_names():
         by_name["cache_load_duration_ms"].vllm_connector_name
         == "ucm:cache_load_duration_ms"
     )
-    assert by_name["interval_lookup_hit_rates"].vllm_connector_enabled is False
     assert by_name["test_health"].multiprocess_mode == ""
     assert fake_ucmmetrics.created == [
         ("load_bytes_total", "counter", ()),
         ("test_health", "gauge", ()),
         ("load_duration", "histogram", (50, 100)),
         ("cache_load_duration_ms", "histogram", (1, 5)),
-        ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
     ]
 
 
@@ -952,7 +945,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
         {"test_health": 0.5},
         {
             "load_duration": ([0, 1, 0], 75.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
     )
     dispatcher = get_metrics_dispatcher(config)
@@ -965,7 +957,6 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
     assert multiproc_stats[0] == {"load_bytes_total": 4096.0}
     assert multiproc_stats[1] == {"test_health": 0.5}
     assert multiproc_stats[2]["load_duration"] == ([0, 1, 0], 75.0)
-    assert multiproc_stats[2]["interval_lookup_hit_rates"] == ([1, 0, 0, 0], 0.1)
     assert vllm_stats[0] == {"load_bytes_total": 4096.0}
     assert vllm_stats[1] == {"test_health": 0.5}
     assert vllm_stats[2] == {"load_duration": ([0, 1, 0], 75.0)}
@@ -1065,7 +1056,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         gauge_stats={"test_health": 0.75},
         histogram_stats={
             "load_duration": ([1, 2, 0], 150.0),
-            "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
         },
         worker_rank=7,
         metric_definitions=definitions,
@@ -1079,7 +1069,6 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
         "sum": 150.0,
     }
     assert "not_configured" not in stats.data["counters_by_rank"]["7"]
-    assert "interval_lookup_hit_rates" not in stats.data["histograms_by_rank"]["7"]
 
 
 def test_stats_record_aggregate_clone_and_reset_preserve_worker_rank():
@@ -2013,8 +2002,8 @@ def test_connector_dashboard_layout_and_metrics():
 
     layerwise_panels = panels[10:12]
     assert [panel["title"] for panel in layerwise_panels] == [
-        "Layerwise Per-Layer Load Duration",
         "Layerwise All-Layer Load Duration Sum",
+        "Layerwise All-Layer Load Wait Duration Sum",
     ]
     assert [panel["gridPos"] for panel in layerwise_panels] == [
         {"h": 8, "w": 12, "x": 0, "y": 40},
@@ -2023,17 +2012,24 @@ def test_connector_dashboard_layout_and_metrics():
     for panel, metric in zip(
         layerwise_panels,
         (
-            "layerwise_layer_load_duration_ms",
             "layerwise_batch_load_duration_sum_ms",
+            "layerwise_batch_load_wait_duration_sum_ms",
         ),
         strict=True,
     ):
-        assert len(panel["targets"]) == 3
+        assert len(panel["targets"]) == 4
+        assert [
+            target["legendFormat"].split(" ", maxsplit=1)[0]
+            for target in panel["targets"]
+        ] == ["avg", "p50", "p90", "p99"]
+        average_expr = panel["targets"][0]["expr"]
+        assert f"ucm:{metric}_sum" in average_expr
+        assert f"ucm:{metric}_count" in average_expr
         assert all(
-            f"ucm:{metric}_bucket" in target["expr"] for target in panel["targets"]
+            f"ucm:{metric}_bucket" in target["expr"] for target in panel["targets"][1:]
         )
         assert [
-            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"]
+            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"][1:]
         ] == [
             "histogram_quantile(0.5",
             "histogram_quantile(0.9",
@@ -2083,11 +2079,7 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
     configured_names = set(
         re.findall(r'^\s*-\s+name:\s+"([^"]+)"', metrics_text, re.MULTILINE)
     )
-    expected_vllm_names = set()
-    for name in configured_names:
-        if name == "interval_lookup_hit_rates":
-            continue
-        expected_vllm_names.add(f"ucm:{name}")
+    expected_vllm_names = {f"ucm:{name}" for name in configured_names}
 
     for filename in GRAFANA_UCM_DASHBOARDS:
         dashboard_text = (REPO_ROOT / "examples" / "metrics" / filename).read_text(
@@ -2249,18 +2241,25 @@ def test_vllm_dashboard_shows_prefix_breakdown_without_summary_stats():
     }
     assert pie_targets["GPU/HBM Prefix Hit Tokens"] == (
         'sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name="$model_name", '
+        'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))\n'
+        "or\n"
+        'sum(increase(vllm:prefix_cache_hits_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
     assert pie_targets["UCM Prefix Hit Tokens"] == (
         'sum(increase(ucm:ucm_hit_tokens_total{model_name="$model_name", '
         'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
     )
-    assert "ucm:total_prefix_query_tokens_total" in pie_targets["Misses"]
-    assert "ucm:gpu_hbm_hit_tokens_total" in pie_targets["Misses"]
-    assert "ucm:ucm_hit_tokens_total" in pie_targets["Misses"]
-    assert "vllm:prefix_cache_queries_total" not in pie_targets["Misses"]
+    misses_primary, misses_fallback = pie_targets["Misses"].split("\nor\n")
+    assert "ucm:total_prefix_query_tokens_total" in misses_primary
+    assert "ucm:gpu_hbm_hit_tokens_total" in misses_primary
+    assert "ucm:ucm_hit_tokens_total" in misses_primary
+    assert "vllm:prefix_cache_queries_total" not in misses_primary
     assert "vllm:external_prefix_cache_hits_total" not in pie_targets["Misses"]
-    assert pie_targets["Misses"].startswith("clamp_min(")
+    assert misses_primary.startswith("clamp_min(")
+    assert "vllm:prefix_cache_queries_total" in misses_fallback
+    assert "vllm:prefix_cache_hits_total" in misses_fallback
+    assert misses_fallback.startswith("clamp_min(")
     assert "$__rate_interval" not in pie_targets["Misses"]
 
     assert panels["E2E Request Latency"]["gridPos"]["y"] == 8
@@ -2540,6 +2539,7 @@ def layerwise_connector(request):
     connector._dumped_layer_ids = set()
     connector._layerwise_load_start_by_layer = {}
     connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_layer_load_wait_duration_sum_ms = 0.0
     connector._layerwise_load_bytes = 0
     connector._layerwise_save_bytes = 0
     connector.need_load = False
@@ -2686,9 +2686,10 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
     connector._failure_req_ids = set()
     connector._layerwise_load_start_by_layer = {0: 1.0}
     connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_layer_load_wait_duration_sum_ms = 0.0
     connector._layerwise_load_bytes = 0
 
-    times = iter([1.03])
+    times = iter([1.01, 1.03])
     original_perf_counter = ucm_connector_module.time.perf_counter
     ucm_connector_module.time.perf_counter = lambda: next(times)
     try:
@@ -2697,14 +2698,15 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
         ucm_connector_module.time.perf_counter = original_perf_counter
 
     assert fake_ucmmetrics.updated == [
-        {"layerwise_layer_load_duration_ms": pytest.approx(30.0)},
         {
             "layerwise_batch_load_duration_sum_ms": pytest.approx(30.0),
+            "layerwise_batch_load_wait_duration_sum_ms": pytest.approx(20.0),
             "load_bytes_total": 128,
         },
     ]
     assert connector._layerwise_load_start_by_layer == {}
     assert connector._layerwise_layer_load_duration_sum_ms == 0.0
+    assert connector._layerwise_layer_load_wait_duration_sum_ms == 0.0
     assert connector._layerwise_load_bytes == 0
 
 
@@ -2790,7 +2792,7 @@ def _create_metrics_test_store(monkeypatch, kind, launch_config, store_config):
     connector._role = KVConnectorRole.SCHEDULER
     # A non-owner scheduler does not need a GPU layout or shared-memory setup.
     connector._vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(data_parallel_rank=1)
+        parallel_config=SimpleNamespace(data_parallel_rank=1, tensor_parallel_size=1)
     )
     calls = []
 
@@ -3367,31 +3369,25 @@ def test_fawa_records_submitted_save_bytes():
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
-    header = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.h").read_text(
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "load_queue.h").read_text(
         encoding="utf-8"
     )
-    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc").read_text(
-        encoding="utf-8"
-    )
-
-    assert "double h2dBatchStartTp_{0.0};" not in header
-    assert "firstH2dReadyTp" not in header
-    assert "firstH2dReadyTp" not in source
-    assert "double h2dBatchStartTp = 0.0;" not in source
-    assert "double& h2dBatchStartTp" not in header
-    assert "double& h2dBatchStartTp" not in source
-    assert "h2dBatchStartTp_" not in source
-    assert "auto tpH2dSyncStart = NowTime::Now();" in source
-    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;" in source
+    synchronize = source.split("Status SynchronizeH2d(", 1)[1].split(
+        "void FinishShard(", 1
+    )[0]
+    start = synchronize.index("const auto startTp = NowTime::Now();")
+    sync = synchronize.index("auto s = stream.Synchronize();")
+    duration = synchronize.index('NAME_TO_METRIC_ID("cache_h2d_sync_ms")')
+    elapsed = synchronize.index("(NowTime::Now() - startTp) * 1e3")
+    assert start < sync < duration < elapsed
     assert "cache_h2d_bandwidth_gbps" not in source
-    assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;" not in source
 
 
 def test_cache_store_uses_single_shard_counter_per_operation():
-    cache_dir = REPO_ROOT / "ucm" / "store" / "cache" / "cc"
+    cache_dir = REPO_ROOT / "ucm" / "store" / "cache" / "v2"
     trans_manager = (cache_dir / "trans_manager.h").read_text(encoding="utf-8")
-    load_queue = (cache_dir / "load_queue.cc").read_text(encoding="utf-8")
-    dump_queue = (cache_dir / "dump_queue.cc").read_text(encoding="utf-8")
+    load_queue = (cache_dir / "load_queue.h").read_text(encoding="utf-8")
+    dump_queue = (cache_dir / "dump_queue.h").read_text(encoding="utf-8")
     buffer_manager = (cache_dir / "buffer_manager.h").read_text(encoding="utf-8")
     source = trans_manager + load_queue + dump_queue + buffer_manager
 
@@ -3404,107 +3400,22 @@ def test_cache_store_uses_single_shard_counter_per_operation():
     assert 'NAME_TO_METRIC_ID("cache_lookup_miss_blocks_total")' in buffer_manager
 
 
-def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
-    source = (REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc").read_text(
+def test_cache_dump_d2h_metrics_measure_stream_synchronize():
+    source = (REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "dump_queue.h").read_text(
         encoding="utf-8"
     )
-
-    stream_header = (REPO_ROOT / "ucm" / "shared" / "trans" / "stream.h").read_text(
-        encoding="utf-8"
-    )
-    cuda_header = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.h"
-    ).read_text(encoding="utf-8")
-    cuda_source = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "cuda" / "cuda_stream.cc"
-    ).read_text(encoding="utf-8")
-    ascend_header = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.h"
-    ).read_text(encoding="utf-8")
-    ascend_source = (
-        REPO_ROOT / "ucm" / "shared" / "trans" / "ascend" / "ascend_stream.cc"
-    ).read_text(encoding="utf-8")
-
-    assert "struct StreamEventTimer" not in stream_header
-    assert "RecordEventTimerStart" not in stream_header
-    assert "RecordEventTimerEnd" not in stream_header
-    assert "EventElapsedTimeMs" not in stream_header
-    assert "DestroyEventTimer" not in stream_header
-
-    assert "RecordEventTimerStart" not in cuda_header
-    assert "RecordEventTimerEnd" not in cuda_header
-    assert "EventElapsedTimeMs" not in cuda_header
-    assert "DestroyEventTimer" not in cuda_header
-    assert "CudaEventTimer" not in cuda_source
-    assert "cudaEventCreate(&eventTimer->start)" not in cuda_source
-    assert "cudaEventRecord(eventTimer->start, stream_)" not in cuda_source
-    assert "cudaEventRecord(eventTimer->end, stream_)" not in cuda_source
-    assert "cudaEventSynchronize(eventTimer->end)" not in cuda_source
-    assert (
-        "cudaEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
-        not in cuda_source
-    )
-
-    assert "RecordEventTimerStart" not in ascend_header
-    assert "RecordEventTimerEnd" not in ascend_header
-    assert "EventElapsedTimeMs" not in ascend_header
-    assert "DestroyEventTimer" not in ascend_header
-    assert "AscendEventTimer" not in ascend_source
-    assert "aclrtCreateEvent(&eventTimer->start)" not in ascend_source
-    assert "aclrtRecordEvent(eventTimer->start, stream_)" not in ascend_source
-    assert "aclrtRecordEvent(eventTimer->end, stream_)" not in ascend_source
-    assert "aclrtSynchronizeEvent(eventTimer->end)" not in ascend_source
-    assert (
-        "aclrtEventElapsedTime(&elapsedMs, eventTimer->start, eventTimer->end)"
-        not in ascend_source
-    )
-
-    assert "eventReadyTp->store(NowTime::Now(), std::memory_order_release);" in source
-    assert "auto ready = eventReadyTp->load(std::memory_order_acquire);" in source
-    assert "auto tpSyncStart = NowTime::Now();" in source
-    assert "auto tpSyncStream = NowTime::Now();" in source
-    assert "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;" in source
-    assert "auto tpBackendSubmitStart = NowTime::Now();" in source
-    assert "(tpEnd - tpBackendSubmitStart) * 1e3" in source
-    assert 'NAME_TO_METRIC_ID("cache_d2h_callback_wait_ms")' not in source
-    assert "auto dumpStartTp = NowTime::Now();" in source
-    assert "std::shared_ptr<std::atomic<double>> d2hEndTp" not in source
-    assert "auto endCbStatus = stream.AppendCallback" not in source
-    assert "d2hEndTp" not in source
-    assert "auto tp = NowTime::Now();" not in source
-    assert "auto d2hStartTp = tpMakeBuffer;" not in source
-    assert "d2hStartTp = std::max(d2hStartTp, ready);" not in source
-    assert "tpSyncStream - ready" not in source
-    assert "end - ready" not in source
-    assert "Trans::StreamEventTimer d2hEventTimer" not in source
-    assert "RecordEventTimerStart" not in source
-    assert "RecordEventTimerEnd" not in source
-    assert "EventElapsedTimeMs" not in source
-    assert "DestroyEventTimer" not in source
-    assert "auto copyStream = stream.NextStream();" not in source
-    assert "DeviceToHostAsync(stream, shard.addrs.data(), host)" in source
-    assert "if (eventReadyTp && copiedShards > 0)" not in source
+    complete = source.split("Status CompleteD2h(", 1)[1].split(
+        "Status SubmitBackendDump(", 1
+    )[0]
+    start = complete.index("const auto startTp = NowTime::Now();")
+    sync = complete.index("auto s = stream.Synchronize();")
+    duration = complete.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
+    ready = complete.index("handle.MarkReady()")
+    assert start < sync < duration < ready
+    assert "(NowTime::Now() - startTp) * 1e3" in complete
+    assert "if (copiedShards > 0)" in complete
+    assert 'NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms")' not in complete
     assert "cache_d2h_bandwidth_gbps" not in source
-
-    d2h_duration_pos = source.index('NAME_TO_METRIC_ID("cache_d2h_duration_ms")')
-    sync_start_pos = source.index("auto tpSyncStart = NowTime::Now()")
-    sync_pos = source.index("auto s = stream.Synchronize()")
-    sync_end_pos = source.index("auto tpSyncStream = NowTime::Now()")
-    d2h_ms_pos = source.index(
-        "auto d2hMs = std::max(0.0, tpSyncStream - tpSyncStart) * 1e3;"
-    )
-    backend_submit_start_pos = source.index(
-        "auto tpBackendSubmitStart = NowTime::Now()"
-    )
-    prereq_block_pos = source.index("if (eventReadyTp)")
-    ready_load_pos = source.index("auto ready = eventReadyTp->load", prereq_block_pos)
-    backend_submit_pos = source.index(
-        'NAME_TO_METRIC_ID("cache_dump_backend_submit_duration_ms")'
-    )
-
-    assert sync_start_pos < sync_pos < sync_end_pos < backend_submit_start_pos
-    assert sync_end_pos < d2h_ms_pos < d2h_duration_pos < backend_submit_pos
-    assert prereq_block_pos < ready_load_pos < backend_submit_pos
 
 
 def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
@@ -3514,8 +3425,8 @@ def test_h2d_d2h_bandwidth_metrics_are_not_configured_or_recorded():
     sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "load_queue.cc",
-            REPO_ROOT / "ucm" / "store" / "cache" / "cc" / "dump_queue.cc",
+            REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "load_queue.h",
+            REPO_ROOT / "ucm" / "store" / "cache" / "v2" / "dump_queue.h",
             REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "load_queue.cc",
             REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "dump_queue.cc",
             REPO_ROOT
@@ -3573,26 +3484,40 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     )
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 25
-    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 33
-    assert "Cache Load H2D Bandwidth (per task)" not in panels
-    assert "Cache Dump D2H Bandwidth (per task)" not in panels
-    assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Load Queue Status"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 49,
+        "y": 25,
     }
+    assert panels["Cache Dump Queue Status"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25,
+    }
+    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
+    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert "Cache Load H2D Bandwidth (per task)" not in panels
+    assert "Cache Dump D2H Bandwidth (per task)" not in panels
+    assert panels["Cache Load Shard Metrics"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57,
+    }
+    assert "Cache Load H2D Submit Cost" not in panels
+    assert "Cache Load Backend Wait Duration" not in panels
     assert panels["Cache Dump Wait Compute Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 49,
+        "y": 57,
     }
-    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
-    assert "Cache Dump D2H Duration (include wait compute)" in panels
+    assert panels["Cache Load H2D Sync Duration"]["gridPos"]["y"] == 65
+    assert "Cache Dump D2H Sync Duration" in panels
     assert "Cache Dump D2H Duration" not in panels
     assert panels["Cache Lookup Duration"]["gridPos"] == {
         "h": 8,
@@ -3600,11 +3525,17 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
         "x": 0,
         "y": 81,
     }
-    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+    assert panels["Cache Dump Backend Submit Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
         "y": 81,
+    }
+    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 89,
     }
     assert panels["Cache Lookup Backend Duration"]["gridPos"] == {
         "h": 8,
@@ -3630,34 +3561,53 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     }
 
     assert set(targets) == {
-        "queue wait",
+        "H2D sync",
+        "waiting queue wait",
         "backend submit",
         "backend wait",
-        "H2D sync",
-        "h2d submit & other",
+        "cache ready wait",
+        "H2D submit",
+        "running queue wait",
     }
+    assert "cache_h2d_sync_ms" in targets["H2D sync"]["expr"]
+    assert "cache_load_queue_wait_duration_ms" in targets["waiting queue wait"]["expr"]
     assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
-    assert "cache_shard_backend_wait_ms" in targets["backend wait"]["expr"]
-    residual = targets["h2d submit & other"]["expr"]
+    assert "cache_task_total_backend_wait_ms" in targets["backend wait"]["expr"]
+    assert "cache_task_total_ready_wait_ms" in targets["cache ready wait"]["expr"]
+    assert "cache_task_total_h2d_submit_ms" in targets["H2D submit"]["expr"]
+    residual = targets["running queue wait"]["expr"]
     for metric in (
         "cache_load_duration_ms",
+        "cache_h2d_sync_ms",
         "cache_load_queue_wait_duration_ms",
         "cache_load_backend_submit_duration_ms",
-        "cache_shard_backend_wait_ms",
-        "cache_h2d_sync_ms",
+        "cache_task_total_backend_wait_ms",
+        "cache_task_total_ready_wait_ms",
+        "cache_task_total_h2d_submit_ms",
     ):
         assert metric in residual
+    assert "cache_shard_running_queue_wait_ms" not in residual
     description = panel["description"]
-    assert "`queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；" in description
+    assert "本面板所有曲线均为**任务级**指标" in description
+    assert (
+        "`waiting queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；"
+        in description
+    )
     assert (
         "`backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；"
         in description
     )
-    assert "`backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；" in description
+    assert (
+        "`backend wait`：指标 `ucm:cache_task_total_backend_wait_ms`；" in description
+    )
+    assert (
+        "`cache ready wait`：指标 `ucm:cache_task_total_ready_wait_ms`；" in description
+    )
+    assert "`H2D submit`：指标 `ucm:cache_task_total_h2d_submit_ms`；" in description
     assert "`H2D sync`：指标 `ucm:cache_h2d_sync_ms`；" in description
     assert (
-        "`h2d submit & other`：计算方法 `Load 总耗时 - queue wait - "
-        "backend submit - backend wait - H2D sync`；" in description
+        "`running queue wait`：计算方式 `ucm:cache_load_duration_ms` "
+        "减去上面六段的平均耗时" in description
     )
 
 
