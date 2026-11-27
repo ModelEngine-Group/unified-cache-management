@@ -103,11 +103,15 @@ def _apply_cuda_indexer_io_config(
     launch_config: dict, kv_cache_config, pipeline_parallel_size: int = 1
 ) -> tuple[bool, bool]:
     """Resolve CUDA load mode and whether a specialized connector is required."""
-    if not current_platform.is_cuda() or kv_cache_config is None:
+    if (
+        not current_platform.is_cuda()
+        or kv_cache_config is None
+        or not launch_config.get("use_layerwise", True)
+    ):
         return False, False
 
     groups = kv_cache_config.kv_cache_groups
-    needs_specialized_connector = len(groups) > 1
+    has_specialized_cache = False
     has_indexer = False
     for group in groups:
         group_spec = getattr(group, "kv_cache_spec", None)
@@ -122,7 +126,7 @@ def _apply_cuda_indexer_io_config(
             _has_layer_component(name, {"indexer", "index_cache"})
             for name in layer_names
         ) or any(getattr(spec, "cache_role", None) == "indexer" for spec in group_specs)
-        needs_specialized_connector |= any(
+        has_specialized_cache |= any(
             _has_layer_component(name, {"swa_cache"}) for name in layer_names
         ) or any(
             any(base.__name__ == "MambaSpec" for base in type(spec).__mro__)
@@ -131,7 +135,7 @@ def _apply_cuda_indexer_io_config(
             for spec in group_specs
         )
 
-    if not (has_indexer or needs_specialized_connector):
+    if not (has_indexer or has_specialized_cache):
         return False, False
     if pipeline_parallel_size > 1:
         raise RuntimeError(
@@ -144,7 +148,7 @@ def _apply_cuda_indexer_io_config(
         "CUDA hybrid or specialized KV cache requires request-level loading; "
         "disabling layerwise and enabling request-async load."
     )
-    return True, needs_specialized_connector
+    return True, has_specialized_cache or len(groups) > 1
 
 
 def _get_sparse_c8_flags(vllm_config: "VllmConfig") -> tuple[bool, bool]:
@@ -1677,6 +1681,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         vllm_config: "VllmConfig",
         role: KVConnectorRole,
         kv_cache_config: Optional["KVCacheConfig"] = None,
+        *,
+        launch_config: Optional[dict] = None,
     ):
         super().__init__(
             vllm_config=vllm_config,
@@ -1724,13 +1730,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # save block info, avoid hash request twice, and track them until request finished
         self.requests_meta: dict[str, RequestMeta] = {}
 
-        ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
-        self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(
-            self.launch_config,
-            kv_cache_config,
-            vllm_config.parallel_config.pipeline_parallel_size,
+        self.launch_config = (
+            Config(vllm_config.kv_transfer_config).get_config()
+            if launch_config is None
+            else launch_config
         )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
@@ -4031,13 +4035,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
-        requires_cuda_async, needs_specialized_connector = (
-            _apply_cuda_indexer_io_config(
-                self.launch_config,
-                kv_cache_config,
-                vllm_config.parallel_config.pipeline_parallel_size,
-            )
-        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
@@ -4135,19 +4132,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     kv_cache_config
                 )
             )
-        if requires_cuda_async and not (
-            is_fawa or use_hybrid_linear_attention or use_ratio_rate
-        ):
-            if needs_specialized_connector:
-                raise RuntimeError(
-                    "UCM has no compatible request-async connector for this "
-                    "CUDA KV cache layout. Disable UCM external KV caching."
-                )
-            if use_cp_parallel:
-                raise RuntimeError(
-                    "UCMCPConnector does not support the request-async load "
-                    "required by this CUDA KV cache layout."
-                )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise
@@ -4161,6 +4145,36 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 logger.warning(layerwise_fallback_log)
                 use_hybrid_linear_attention_layerwise = False
 
+        requires_cuda_async = False
+        if (
+            use_layerwise
+            and not (is_fawa or use_ratio_rate)
+            and (
+                not use_hybrid_linear_attention or use_hybrid_linear_attention_layerwise
+            )
+        ):
+            requires_cuda_async, needs_specialized_connector = (
+                _apply_cuda_indexer_io_config(
+                    self.launch_config,
+                    kv_cache_config,
+                    vllm_config.parallel_config.pipeline_parallel_size,
+                )
+            )
+            if requires_cuda_async:
+                if not use_hybrid_linear_attention:
+                    if needs_specialized_connector:
+                        raise RuntimeError(
+                            "UCM has no compatible request-async connector for this "
+                            "CUDA KV cache layout. Disable UCM external KV caching."
+                        )
+                    if use_cp_parallel:
+                        raise RuntimeError(
+                            "UCMCPConnector does not support the request-async load "
+                            "required by this CUDA KV cache layout."
+                        )
+                use_layerwise = False
+                use_hybrid_linear_attention_layerwise = False
+
         if is_fawa:
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
@@ -4171,14 +4185,19 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
         elif use_hybrid_linear_attention:
             self.connector = UCMHybridLinearAttentionConnector(
-                vllm_config, role, kv_cache_config
+                vllm_config,
+                role,
+                kv_cache_config,
+                launch_config=self.launch_config,
             )
         elif use_cp_parallel:
             self.connector = UCMCPConnector(vllm_config, role, kv_cache_config)
         elif use_layerwise:
             self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
-            self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+            self.connector = UCMDirectConnector(
+                vllm_config, role, kv_cache_config, launch_config=self.launch_config
+            )
 
     @property
     def requires_kv_delivery(self) -> bool:
