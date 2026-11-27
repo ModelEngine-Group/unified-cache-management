@@ -74,6 +74,12 @@ std::string FormatLatency(double ns)
     return fmt::format("{:.3f}s", ns / 1000000000.0);
 }
 
+/** 基准表复合键：ns 与 keyLow64 以 NUL 拼接（ns 不含 NUL，组合唯一） */
+std::string BaselineKey(const std::string &ns, std::uint64_t keyLow64)
+{
+    return ns + '\0' + std::to_string(keyLow64);
+}
+
 }  // namespace
 
 Scheduler::Scheduler() = default;
@@ -479,14 +485,15 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
         entry.offset = orc.offset;
 
         // 基准表：PUT 记录前缀为最近写入基准，GET 查基准（命中才有比对依据），
+        // 均以 ns + key 复合定位（同 key 不同 ns 为不同数据，防基准互相覆盖）；
         // 其他操作无基准；多 worker 并发访问加锁
         if (task.op == OrcOp::PUT) {
             std::lock_guard<std::mutex> lock(baselineMutex_);
-            keyBaseline_[orc.keyLow64] = block;
+            keyBaseline_[BaselineKey(task.ns, orc.keyLow64)] = block;
             request.expected.emplace_back();
         } else if (task.op == OrcOp::GET) {
             std::lock_guard<std::mutex> lock(baselineMutex_);
-            const auto it = keyBaseline_.find(orc.keyLow64);
+            const auto it = keyBaseline_.find(BaselineKey(task.ns, orc.keyLow64));
             request.expected.emplace_back(it != keyBaseline_.end() ? it->second
                                                                    : std::vector<std::uint8_t>());
         } else {
