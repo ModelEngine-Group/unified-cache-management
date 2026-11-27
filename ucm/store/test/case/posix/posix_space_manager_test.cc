@@ -82,7 +82,11 @@ TEST_F(UCPosixSpaceManagerTest, DataFilePath)
     ASSERT_EQ(s, UC::Status::OK());
     auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), blockId);
-    ASSERT_EQ(activated, fmt::format("{}data/{:02x}.tmp", this->Path(), fmt::join(blockId, "")));
+    const auto tmpPrefix = fmt::format("{}data/{:02x}.tmp.", this->Path(), fmt::join(blockId, ""));
+    ASSERT_EQ(activated.rfind(tmpPrefix, 0), 0u);
+    SpaceManager otherMgr;
+    ASSERT_EQ(otherMgr.Setup(config), UC::Status::OK());
+    ASSERT_NE(otherMgr.GetLayout()->ActivatedFilePath(Path(), blockId), activated);
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
@@ -108,7 +112,7 @@ TEST_F(UCPosixSpaceManagerTest, ShardFilePath)
     const auto& file = fmt::format("{:02x}", fmt::join(blockId, ""));
     const auto& shard = file.substr(0, config.dataDirShardBytes);
     auto activated = spaceMgr.GetLayout()->ActivatedFilePath(Path(), blockId);
-    ASSERT_EQ(activated, fmt::format("{}{}/{}.tmp", this->Path(), shard, file));
+    ASSERT_EQ(activated.rfind(fmt::format("{}{}/{}.tmp.", this->Path(), shard, file), 0), 0u);
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(PosixFile{activated}.Open(PosixFile::OpenFlag::CREATE), UC::Status::OK());
     ASSERT_EQ(PosixFile{activated}.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
