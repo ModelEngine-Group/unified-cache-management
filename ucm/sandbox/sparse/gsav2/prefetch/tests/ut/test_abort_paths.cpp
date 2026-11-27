@@ -181,7 +181,7 @@ TEST(AbortPaths, ValidateUCMMergeRequestAbortsOnMissSizeMismatch)
     engine->mMissGlobalToken[reqID][0] = {1, 2, 3};  // size 3
     engine->mLoadSlot[reqID].assign(engine->mTopkIndexerNum, {});
     engine->mLoadSlot[reqID][0] = {1, 2};  // size 2 != 3
-    EXPECT_DEATH(engine->ValidateUCMMergeRequest(0, reqID), "");
+    EXPECT_DEATH(engine->ValidateUCMMergeRequest(0, reqID, 0), "");
 }
 
 TEST(AbortPaths, ValidateUCMMergeRequestAbortsOnMissingBlocksHash)
@@ -198,7 +198,7 @@ TEST(AbortPaths, ValidateUCMMergeRequestAbortsOnMissingBlocksHash)
     engine->mLoadSlot[reqID].assign(engine->mTopkIndexerNum, {});
     engine->mLoadSlot[reqID][0] = {1, 2, 3};  // same size, but no mAllBlocksHash
     // mAllBlocksHash doesn't have reqID -> KVPackAbort
-    EXPECT_DEATH(engine->ValidateUCMMergeRequest(0, reqID), "");
+    EXPECT_DEATH(engine->ValidateUCMMergeRequest(0, reqID, 0), "");
 }
 
 /* ---- BuildUCMMergeBlockContexts abort path ---- */

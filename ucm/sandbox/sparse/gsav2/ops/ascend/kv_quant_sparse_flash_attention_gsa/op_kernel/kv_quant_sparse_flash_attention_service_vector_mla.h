@@ -32,10 +32,9 @@ public:
     using KV_T = typename QSFAT::kvType;
     using K_ROPE_T = typename QSFAT::kRopeType;
     using OUT_T = typename QSFAT::outputType;
-    using UPDATE_T = T;
-    using MM1_OUT_T = float;
-    using MM2_OUT_T = float;
-    bool NO_AMLA = true;
+    using UPDATE_T = T;       // vec2Res累积fp32
+    using MM1_OUT_T = float;  // mm1Res(S) 保持 fp32
+    using MM2_OUT_T = float;  // mm2Res(O) 保持 fp32
 
     __aicore__ inline QSFAVectorService(){};
     __aicore__ inline void ProcessVec1L(const RunInfo &info);
@@ -44,7 +43,6 @@ public:
     __aicore__ inline void InitParams(
         const struct ConstInfo &constInfo,
         const KvQuantSparseFlashAttentionTilingDataMla *__restrict tilingData);
-    __aicore__ inline void InitMm2ResInt32GmGlobalTensor(GlobalTensor<int32_t> mm2ResInt32Gm);
     __aicore__ inline void InitVec0GlobalTensor(const GlobalTensor<int32_t> &kvValidSizeGm,
                                                 const GlobalTensor<K_ROPE_T> &kvMergeGm,
                                                 const GlobalTensor<K_ROPE_T> &keyRopeGm,
@@ -121,7 +119,8 @@ public:
     __aicore__ inline void Bmm2FDDataCopyOut(const RunInfo &info, LocalTensor<T> &bmm2ResUb,
                                              uint32_t wsMStart, uint32_t dealRowCount,
                                              uint32_t columnCount, uint32_t actualColumnCount);
-    __aicore__ inline uint64_t CalcAccumOffset(uint32_t bN2Idx, uint32_t gS1Idx);
+    // combine 阶段——对本核持有 part 0 的任务做跨核 online-softmax 归约并写出最终输出
+    __aicore__ inline void ProcessSplitKVCombine(const SplitKVTaskInfo *tasks, uint32_t taskCount);
     __aicore__ inline void GetConfusionTransposeTiling(int64_t numR, int64_t numC,
                                                        const uint32_t stackBufferSize,
                                                        const uint32_t typeSize,
@@ -166,7 +165,6 @@ private:
     uint32_t pingpongFlag = 0U;
     ConstInfo constInfo = {};
 
-    GlobalTensor<int32_t> mm2ResInt32Gm;
     GlobalTensor<MM1_OUT_T> mm1ResGm;
     GlobalTensor<K_ROPE_T> vec1ResGm;
     GlobalTensor<T> lseSumFdGm;
@@ -253,13 +251,6 @@ __aicore__ inline void QSFAVectorService<QSFAT>::InitParams(
 }
 
 template <typename QSFAT>
-__aicore__ inline void QSFAVectorService<QSFAT>::InitMm2ResInt32GmGlobalTensor(
-    GlobalTensor<int32_t> mm2ResInt32Gm)
-{
-    this->mm2ResInt32Gm = mm2ResInt32Gm;
-}
-
-template <typename QSFAT>
 __aicore__ inline void QSFAVectorService<QSFAT>::InitVec0GlobalTensor(
     const GlobalTensor<int32_t> &kvValidSizeGm, const GlobalTensor<K_ROPE_T> &kvMergeGm,
     const GlobalTensor<K_ROPE_T> &keyRopeGm, const GlobalTensor<KV_T> &keyGm,
@@ -333,12 +324,11 @@ __aicore__ inline void QSFAVectorService<QSFAT>::ComputeLogSumExpAndCopyToGm(
     if (mSplitInfo.vecDealM == 0) { return; }
     uint64_t qsfaBaseOffset = mSplitInfo.nBufferStartM / 2;
     size_t qsfaSize = mSplitInfo.vecDealM * FP32_BLOCK_ELEMENT_NUM;
-    uint64_t qsfaAccumTmpOutNum = CalcAccumOffset(info.bIdx, info.gS1Idx);
-    uint64_t qsfaOffset =
-        (qsfaAccumTmpOutNum * constInfo.kvHeadNum * constInfo.mBaseSize +           // taskoffset
-         info.tndCoreStartKVSplitPos * constInfo.kvHeadNum * constInfo.mBaseSize +  // 份数offset
-         mSplitInfo.nBufferStartM + mSplitInfo.vecStartM) *
-        FP32_BLOCK_ELEMENT_NUM;  // m轴offset
+    // lse 槽位 = (sub*gSize + 行号)*8 (sub = 该 (task,part) 的全局编号)
+    // 与combine阶段(Bmm2FDDataCopyOut/ProcessSplitKVCombine)的布局约定一致
+    uint64_t qsfaSlot = (uint64_t)info.splitSubIdx * constInfo.kvHeadNum * constInfo.mBaseSize +
+                        mSplitInfo.nBufferStartM + mSplitInfo.vecStartM;
+    uint64_t qsfaOffset = qsfaSlot * FP32_BLOCK_ELEMENT_NUM;  // m轴offset
     if (info.actualSingleProcessSInnerSize != 0) {
         LocalTensor<T> qsfaTmp = outputBuff2.Get<T>();
         WaitFlag<AscendC::HardEvent::MTE3_V>(SYNC_OUTPUT_BUF2_FLAG);
@@ -761,9 +751,7 @@ __aicore__ inline void QSFAVectorService<QSFAT>::CopyOutMrgeResult(int64_t mte2S
         Brcb(antiQuantScale, tmpAntiQuantScale, dealRow, {1, 4});
     }
     PipeBarrier<PIPE_V>();
-    // GSA-P2: 反量化直通路径 —— 省掉 FP16→FP32→Mul(FP32)→BF16 的 FP32 中转
-    // 改为: scale FP32→K_ROPE_T, 然后 INT8→FP16 Cast 后直接在 K_ROPE_T 域做 Mul
-    // 收益: 减少 2 次 Cast + 2 次 PipeBarrier per dealLoop iteration，V0 阶段压缩 ~30-40%
+    // 反量化： int8 → fp 16 Cast 后直接在 K_ROPE_T 域乘 scale，省去 FP32 中转
     uint32_t dealLoop = CeilDiv(dealRow, LIMIT_DEAL_ROW);
     uint32_t dealRowFp32 = LIMIT_DEAL_ROW;
     uint32_t element = LIMIT_DEAL_ROW * constInfo.headDim;
@@ -968,9 +956,10 @@ __aicore__ inline void QSFAVectorService<QSFAT>::ProcessVec1L(const RunInfo &inf
         ProcessVec1SingleBuf(info, mSplitInfo);
         CrossCoreSetFlag<ConstInfo::QSFA_SYNC_MODE2, PIPE_MTE3>(constInfo.syncV1C2);
         // move lse for flash decode
+        // splitKV 由运行时 tiling 字段判断
         if (info.s2Idx == info.curSInnerLoopTimes - 1) {
             if (info.tndIsS2SplitCore) {
-                if constexpr (FLASH_DECODE) {
+                if (constInfo.splitKVNum > 1U) {
                     uint32_t outIdx = info.loop % (constInfo.preLoadNum);
                     auto sumTensor = softmaxSumUb[outIdx * SOFTMAX_TMP_BUFFER_OFFSET];
                     auto maxTensor = softmaxMaxUb[outIdx * SOFTMAX_TMP_BUFFER_OFFSET];
@@ -979,13 +968,6 @@ __aicore__ inline void QSFAVectorService<QSFAT>::ProcessVec1L(const RunInfo &inf
             }
         }
     }
-}
-
-template <typename QSFAT>
-__aicore__ inline uint64_t QSFAVectorService<QSFAT>::CalcAccumOffset(uint32_t bN2Idx,
-                                                                     uint32_t gS1Idx)
-{
-    return 0;
 }
 
 template <typename QSFAT>
@@ -1033,7 +1015,9 @@ __aicore__ inline void QSFAVectorService<QSFAT>::DealBmm2ResBaseBlock(
     SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_FLAG + pingpongFlag);
 
     // 除第一个循环外，均需要更新中间计算结果
-    if (info.s2Idx > 0) {
+    // 必须用 !isFirstSInnerLoop 而非 s2Idx>0 判断：split 场景下 part > 0 的首个迭代
+    // (s2Idx>0 但 isFirstSInnerLoop=true )必须重新起算，否则会读到上一个part的累积结果
+    if (!info.isFirstSInnerLoop) {
         event_t eventIdMte2WaitMte3 =
             static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
         SetFlag<HardEvent::MTE3_MTE2>(eventIdMte2WaitMte3);
@@ -1059,15 +1043,19 @@ __aicore__ inline void QSFAVectorService<QSFAT>::DealBmm2ResBaseBlock(
     }
     // 最后一次输出计算结果，否则将中间结果暂存至workspace
     if (info.s2Idx + 1 == info.curSInnerLoopTimes) {
-        LocalTensor<T> softmaxSumBrcb = tmpBuff2.Get<T>();
-        Brcb(softmaxSumBrcb,
-             softmaxSumUb[(info.loop % constInfo.preLoadNum) * SOFTMAX_TMP_BUFFER_OFFSET +
-                          baseOffset],
-             (mSplitInfo.vecDealM + 7) / 8, {1, 8});
-        PipeBarrier<PIPE_V>();
-        RowDivs(bmm2ResUb, bmm2ResUb, softmaxSumBrcb, dealRowCount, columnCount, actualColumnCount);
-
-        PipeBarrier<PIPE_V>();
+        // split 核(写 FD partial)不做归一化——partial 保持未归一，
+        // 由 combine 阶段按 max/maxG 权重归约后再除以加权和；只有直写 attenOut 的路径才 RowDivs
+        if (!info.tndIsS2SplitCore) {
+            LocalTensor<T> softmaxSumBrcb = tmpBuff2.Get<T>();
+            Brcb(softmaxSumBrcb,
+                 softmaxSumUb[(info.loop % constInfo.preLoadNum) * SOFTMAX_TMP_BUFFER_OFFSET +
+                              baseOffset],
+                 (mSplitInfo.vecDealM + 7) / 8, {1, 8});
+            PipeBarrier<PIPE_V>();
+            RowDivs(bmm2ResUb, bmm2ResUb, softmaxSumBrcb, dealRowCount, columnCount,
+                    actualColumnCount);
+            PipeBarrier<PIPE_V>();
+        }
         Bmm2ResCopyOut(info, bmm2ResUb, mSplitInfo.vecStartM + startRow, dealRowCount, columnCount,
                        actualColumnCount);
     } else {
@@ -1162,14 +1150,13 @@ __aicore__ inline void QSFAVectorService<QSFAT>::Bmm2FDDataCopyOut(
     DataCopy(tmp, bmm2ResUb, columnCount * dealRowCount);
     SetFlag<AscendC::HardEvent::V_MTE3>(SYNC_OUTPUT_BUF1_FLAG);
     WaitFlag<AscendC::HardEvent::V_MTE3>(SYNC_OUTPUT_BUF1_FLAG);
-    uint64_t accumTmpOutNum = CalcAccumOffset(info.bIdx, info.gS1Idx);
-    uint64_t offset = accumTmpOutNum * constInfo.kvHeadNum * constInfo.mBaseSize *
-                          constInfo.headDim +  // taskoffset
-                      info.tndCoreStartKVSplitPos * constInfo.kvHeadNum * constInfo.mBaseSize *
-                          constInfo.headDim +        // 份数offset
+    // accumOut 槽位 = (sub*gSize + 行号)*512，与 combine 阶段布局约定一致
+    uint64_t offset = (uint64_t)info.splitSubIdx * constInfo.kvHeadNum * constInfo.mBaseSize *
+                          constInfo.headDim +        // sub编号offset
                       wsMStart * actualColumnCount;  // m轴offset
     GlobalTensor<T> dst = accumOutGm[offset];
-    if (info.actualSingleProcessSInnerSize == 0) {
+    // 有效迭代(!=0)写真实 partial 数据，无效迭代才写0
+    if (info.actualSingleProcessSInnerSize != 0) {
         DataCopyExtParams dataCopyParams;
         dataCopyParams.blockCount = dealRowCount;
         dataCopyParams.blockLen = actualColumnCount * sizeof(T);
@@ -1224,17 +1211,161 @@ __aicore__ inline void QSFAVectorService<QSFAT>::Bmm2ResCopyOut(
     const RunInfo &info, LocalTensor<T> &bmm2ResUb, uint32_t wsMStart, uint32_t dealRowCount,
     uint32_t columnCount, uint32_t actualColumnCount)
 {
-    if constexpr (!FLASH_DECODE) {
-        Bmm2CastAndCopyOut(info, bmm2ResUb, wsMStart, dealRowCount, columnCount, actualColumnCount);
+    // 运行时判断 splitKV；split 改写 FD workspace 等待 combine，非 split 核直写 attenOut
+    if ((constInfo.splitKVNum > 1U) && info.tndIsS2SplitCore) {
+        Bmm2FDDataCopyOut(info, bmm2ResUb, wsMStart, dealRowCount, columnCount, actualColumnCount);
     } else {
-        if (info.tndIsS2SplitCore) {
-            Bmm2FDDataCopyOut(info, bmm2ResUb, wsMStart, dealRowCount, columnCount,
-                              actualColumnCount);
-        } else {
-            Bmm2CastAndCopyOut(info, bmm2ResUb, wsMStart, dealRowCount, columnCount,
-                               actualColumnCount);
+        Bmm2CastAndCopyOut(info, bmm2ResUb, wsMStart, dealRowCount, columnCount, actualColumnCount);
+    }
+}
+
+/*
+ * P0-splitKV: combine阶段(跨核online-softmax归约)。
+ * 前置条件: Process()中所有AIV block已SyncAll(自带PIPE_ALL drain，各核FD partial均已落GM)。
+ * 本核持有part 0的任务由本核归约；同一核的两个AIV子块各自归约自己的m半区
+ * (vecStartM/vecDealM切分与FD写出时的行划分完全一致，各核切法相同，行区间对齐)。
+ * 数学: maxG = max_p lseMax_p; w_p = exp(lseMax_p - maxG);
+ *       O = Σ_p (w_p * O_p) / Σ_p (w_p * lseSum_p)，其中O_p/lseSum_p为未归一化partial。
+ * 布局: lse槽位(元素) = ((taskIdx*P + p)*gSize + 行)*8 (sum/max各一整块region)，
+ *       accumOut槽位(元素) = ((taskIdx*P + p)*gSize + 行)*512。
+ * flag纪律: 复用DealBmm2ResBaseBlock/Bmm2CastAndCopyOut的滚动Set/Wait模式，
+ * 进出各做一次与AllocEventID/FreeEventID等价的武装/释放，保证配对平衡。
+ */
+template <typename QSFAT>
+__aicore__ inline void QSFAVectorService<QSFAT>::ProcessSplitKVCombine(const SplitKVTaskInfo *tasks,
+                                                                       uint32_t taskCount)
+{
+    if (taskCount == 0 || constInfo.splitKVNum <= 1U) { return; }
+    const uint32_t gSize = constInfo.mBaseSize;
+    const uint32_t headDimV = constInfo.headDim;
+    const uint32_t rowSplit = BASE_BLOCK_MAX_ELEMENT_NUM / headDimV;  // 每chunk行数(16)
+    // UB复用: tmpBuff1=acc[16,512] inputBuff1两半=O_p暂存 inputBuff2=lse区 outputBuff1=cast输出
+    LocalTensor<T> accUb = tmpBuff1.Get<T>();
+    LocalTensor<T> lseUb = tmpBuff2.Get<T>();
+    LocalTensor<T> maxTmpUb = lseUb;       // [0, R*8)
+    LocalTensor<T> wUb = lseUb[128];       // [128, 128+R*8)
+    LocalTensor<T> sumTmpUb = lseUb[256];  // [256, 256+R*8)
+    LocalTensor<T> sumAccUb = lseUb[384];  // [384, 384+R*8)
+    LocalTensor<T> maxGUb = lseUb[512];    // [512, 512+R*8)
+    uint32_t localPingpong = pingpongFlag;
+
+    // 与AllocEventID等价的flag武装(主阶段的FreeEventID已将滚动flag消耗完)
+    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_FLAG);
+    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_PONG_FLAG);
+    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+    SetFlag<AscendC::HardEvent::MTE3_V>(SYNC_OUTPUT_BUF1_FLAG);
+
+    for (uint32_t t = 0; t < taskCount; t++) {
+        const uint32_t loopTimes = tasks[t].s2Loops;
+        const uint32_t partNum = tasks[t].partNum;                    // per-task P (仅尾波任务 >1)
+        uint32_t partIter = (loopTimes + partNum - 1) / partNum;      // 每part的s2迭代数
+        uint32_t validParts = (loopTimes + partIter - 1) / partIter;  // 非空part数
+        if (validParts <= 1) {
+            // part 0覆盖全区间，走直写attenOut路径，无需combine
+            continue;
+        }
+        uint32_t nBufferLoopTimes =
+            (gSize + constInfo.nBufferMBaseSize - 1) / constInfo.nBufferMBaseSize;
+        for (uint32_t n = 0; n < nBufferLoopTimes; n++) {
+            uint32_t nBufferDealM =
+                (n + 1 != nBufferLoopTimes)
+                    ? constInfo.nBufferMBaseSize
+                    : (gSize - (nBufferLoopTimes - 1) * constInfo.nBufferMBaseSize);
+            uint32_t vecDealM =
+                (nBufferDealM <= 16) ? nBufferDealM : (((nBufferDealM + 15) / 16 + 1) / 2 * 16);
+            uint32_t vecStartM = 0;
+            if (GetBlockIdx() % 2 == 1) {
+                vecStartM = vecDealM;
+                vecDealM = nBufferDealM - vecDealM;
+            }
+            if (vecDealM == 0) { continue; }
+            for (uint32_t rowStart = vecStartM; rowStart < vecStartM + vecDealM;
+                 rowStart += rowSplit) {
+                uint32_t dealRow = Min(rowSplit, vecStartM + vecDealM - rowStart);
+                uint32_t lseRow = n * constInfo.nBufferMBaseSize + rowStart;
+                uint64_t lseBase = (uint64_t)tasks[t].subBase * gSize + lseRow;  // C: sub编号寻址
+                uint64_t accBase = lseBase;
+                // ---- 阶段1: maxG = max_p lseMax_p ----
+                Duplicate(maxGUb, SOFTMAX_MIN_NUM, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                for (uint32_t p = 0; p < validParts; p++) {
+                    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                    DataCopy(maxTmpUb,
+                             lseMaxFdGm[(lseBase + (uint64_t)p * gSize) * FP32_BLOCK_ELEMENT_NUM],
+                             dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    SetFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    WaitFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    Max(maxGUb, maxGUb, maxTmpUb, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                }
+                // ---- 阶段2: acc = Σ w_p*O_p, sumAcc = Σ w_p*lseSum_p ----
+                Duplicate(accUb, ConstInfo::FLOAT_ZERO, dealRow * headDimV);
+                Duplicate(sumAccUb, ConstInfo::FLOAT_ZERO, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                for (uint32_t p = 0; p < validParts; p++) {
+                    // w_p = exp(lseMax_p - maxG)，GM中的lse本身已8路broadcast
+                    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                    DataCopy(maxTmpUb,
+                             lseMaxFdGm[(lseBase + (uint64_t)p * gSize) * FP32_BLOCK_ELEMENT_NUM],
+                             dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    SetFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    WaitFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    Sub(wUb, maxTmpUb, maxGUb, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    PipeBarrier<PIPE_V>();
+                    Exp(wUb, wUb, static_cast<int32_t>(dealRow * FP32_BLOCK_ELEMENT_NUM));
+                    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                    // sumAcc += w_p * lseSum_p (均为[R,8]按行复制的行向量，逐元素乘即可)
+                    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                    DataCopy(sumTmpUb,
+                             lseSumFdGm[(lseBase + (uint64_t)p * gSize) * FP32_BLOCK_ELEMENT_NUM],
+                             dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    SetFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    WaitFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF2_FLAG);
+                    Mul(sumTmpUb, sumTmpUb, wUb, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    PipeBarrier<PIPE_V>();
+                    Add(sumAccUb, sumAccUb, sumTmpUb, dealRow * FP32_BLOCK_ELEMENT_NUM);
+                    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+                    // acc += w_p * O_p (O_p为[R,512]，按行乘以w_p行标量)
+                    LocalTensor<T> oPartUb = inputBuff1.Get<T>();
+                    oPartUb = oPartUb[localPingpong * INPUT1_BUFFER_OFFSET / sizeof(T)];
+                    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_FLAG + localPingpong);
+                    DataCopy(oPartUb, accumOutGm[(accBase + (uint64_t)p * gSize) * headDimV],
+                             dealRow * headDimV);
+                    SetFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF1_FLAG);
+                    WaitFlag<AscendC::HardEvent::MTE2_V>(SYNC_INPUT_BUF1_FLAG);
+                    RowMuls(oPartUb, oPartUb, wUb, dealRow, headDimV, headDimV);
+                    PipeBarrier<PIPE_V>();
+                    Add(accUb, accUb, oPartUb, dealRow * headDimV);
+                    SetFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_FLAG + localPingpong);
+                    localPingpong ^= 1;
+                }
+                // ---- 阶段3: 归一化 + cast + 写出(镜像Bmm2CastAndCopyOut的flag序列) ----
+                RowDivs(accUb, accUb, sumAccUb, dealRow, headDimV, headDimV);
+                PipeBarrier<PIPE_V>();
+                LocalTensor<OUT_T> castUb = outputBuff1.Get<OUT_T>();
+                WaitFlag<AscendC::HardEvent::MTE3_V>(SYNC_OUTPUT_BUF1_FLAG);
+                if constexpr (IsSameType<OUT_T, bfloat16_t>::value) {
+                    Cast(castUb, accUb, AscendC::RoundMode::CAST_RINT, dealRow * headDimV);
+                } else {
+                    Cast(castUb, accUb, AscendC::RoundMode::CAST_ROUND, dealRow * headDimV);
+                }
+                SetFlag<AscendC::HardEvent::V_MTE3>(SYNC_OUTPUT_BUF1_FLAG);
+                WaitFlag<AscendC::HardEvent::V_MTE3>(SYNC_OUTPUT_BUF1_FLAG);
+                DataCopyExtParams copyParams;
+                copyParams.blockCount = dealRow;
+                copyParams.blockLen = headDimV * sizeof(OUT_T);
+                copyParams.srcStride = 0;
+                copyParams.dstStride = 0;
+                DataCopyPad(attentionOutGm[tasks[t].attenOutOffset + lseRow * headDimV], castUb,
+                            copyParams);
+                SetFlag<AscendC::HardEvent::MTE3_V>(SYNC_OUTPUT_BUF1_FLAG);
+            }
         }
     }
+    // 与FreeEventID等价的flag释放
+    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_FLAG);
+    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF1_PONG_FLAG);
+    WaitFlag<AscendC::HardEvent::V_MTE2>(SYNC_INPUT_BUF2_FLAG);
+    WaitFlag<AscendC::HardEvent::MTE3_V>(SYNC_OUTPUT_BUF1_FLAG);
+    pingpongFlag = localPingpong;
 }
 
 template <typename QSFAT>

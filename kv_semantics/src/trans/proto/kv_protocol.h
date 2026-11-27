@@ -94,13 +94,12 @@ public:
     std::uint32_t offset{0};
     bool lr{false};
     std::uint32_t length{0};
-    CacheKey key{};
+    BinaryKey key{};
 
     void ApplyRetry(std::uint16_t newCid, std::uint64_t, std::uint32_t) override
     {
         cid = newCid;
-    }
-};
+    }};
 
 class KvRetrieveRequest : public SqeRequest {
 public:
@@ -112,18 +111,17 @@ public:
     std::uint32_t offset{0};
     bool lr{false};
     std::uint32_t length{0};
-    CacheKey key{};
+    BinaryKey key{};
 
     void ApplyRetry(std::uint16_t newCid, std::uint64_t, std::uint32_t) override
     {
         cid = newCid;
-    }
-};
+    }};
 
 class KvBatchStoreEntry {
 public:
     std::uint32_t offset{0};
-    CacheKey key{};
+    BinaryKey key{};
     std::uint64_t buffer_addr{0};
     std::uint32_t mr_key{0};
     std::uint32_t length{0};
@@ -154,7 +152,7 @@ public:
 class KvBatchRetrieveEntry {
 public:
     std::uint32_t offset{0};
-    CacheKey key{};
+    BinaryKey key{};
     std::uint64_t buffer_addr{0};
     std::uint32_t mr_key{0};
     std::uint32_t length{0};
@@ -188,7 +186,7 @@ public:
     std::uint32_t response_mr_key{0};
     bool rflag{false};
     std::uint16_t batch_number{0};
-    std::vector<CacheKey> keys;
+    std::vector<BinaryKey> keys;
 
     void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
                     std::uint32_t responseMrKey) override
@@ -196,8 +194,7 @@ public:
         cid = newCid;
         response_buffer_addr = responseBufferAddr;
         response_mr_key = responseMrKey;
-    }
-};
+    }};
 
 class KvExistRequest : public SqeRequest {
 public:
@@ -208,7 +205,7 @@ public:
     bool rflag{false};
     bool sc{true};
     std::uint16_t batch_number{0};
-    std::vector<CacheKey> keys;
+    std::vector<BinaryKey> keys;
 
     void ApplyRetry(std::uint16_t newCid, std::uint64_t responseBufferAddr,
                     std::uint32_t responseMrKey) override
@@ -216,8 +213,7 @@ public:
         cid = newCid;
         response_buffer_addr = responseBufferAddr;
         response_mr_key = responseMrKey;
-    }
-};
+    }};
 
 class KvKeepAliveRequest : public SqeRequest {
 public:
@@ -318,7 +314,7 @@ public:
 
 private:
     Status ValidateRequest(const KvDeleteRequest& r) const;
-    static void PackEntry(const CacheKey& key, std::uint32_t* base);
+    static void PackEntry(const BinaryKey& key, std::uint32_t* base);
 };
 
 class KvExistProtocol : public KvProtocol {
@@ -331,7 +327,7 @@ public:
 
 private:
     Status ValidateRequest(const KvExistRequest& r) const;
-    static void PackEntry(const CacheKey& key, std::uint32_t* base);
+    static void PackEntry(const BinaryKey& key, std::uint32_t* base);
 };
 
 class KvKeepAliveProtocol : public KvProtocol {

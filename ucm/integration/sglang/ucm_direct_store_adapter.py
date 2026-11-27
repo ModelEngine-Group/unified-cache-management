@@ -353,6 +353,8 @@ class UcmDirectStoreAdapter:
             "cp_rank": int(self._identity.get("attn_cp_rank", 0)),
             "cp_size": int(self._identity.get("attn_cp_size", 1)),
             "tp_size": int(self._identity.get("tp_size", 1)),
+            "dp_rank": int(self._identity.get("dp_rank", 0)),
+            "attn_dp_rank": int(self._identity.get("attn_dp_rank", 0)),
             "rank_replicated": bool(self._identity.get("rank_replicated", False)),
         }
         # Replicated TP ranks intentionally share one shm object.  Non-
@@ -497,7 +499,11 @@ class UcmDirectStoreAdapter:
             ]
             store_config["gpu_kv_buffer_sizes"] = [size for _, size in device_buffers]
             store_config["local_rank_size"] = (
-                int(self._identity.get("tp_size", 1))
+                int(
+                    self._identity.get(
+                        "cache_local_rank_size", self._identity.get("tp_size", 1)
+                    )
+                )
                 if self._identity.get("rank_replicated", False)
                 else 1
             )

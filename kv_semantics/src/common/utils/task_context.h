@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "key_resolver.h"
 #include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "trans_types.h"
@@ -88,11 +89,12 @@ struct TransportTask {
     TransportTask();
 
     NodeId nodeId{0};
+    std::uint32_t namespaceId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;
-    std::vector<CacheKey> keys;
-    std::vector<KVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -127,11 +129,16 @@ struct ClientTask {
     AsuOpType opType{AsuOpType::LOAD};
     std::function<Status()> prerequisite;
     std::shared_ptr<ViewSnapshot> viewSnapshot;
-    std::vector<KVBuffer> entries;
-    std::vector<CacheKey> keys;
+    std::vector<ResolvedKVBuffer> entries;
+    std::vector<ResolvedCacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;
+    // Number of entries that could not be routed to any healthy node (primary and
+    // secondary ring both failed). Such entries stay in entryStatus with
+    // StatusCode::NO_AVAILABLE_NODE. The task reports NO_AVAILABLE_NODE when every
+    // entry is unroutable, otherwise PARTIAL_FAILED.
+    std::size_t routingFailedEntries{0};
 
     std::atomic<std::size_t> remainingTransportTasks{0};
     std::atomic<std::size_t> remainingTransportSendTasks{0};

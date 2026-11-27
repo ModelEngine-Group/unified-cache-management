@@ -1,4 +1,4 @@
-message(STATUS "[INFO] Building gsa_prefetch for device: ${RUNTIME_ENVIRONMENT}")
+message(STATUS "[INFO] Building gsa_prefetch_v2 for device: ${RUNTIME_ENVIRONMENT}")
 
 # Enable C language for Huawei Secure C
 enable_language(C)
@@ -103,39 +103,40 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=${CXX11_ABI}")
 find_package(OpenMP REQUIRED)
 
 # 创建pybind11模块
-pybind11_add_module(gsa_prefetch ${SOURCES})
+pybind11_add_module(gsa_prefetch_v2 ${SOURCES})
+set_target_properties(gsa_prefetch_v2 PROPERTIES OUTPUT_NAME gsa_prefetch)
 if(TARGET spdlog)
     get_target_property(SPDLOG_INCLUDE_DIRS spdlog INTERFACE_INCLUDE_DIRECTORIES)
     if(SPDLOG_INCLUDE_DIRS)
-        target_include_directories(gsa_prefetch BEFORE PRIVATE ${SPDLOG_INCLUDE_DIRS})
+        target_include_directories(gsa_prefetch_v2 BEFORE PRIVATE ${SPDLOG_INCLUDE_DIRS})
     endif()
 endif()
 
 if(TARGET fmt)
     get_target_property(FMT_INCLUDE_DIRS fmt INTERFACE_INCLUDE_DIRECTORIES)
     if(FMT_INCLUDE_DIRS)
-        target_include_directories(gsa_prefetch BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
+        target_include_directories(gsa_prefetch_v2 BEFORE PRIVATE ${FMT_INCLUDE_DIRS})
     endif()
 endif()
 # 设置头文件目录
-target_include_directories(gsa_prefetch PRIVATE ${INCLUDE_DIRS})
+target_include_directories(gsa_prefetch_v2 PRIVATE ${INCLUDE_DIRS})
 
 # 设置库文件目录
-target_link_directories(gsa_prefetch PRIVATE ${LIBRARY_DIRS})
+target_link_directories(gsa_prefetch_v2 PRIVATE ${LIBRARY_DIRS})
 
 # 链接库
-target_link_libraries(gsa_prefetch PRIVATE ${LIBRARIES})
+target_link_libraries(gsa_prefetch_v2 PRIVATE ${LIBRARIES})
 
 # 链接OpenMP
 if(OpenMP_CXX_FOUND)
-    target_link_libraries(gsa_prefetch PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(gsa_prefetch_v2 PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
 file(RELATIVE_PATH INSTALL_REL_PATH
      ${UCM_ROOT_DIR}
      ${CMAKE_CURRENT_SOURCE_DIR}
 )
-install(TARGETS gsa_prefetch LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
+install(TARGETS gsa_prefetch_v2 LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
 
 # 单元/模块/端到端测试套件：仅在开启 BUILD_UNIT_TESTS 时构建，使用 ACL stub + mock store，
 # 不依赖 Ascend NPU / torch_npu 环境。

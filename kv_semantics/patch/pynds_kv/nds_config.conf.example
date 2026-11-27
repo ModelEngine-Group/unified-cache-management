@@ -1,6 +1,11 @@
-# NDS v1.6 cluster configuration example.
+# NDS v1.6 non-cluster configuration example.
 # Copy to nds_config.conf and replace all placeholders before use.
-local_ip_config = <LOCAL_IP>, 33050, 3, 1
+# ip_config = local IP, server IP, port, GID index, RoCE port, DPU ID.
+ip_config = <LOCAL_IP>, <SERVER_IP>, 33050, 3, 1, <DPU_ID>
+
+# For a cluster build, replace ip_config with:
+# local_ip_config = <LOCAL_IP>, 33050, 3, 1
+# and set sceneMode = 1 below.
 
 start_core = 2
 log_level = 1
@@ -11,9 +16,17 @@ ip_num = 100
 priority = 4
 tos = 128
 core_num = 1
+
+# Keepalive timeout in seconds. The server requests disconnection when neither
+# I/O nor a heartbeat arrives within this interval.
 kato = 10
+# Send a heartbeat when no I/O is observed within this interval, in seconds.
 heartbeat_interval = 1
+# on: reconnect using the intervals below; off: trigger reconnection immediately.
 timer_switch = on
+# Comma-separated reconnection intervals in seconds; the last value is reused.
 reconnection_interval = 5, 7, 8, 10
+# Delay before retrying after a resource-busy error, in milliseconds.
 busy_duration = 1000
-sceneMode = 1
+
+sceneMode = 0

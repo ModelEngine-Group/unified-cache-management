@@ -62,17 +62,24 @@ TransportTaskExecutor::~TransportTaskExecutor()
 
 Status TransportTaskExecutor::Init()
 {
+    if (!transProvider_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
+    }
+
     (void)metrics::RegisterMetricLabels(asuSendMetric_.Name(), asuSendMetric_.Labels());
     (void)metrics::RegisterMetricLabels(asuCompletionMetric_.Name(), asuCompletionMetric_.Labels());
-    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
+    // The provider decides whether its control buffers need the device address space or plain host
+    // memory; the transport must not assume one or the other.
+    const MemoryType controlMemory = transProvider_->ControlBufferMemory();
+    auto status = sendBufferManager_.Init("asu send buffer", controlMemory,
                                           config_.sendBufferSlotSize, config_.sendBufferSlotNum);
     if (!status.ok()) {
         (void)Shutdown();
         return status;
     }
 
-    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
-                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
+    status = flagBufferManager_.Init("asu flag buffer", controlMemory, config_.flagBufferSlotSize,
+                                     config_.flagBufferSlotNum);
     if (!status.ok()) {
         (void)Shutdown();
         return status;

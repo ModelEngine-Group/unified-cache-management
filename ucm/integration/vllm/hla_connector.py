@@ -43,7 +43,6 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
-from ucm.store.cache.capabilities import uses_partitioned_cache
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -1138,11 +1137,6 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             raise ValueError("NPU flash-next PLE layer has no live tensor.")
         page = int(self.page_types[0])
         stage_bytes = len(rows) * page
-        logger.info(
-            "NPU flash-next PLE stage: blocks=%s bytes=%s",
-            len(rows),
-            stage_bytes,
-        )
         self._ple_stage = torch.empty(
             stage_bytes,
             dtype=torch.uint8,
@@ -1667,6 +1661,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         self._skip_null_vllm_blocks = True
+        self._setup_cp_scoping(vllm_config)
+        self._state_group_ids = (
+            state_group_ids(kv_cache_config) if kv_cache_config is not None else set()
+        )
         # group manager only lives on the scheduler side, where ``self._seed``
         # and ``self.request_hasher`` are populated by the parent ctor.
         self.group_manager: Optional[KVCacheGroupManager] = None
@@ -1724,6 +1722,81 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self._save_bytes_total = 0
 
         logger.info(f"{type(self).__name__} initialized")
+
+    def _setup_cp_scoping(self, vllm_config: "VllmConfig") -> None:
+        """Set up pure-PCP state; the policy lives in ``_scope_blocks_pcp``.
+
+        The pcp size comes from ``parallel_config`` (the scheduler process
+        never initializes the PCP group); ``rank_in_group`` is worker-only.
+        """
+        parallel_config = vllm_config.parallel_config
+        self.pcp_world_size = getattr(
+            parallel_config, "prefill_context_parallel_size", 1
+        )
+        self.pcp_rank = 0
+        self._pcp_shard_hasher = None
+        if getattr(parallel_config, "pipeline_parallel_size", 1) > 1:
+            raise ValueError(
+                "Pipeline parallelism is not supported for the current "
+                "model. Set pipeline_parallel_size=1."
+            )
+        if getattr(parallel_config, "decode_context_parallel_size", 1) > 1:
+            raise ValueError(
+                "Decode context parallelism is not supported for the "
+                "current model. Set decode_context_parallel_size=1."
+            )
+        if self.pcp_world_size == 1:
+            return
+        if self._role == KVConnectorRole.WORKER:
+            from vllm.distributed import get_pcp_group
+
+            self.pcp_rank = get_pcp_group().rank_in_group
+        if parallel_config.tensor_parallel_size == 1:
+            # TP=1 head-shards the state across PCP ranks: the suffix keeps
+            # pcp sizes from aliasing each other's shard keys.  Rank 0's keys
+            # are the scheduler's own hashes, so its hasher carries it too;
+            # TP>1 replicates identical bytes and needs no suffix.
+            suffix = f":pcp={self.pcp_world_size}"
+            from ucm.integration.vllm.request_hasher import RequestHasher
+            from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
+
+            if self._role == KVConnectorRole.SCHEDULER:
+                self.request_hasher = RequestHasher(
+                    build_kv_hash_meta(vllm_config, 0) + suffix
+                )
+                self._seed = self.request_hasher.seed
+            else:
+                self._pcp_shard_hasher = RequestHasher(
+                    build_kv_hash_meta(vllm_config, self.pcp_rank) + suffix
+                )
+
+    def _make_other_rank_hashers(self, vllm_config) -> list["RequestHasher"]:
+        """Per-rank namespaces for GC hotness refresh.
+
+        Unlike the base ``is_mla -> []`` shortcut, hybrid MLA models have
+        per-rank KDA shards that must stay warm; at TP=1 with PCP the
+        rank slot carries the pcp_rank.
+        """
+        from ucm.integration.vllm.request_hasher import RequestHasher
+        from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
+
+        parallel_config = vllm_config.parallel_config
+        tp_size = parallel_config.tensor_parallel_size
+        pcp_size = getattr(parallel_config, "prefill_context_parallel_size", 1)
+        if tp_size > 1:
+            return [
+                RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
+                for rank_id in range(1, tp_size)
+            ]
+        if pcp_size > 1:
+            # Must match _setup_cp_scoping's shard hasher.
+            return [
+                RequestHasher(
+                    build_kv_hash_meta(vllm_config, pcp_rank) + f":pcp={pcp_size}"
+                )
+                for pcp_rank in range(1, pcp_size)
+            ]
+        return []
 
     def get_block_size(self) -> int:
         if self.group_manager is not None:
@@ -1818,10 +1891,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
         all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
         hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
-        # MLA full-attn is TP-replicated (shared hash), no per-rank entries to prefetch.
-        # Only mamba blocks have per-rank entries needing heat update.
+        # Full-attn has per-rank keys only for non-MLA at TP > 1.
         per_rank_hashes = mamba_prefetch_hashes
-        if not self.is_mla:
+        if not self.is_mla and self.tp_size > 1:
             per_rank_hashes = all_hit_full_attn + mamba_prefetch_hashes
         # Use the base connector's best-effort hotness update. It refreshes
         # rank 0 as well as other ranks and isolates prefetch failures.
@@ -2163,7 +2235,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         blocks; KDA state is per-rank sharded (rank0 shared / non-rank0
         per-rank hashing). Loads are unchanged: every rank reads all of its
         MLA blocks plus its own KDA blocks.
+
+        Under pure PCP, dumps (and TP=1 loads, which need the pcp_rank
+        KDA namespace) delegate to ``_scope_blocks_pcp``.
         """
+        if getattr(self, "pcp_world_size", 1) > 1 and (is_dump or self.tp_size == 1):
+            return self._scope_blocks_pcp(
+                ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump
+            )
         is_rank0 = self.tp_rank % self.tp_size == 0
         if not self.is_mla:
             scoped = ucm_ids if is_rank0 else [self.request_hasher(b) for b in ucm_ids]
@@ -2194,6 +2273,116 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             mla_groups + kda_groups,
         )
 
+    def _scope_blocks_pcp(self, ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump):
+        """Rank-scope block IDs under pure PCP (entered from ``_scope_blocks``).
+
+        PCP replicates the gathered caches across ranks, so keys and loads
+        match the non-CP path and only dump responsibility changes:
+        replicated content spreads across the PCP axis (MLA over the
+        ``tp_size * pcp_world_size`` grid; KDA / non-MLA over each TP
+        position's PCP ranks).  Exception (TP=1): every PCP rank stores
+        its full KDA section under a pcp_rank namespace -- self-consistent
+        whether the state is head-sharded or replicated.
+        """
+        pcp_world_size = getattr(self, "pcp_world_size", 1)
+        pcp_rank = getattr(self, "pcp_rank", 0)
+        is_rank0 = self.tp_rank % self.tp_size == 0
+        if not self.is_mla:
+            if self.tp_size == 1:
+                # TP=1+PCP: GQA is PCP-gathered (shared keys, dumps spread
+                # across PCP ranks); GDN state takes a pcp_rank namespace
+                # with a full section per rank, dump and load alike.
+                state_ids = getattr(self, "_state_group_ids", None) or set()
+                is_state = [gid in state_ids for gid in group_ids]
+                fa_ucm = [b for b, s in zip(ucm_ids, is_state) if not s]
+                fa_vllm = [v for v, s in zip(vllm_ids, is_state) if not s]
+                fa_groups = [g for g, s in zip(group_ids, is_state) if not s]
+                st_ucm = [b for b, s in zip(ucm_ids, is_state) if s]
+                st_vllm = [v for v, s in zip(vllm_ids, is_state) if s]
+                st_groups = [g for g, s in zip(group_ids, is_state) if s]
+                if pcp_rank == 0:
+                    st_scoped = st_ucm
+                else:
+                    shard_hasher = getattr(self, "_pcp_shard_hasher", None)
+                    if shard_hasher is None:
+                        raise RuntimeError("PCP with TP=1 requires _pcp_shard_hasher")
+                    st_scoped = [shard_hasher(b) for b in st_ucm]
+                if is_dump and fa_ucm:
+                    count = len(fa_ucm)
+                    start = count * pcp_rank // pcp_world_size
+                    end = count * (pcp_rank + 1) // pcp_world_size
+                    fa_ucm = fa_ucm[start:end]
+                    fa_vllm = fa_vllm[start:end]
+                    fa_groups = fa_groups[start:end]
+                return (
+                    fa_ucm + st_ucm,
+                    fa_ucm + st_scoped,
+                    fa_vllm + st_vllm,
+                    fa_groups + st_groups,
+                )
+            # TP>1+PCP: every cache is per-TP namespaced, and dumps spread
+            # the PCP-replicated bytes across this TP position's PCP ranks.
+            scoped = ucm_ids if is_rank0 else [self.request_hasher(b) for b in ucm_ids]
+            if is_dump:
+                count = len(ucm_ids)
+                start = count * pcp_rank // pcp_world_size
+                end = count * (pcp_rank + 1) // pcp_world_size
+                return (
+                    ucm_ids[start:end],
+                    scoped[start:end],
+                    vllm_ids[start:end],
+                    group_ids[start:end],
+                )
+            return ucm_ids, scoped, vllm_ids, group_ids
+
+        n = int(full_attn_count) if full_attn_count else 0
+        mla_ucm, kda_ucm = ucm_ids[:n], ucm_ids[n:]
+        mla_vllm, kda_vllm = vllm_ids[:n], vllm_ids[n:]
+        mla_groups, kda_groups = group_ids[:n], group_ids[n:]
+        if self.tp_size == 1:
+            # TP=1+PCP: full KDA section per rank under a pcp_rank
+            # namespace; dump and load scope identically here.
+            if pcp_rank == 0:
+                kda_scoped = kda_ucm
+            else:
+                shard_hasher = getattr(self, "_pcp_shard_hasher", None)
+                if shard_hasher is None:
+                    raise RuntimeError("PCP with TP=1 requires _pcp_shard_hasher")
+                kda_scoped = [shard_hasher(b) for b in kda_ucm]
+        else:
+            # TP>1: KDA is TP-sharded and PCP-replicated; namespace is
+            # unchanged from the non-CP path, and dumps spread the
+            # PCP-replicated shard across this TP position's PCP ranks.
+            if is_rank0:
+                kda_scoped = kda_ucm
+            else:
+                kda_scoped = [self.request_hasher(b) for b in kda_ucm]
+            if is_dump:
+                count = len(kda_ucm)
+                start = count * pcp_rank // pcp_world_size
+                end = count * (pcp_rank + 1) // pcp_world_size
+                kda_ucm = kda_ucm[start:end]
+                kda_scoped = kda_scoped[start:end]
+                kda_vllm = kda_vllm[start:end]
+                kda_groups = kda_groups[start:end]
+        if is_dump and n:
+            # Spread the replicated MLA dump across the
+            # ``tp_size x pcp_world_size`` worker grid; slices are disjoint
+            # and their union is the whole MLA block list.
+            grid = self.tp_size * pcp_world_size
+            rank = pcp_rank * self.tp_size + self.tp_rank % self.tp_size
+            start = n * rank // grid
+            end = n * (rank + 1) // grid
+            mla_ucm = mla_ucm[start:end]
+            mla_vllm = mla_vllm[start:end]
+            mla_groups = mla_groups[start:end]
+        return (
+            mla_ucm + kda_ucm,
+            mla_ucm + kda_scoped,
+            mla_vllm + kda_vllm,
+            mla_groups + kda_groups,
+        )
+
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
@@ -2214,9 +2403,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
-        if uses_partitioned_cache():
-            config["local_rank_size"] = self._get_world_size()
-            self._configure_numa_placement(config)
+        config["local_rank_size"] = self._get_world_size()
+        self._configure_numa_placement(config)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
@@ -2243,8 +2431,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             config["shard_size"] = shard_size * self.blocks_per_chunk
             config["block_size"] = block_size * self.blocks_per_chunk
             self._publish_block_size(config["block_size"])
-            if not uses_partitioned_cache():
-                config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()
@@ -3103,24 +3289,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                 )
 
-    def _is_full_cudagraph(self) -> bool:
-        """True when the engine may replay a full model graph this process.
-
-        ``FULL``, ``FULL_DECODE_ONLY``, and ``FULL_AND_PIECEWISE`` all report
-        ``has_full_cudagraphs()`` / decode-side FULL. Those replays skip
-        per-layer Python wait hooks, so the depth-2 load pipeline cannot
-        submit later positions or wait before the model reads KV.
-        """
-        cc = getattr(self._vllm_config, "compilation_config", None)
-        cg_mode = getattr(cc, "cudagraph_mode", None)
-        if cg_mode is None:
-            return False
-        has_full = getattr(cg_mode, "has_full_cudagraphs", None)
-        if callable(has_full):
-            return bool(has_full())
-        name = str(getattr(cg_mode, "name", cg_mode) or "NONE")
-        return name in {"FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"}
-
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -3134,14 +3302,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         # has completed before load DMA (store stream) can overwrite the
         # state it copies.
         self.device.synchronize()
-        if self._is_full_cudagraph():
-            # Finish every layer load before forward enters the captured
-            # graph; wait_for_save drain cannot recover unsubmitted layers.
-            for pos in range(len(self.layer_order)):
-                self._submit_layer_load(pos)
-            self._drain_unwaited_loads()
-            self._record_load_bytes()
-            return
         # Depth-2 pipeline: submit the first two layers only; each layer's
         # wait_for_layer_load hook then waits its own layer and submits the
         # layer two positions ahead.

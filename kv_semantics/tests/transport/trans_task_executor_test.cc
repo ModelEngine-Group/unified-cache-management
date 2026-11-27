@@ -191,7 +191,7 @@ protected:
             request->batch_number = 1;
             request->rflag = true;
             KvBatchStoreEntry requestEntry;
-            requestEntry.key = CacheKey{std::byte{1}};
+            requestEntry.key = BinaryKey{std::byte{1}};
             requestEntry.buffer_addr = 0x1000;
             requestEntry.mr_key = 1;
             requestEntry.length = 512;  // 协议要求 512B 对齐

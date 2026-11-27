@@ -50,6 +50,7 @@ enum class RetryCategory : std::uint8_t {
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
+    std::uint32_t namespaceId{0};
     AsuOpType opType{AsuOpType::QUERY};
     TransportSubBatchState state{TransportSubBatchState::PENDING};
     Status status{Status::OK()};
