@@ -2044,6 +2044,43 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         expected_wa = (40 * 19008 * 4 + 4095) // 4096 * 4096
         self.assertEqual(self_obj.file_size, {"FA": expected_fa, "WA": expected_wa})
 
+    def test_fawa_load_tokens_threshold_default_is_2048(self):
+        tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
+        cls = next(
+            node
+            for node in tree.body
+            if getattr(node, "name", None) == "UCMFAWAConnector"
+        )
+        init = next(
+            node
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        )
+        default = None
+        for node in ast.walk(init):
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = node.targets
+            if not any(
+                isinstance(target, ast.Attribute)
+                and target.attr == "load_tokens_threshold"
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+                for target in targets
+            ):
+                continue
+            call = node.value
+            self.assertIsInstance(call, ast.Call)
+            self.assertIsInstance(call.func, ast.Attribute)
+            self.assertEqual(call.func.attr, "get")
+            self.assertEqual(len(call.args), 2)
+            key, default = call.args
+            self.assertIsInstance(key, ast.Constant)
+            self.assertEqual(key.value, "load_tokens_threshold")
+        self.assertIsNotNone(default)
+        self.assertIsInstance(default, ast.Constant)
+        self.assertEqual(default.value, 2048)
+
 
 if __name__ == "__main__":
     unittest.main()
