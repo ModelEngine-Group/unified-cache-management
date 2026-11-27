@@ -9,11 +9,10 @@ logger = init_logger(__name__)
 
 
 def _has_ucm_sync_load(metadata):
-    # Keep imports lazy: registration happens during platform initialization.
-    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (
-        MultiKVConnectorMetadata,
-    )
+    if metadata is None:
+        return False
 
+    # Keep imports lazy: registration happens during platform initialization.
     from ucm.integration.vllm.ucm_connector import UCMConnectorMetadata
 
     if isinstance(metadata, UCMConnectorMetadata):
@@ -21,6 +20,11 @@ def _has_ucm_sync_load(metadata):
             bool(request.load_block_ids[0]) and not request.load_async
             for request in metadata.request_meta.values()
         )
+
+    from vllm.distributed.kv_transfer.kv_connector.v1.multi_connector import (
+        MultiKVConnectorMetadata,
+    )
+
     if isinstance(metadata, MultiKVConnectorMetadata):
         return any(_has_ucm_sync_load(child) for child in metadata.metadata)
     return False

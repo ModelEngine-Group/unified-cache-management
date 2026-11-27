@@ -538,10 +538,14 @@ class SyncLoadPatchTests(unittest.TestCase):
             empty = Metadata(
                 {"r": SimpleNamespace(load_block_ids=([], []), load_async=False)}
             )
-            self.assertTrue(check(sync))
-            self.assertTrue(check(Multi([asynchronous, sync])))
-            self.assertFalse(check(asynchronous))
-            self.assertFalse(check(empty))
+            with patch.dict(sys.modules, {single.__name__: None, multi.__name__: None}):
+                self.assertFalse(check(None))
+            with patch.dict(sys.modules, {multi.__name__: None}):
+                self.assertTrue(check(sync))
+                self.assertFalse(check(asynchronous))
+                self.assertFalse(check(empty))
+            self.assertTrue(check(Multi([None, asynchronous, sync])))
+            self.assertFalse(check(Multi([None, asynchronous, empty])))
             self.assertFalse(check(object()))
 
             class Scheduler:
