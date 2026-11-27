@@ -143,7 +143,7 @@ def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
             participates_in_prefix_caching(inner)
             for inner in spec.kv_cache_specs.values()
         )
-    if type(spec).__name__ == "CircularBufferSpec":
+    if any(base.__name__ == "CircularBufferSpec" for base in type(spec).__mro__):
         return False
     # Ascend KpoolTail is request-local ring state,
     # not a historical prefix, even when KV transfer is enabled.
@@ -156,6 +156,12 @@ def kv_cache_layout_name(kv_cache_config: "KVCacheConfig") -> str:
     """Return the resolved layout name, without an enum class prefix."""
     raw = getattr(kv_cache_config, "kv_cache_layout", None)
     return str(raw or "").split(".")[-1]
+
+
+def is_cuda_blhnc_layout(kv_cache_config: "KVCacheConfig") -> bool:
+    return (
+        current_platform.is_cuda() and kv_cache_layout_name(kv_cache_config) == "BLHNC"
+    )
 
 
 def is_cuda_blnhc_layout(kv_cache_config: "KVCacheConfig") -> bool:
@@ -676,10 +682,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
 
     def _build_layout(self, kvcaches) -> None:
-        if (
-            current_platform.is_cuda()
-            and kv_cache_layout_name(self.kv_cache_config) == "BLHNC"
-        ):
+        if is_cuda_blhnc_layout(self.kv_cache_config):
             self._build_cuda_blhnc_layout(kvcaches)
             return
         if is_cuda_blnhc_layout(self.kv_cache_config):
@@ -840,6 +843,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self.width = len(self.page_types)
         self.slot_shard_size = sum(self.page_types)
         self.tensor_size_lists = np.asarray([self.page_types], dtype=np.uint64)
+        # Store columns hold packed copy lengths. Physical blocks advance by
+        # the descriptor stride, which can be larger than the copy length.
         self.direct_column_strides = tuple(strides)
         self.block_stride_lists = np.asarray(strides, dtype=np.uint64)
         self.base_ptrs = np.asarray(list(buffers), dtype=np.uint64)
@@ -1696,6 +1701,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         column size stays; the store skips the null address). E.g. GLM:
         an attention layer covers [main, small], a mamba layer [main, 0].
         """
+        if hasattr(self, "direct_column_strides"):
+            raise ValueError("CUDA BLHNC supports only direct block addressing.")
         anchors = self.layer_anchors.get(layer_name)
         if anchors is None:
             raise ValueError(f"Layer has no per-layer anchors: {layer_name}")
@@ -2728,14 +2735,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # copies one block_stride segment per column. NPU layer-major BLNHC
         # stores each layer's blocks contiguously and uses the same copy.
         layout_name = kv_cache_layout_name(self._kv_cache_config)
+        cuda_blhnc = is_cuda_blhnc_layout(self._kv_cache_config)
         if (
             layout_name.startswith("B")
             and not is_cuda_blnhc_layout(self._kv_cache_config)
-            and not (
-                current_platform.is_cuda()
-                and layout_name == "BLHNC"
-                and not self.use_layerwise
-            )
+            and not (cuda_blhnc and not self.use_layerwise)
             and not is_npu_layer_major_blnhc(self._kv_cache_config)
         ):
             raise ValueError(
@@ -2750,7 +2754,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         launch_config = self.launch_config
         if not self.use_layerwise and (
-            layout_name == "BLHNC" or is_npu_layer_major_blnhc(self._kv_cache_config)
+            cuda_blhnc or is_npu_layer_major_blnhc(self._kv_cache_config)
         ):
             # The layout defaults to layerwise even on the direct connector.
             launch_config = copy.deepcopy(self.launch_config)

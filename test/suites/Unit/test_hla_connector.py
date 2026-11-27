@@ -82,6 +82,7 @@ def hla():
         "participates_in_prefix_caching",
         "extend_non_null",
         "kv_cache_layout_name",
+        "is_cuda_blhnc_layout",
         "is_cuda_blnhc_layout",
         "is_npu_layer_major_blnhc",
         "npu_flash_next_store_columns",
@@ -109,6 +110,7 @@ def hla():
             "_column_base",
             "direct_store_config",
             "extract_block_addrs",
+            "extract_layer_addrs",
             "_build_glm53_ascend_layout",
             "_validate_glm53_ascend_descriptors",
             "_build_glm53_ascend_row",
@@ -2271,6 +2273,7 @@ def cuda_blhnc_layout(hla):
     descriptors = []
     tensors = {}
     circular = type("CircularBufferSpec", (KVCacheSpec,), {})
+    circular = type("IndexerTailSpec", (circular,), {})
 
     def add_descriptor(specs, prefix, count, page, offset, spec_type):
         names = []
@@ -2344,6 +2347,8 @@ def test_cuda_blhnc_copies_only_group_bytes_at_block_stride(cuda_blhnc_layout):
         [0, 0, 0, 0, 0],
     ]
     assert "tail.0" not in layout.layer_anchors
+    with pytest.raises(ValueError, match="only direct block addressing"):
+        layout.extract_layer_addrs("mla.0", [2199])
     for block_id in (-1, 2200):
         with pytest.raises(ValueError, match="outside"):
             layout.extract_block_addrs([block_id], [3])

@@ -304,6 +304,7 @@ def test_empty_layer_names_falls_back_to_specs(policy, name, expected):
     [
         SimpleNamespace(cache_role="indexer"),
         type("MambaSpec", (), {})(),
+        type("DerivedWindowSpec", (type("SlidingWindowMLASpec", (), {}),), {})(),
         SimpleNamespace(model_version="deepseek_v4"),
     ],
 )
@@ -317,7 +318,8 @@ def test_cuda_specialized_specs_force_request_async(policy, spec):
     assert config == {"use_layerwise": False, "use_request_async_load": True}
 
 
-def test_standard_single_group_swa_keeps_layerwise(policy):
+@pytest.mark.parametrize("with_full_attention", [False, True])
+def test_standard_swa_keeps_layerwise(policy, with_full_attention):
     apply, _ = policy
     config = {"use_layerwise": True}
     cache = SimpleNamespace(
@@ -327,6 +329,10 @@ def test_standard_single_group_swa_keeps_layerwise(policy):
             )
         ]
     )
+    if with_full_attention:
+        cache.kv_cache_groups.insert(
+            0, SimpleNamespace(kv_cache_specs={"full": SimpleNamespace()})
+        )
     assert apply(config, cache) == (False, False)
     assert config == {"use_layerwise": True}
 

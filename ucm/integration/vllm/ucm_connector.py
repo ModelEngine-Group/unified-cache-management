@@ -129,9 +129,11 @@ def _apply_cuda_indexer_io_config(
         has_specialized_cache |= any(
             _has_layer_component(name, {"swa_cache"}) for name in layer_names
         ) or any(
-            any(base.__name__ == "MambaSpec" for base in type(spec).__mro__)
+            any(
+                base.__name__ in {"MambaSpec", "SlidingWindowMLASpec"}
+                for base in type(spec).__mro__
+            )
             or getattr(spec, "model_version", None) == "deepseek_v4"
-            or type(spec).__name__ == "SlidingWindowMLASpec"
             for spec in group_specs
         )
 
