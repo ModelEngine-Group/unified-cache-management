@@ -47,6 +47,7 @@ Status PosixQueue::Setup(const int32_t deviceId, const size_t bufferSize, const 
         this->backend_.SetWorkerInitFn([this](auto& device) { return this->Init(device); })
             .SetWorkerFn([this](auto& shard, const auto& device) { this->Work(shard, device); })
             .SetWorkerExitFn([this](auto& device) { this->Exit(device); })
+            .SetNWorker(1)
             .Run();
     return success ? Status::OK() : Status::Error();
 }
@@ -128,14 +129,14 @@ Status PosixQueue::H2S(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, true);
     auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Write(path, shard.offset, shard.length, shard.address, aligned);
+    return File::Write(path, shard.offset, shard.length, shard.address, useDirect_ && aligned);
 }
 
 Status PosixQueue::S2H(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, false);
     auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Read(path, shard.offset, shard.length, shard.address, aligned);
+    return File::Read(path, shard.offset, shard.length, shard.address, useDirect_ && aligned);
 }
 
 } // namespace UC
