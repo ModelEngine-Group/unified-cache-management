@@ -654,7 +654,7 @@ jobs:
           artifact="ucm-release-plan-run-${GITHUB_RUN_ID}"
           index_matrix="$(jq -ce \
             '{include:[.families[]|select(.create_index)|
-              {id,label,target_repository,target_tag,members:[.members[].reference]}]}' \
+              {id,label}]}' \
             out/plan/release-plan.json)"
           publish_images="$(jq -r \
             '(.publish.ghcr.enabled == true) or (.publish.dockerhub.enabled == true)' \
@@ -692,6 +692,11 @@ jobs:
           path: out/cleanup/*.json
           if-no-files-found: error
           retention-days: 90
+      - name: Recover receipts from previous runs of this Tag and source
+        if: ${{ steps.plan.outputs.publish_images == 'true' }}
+        env:
+          RELEASE_TAG: ${{ inputs.git_tag }}
+        run: bash .github/release/recover-image-receipts.sh out/plan
       - name: Report shared publication decisions
         run: |
           set -euo pipefail
@@ -722,7 +727,9 @@ jobs:
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: ${{ steps.plan.outputs.plan_artifact }}
-          path: out/plan/release-plan.json
+          path: |
+            out/plan/release-plan.json
+            out/plan/prior-image-receipts/
           if-no-files-found: error
           overwrite: true
           retention-days: 90
@@ -1164,9 +1171,8 @@ jobs:
     needs: [plan, build-images, publish-release-artifacts]
     if: >-
       ${{
-        always() && needs.plan.result == 'success' &&
+        !cancelled() && needs.plan.result == 'success' &&
         needs.plan.outputs.publish_images == 'true' &&
-        needs.build-images.result == 'success' &&
         needs.publish-release-artifacts.result == 'success'
       }}
     runs-on: ubuntu-24.04
@@ -1193,14 +1199,24 @@ jobs:
       - uses: actions/download-artifact@v4.3.0
         with:
           pattern: ucm-image-member-receipt-*-run-${{ github.run_id }}
-          path: input/receipts
+          path: input/history
           merge-multiple: true
+      - name: Select the latest observation for each member
+        env:
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
+        run: PYTHONPATH=.github/release python -m ucm_release.image_delivery collect --output out/members
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-release-members-run-${{ github.run_id }}
+          path: out/members/
+          if-no-files-found: warn
+          overwrite: true
       - name: Require one complete receipt per planned image
         run: |
           set -euo pipefail
           python .github/release/ucm_release/release.py members \
             --plan input/plan/release-plan.json \
-            --receipts input/receipts --output out/validation
+            --receipts out/members --output out/validation
 
   publish-image-indexes:
     name: Publish index · ${{ matrix.label }}
@@ -1208,7 +1224,8 @@ jobs:
     if: >-
       ${{
         needs.plan.outputs.publish_images == 'true' &&
-        needs.publish-image-members.result == 'success' &&
+        !cancelled() && needs.plan.result == 'success' &&
+        needs.publish-image-members.result != 'skipped' &&
         needs.plan.outputs.has_image_indexes == 'true'
       }}
     strategy:
@@ -1223,101 +1240,44 @@ jobs:
       packages: write
     env:
       GH_TOKEN: ${{ github.token }}
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
-      - uses: docker/setup-buildx-action@v3.11.1
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r .github/release/requirements.txt
+      - uses: ./.github/actions/setup-crane
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
           path: input/plan
-      - name: Publish multi-architecture index
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ucm-release-members-run-${{ github.run_id }}
+          path: input/members
+      - uses: actions/download-artifact@v4.3.0
+        if: ${{ github.run_attempt != '1' }}
+        with:
+          pattern: ucm-image-index-receipt-${{ matrix.id }}-attempt-*-run-${{ github.run_id }}
+          path: input/history
+          merge-multiple: true
+      - name: Publish indexes for registries with all verified architectures
         env:
-          TARGET_REPOSITORY: ${{ matrix.target_repository }}
-          TARGET_TAG: ${{ matrix.target_tag }}
-          MEMBERS: ${{ toJSON(matrix.members) }}
           PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
           INDEX_ID: ${{ matrix.id }}
-        run: |
-          set -euo pipefail
-          plan=input/plan/release-plan.json
-          jq -e --arg scope "${PUBLICATION_SCOPE}" \
-            --arg repository "${GITHUB_REPOSITORY}" \
-            '.publication_scope == $scope and
-             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
-            "${plan}" >/dev/null
-          mkdir -p out/receipts
-          receipt="out/receipts/index-${INDEX_ID}.json"
-          targets='[]'
-          jq -n --arg id "${INDEX_ID}" \
-            '{kind:"ucm-image-index-receipt",schema_version:1,id:$id,
-              status:"failed",targets:[]}' >"${receipt}"
-          mapfile -t ghcr_members < <(jq -er '.[]' <<<"${MEMBERS}")
-          test "${#ghcr_members[@]}" -gt 1
-          if [ "$(jq -r '.publish.ghcr.enabled' "${plan}")" = true ]; then
-            owner="${GITHUB_REPOSITORY_OWNER,,}"
-            case "${TARGET_REPOSITORY}" in
-              "ghcr.io/${owner}/"*) ;;
-              *) echo "GHCR index target is outside current owner namespace" >&2; exit 2 ;;
-            esac
-            for member in "${ghcr_members[@]}"; do
-              case "${member}" in
-                "ghcr.io/${owner}/"*:*) ;;
-                *) echo "GHCR member is outside current owner namespace" >&2; exit 2 ;;
-              esac
-            done
-            printf '%s' "${GH_TOKEN}" | docker login ghcr.io \
-              --username "${GITHUB_ACTOR}" --password-stdin
-            docker buildx imagetools create \
-              --tag "${TARGET_REPOSITORY}:${TARGET_TAG}" \
-              "${ghcr_members[@]}"
-            reference="${TARGET_REPOSITORY}:${TARGET_TAG}"
-            digest="$(docker buildx imagetools inspect "${reference}" \
-              --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"
-            targets="$(jq -c --arg channel ghcr --arg reference "${reference}" \
-              --arg digest "${digest}" \
-              '. + [{channel:$channel,reference:$reference,digest:$digest}]' \
-              <<<"${targets}")"
-            jq -n --arg id "${INDEX_ID}" --argjson targets "${targets}" \
-              '{kind:"ucm-image-index-receipt",schema_version:1,id:$id,
-                status:"failed",targets:$targets}' >"${receipt}"
-          fi
-          if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
-            test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
-            printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
-              --username "${DOCKERHUB_USERNAME}" --password-stdin
-            namespace="$(jq -r '.publish.dockerhub.namespace' "${plan}")"
-            case "${namespace}" in
-              docker.io/*) ;;
-              *) echo "Docker Hub namespace is outside docker.io" >&2; exit 2 ;;
-            esac
-            repository="${namespace}/$(basename "${TARGET_REPOSITORY}")"
-            mapfile -t dockerhub_members < <(jq -er --arg repository "${repository}" \
-              '.[] | ($repository + ":" + (split(":")[-1]))' <<<"${MEMBERS}")
-            docker buildx imagetools create \
-              --tag "${repository}:${TARGET_TAG}" \
-              "${dockerhub_members[@]}"
-            reference="${repository}:${TARGET_TAG}"
-            digest="$(docker buildx imagetools inspect "${reference}" \
-              --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"
-            targets="$(jq -c --arg channel dockerhub --arg reference "${reference}" \
-              --arg digest "${digest}" \
-              '. + [{channel:$channel,reference:$reference,digest:$digest}]' \
-              <<<"${targets}")"
-            jq -n --arg id "${INDEX_ID}" --argjson targets "${targets}" \
-              '{kind:"ucm-image-index-receipt",schema_version:1,id:$id,
-                status:"failed",targets:$targets}' >"${receipt}"
-          fi
-          jq -n --arg id "${INDEX_ID}" --argjson targets "${targets}" \
-            '{kind:"ucm-image-index-receipt",schema_version:1,id:$id,
-              status:"published",targets:$targets}' >"${receipt}"
+        run: PYTHONPATH=.github/release python -m ucm_release.image_delivery publish --kind index --id "${INDEX_ID}" --output out/receipts
       - uses: actions/upload-artifact@v4.6.2
-        if: ${{ always() }}
+        if: ${{ always() && hashFiles('out/receipts/**/*.json') != '' }}
         with:
-          name: ucm-image-index-receipt-${{ matrix.id }}-run-${{ github.run_id }}
+          name: ucm-image-index-receipt-${{ matrix.id }}-attempt-${{ github.run_attempt }}-run-${{ github.run_id }}
           path: out/receipts/
-          if-no-files-found: warn
-          overwrite: true
+          if-no-files-found: error
           retention-days: 90
 
   publish-pypi:
@@ -1647,13 +1607,13 @@ jobs:
         continue-on-error: true
         with:
           pattern: ucm-image-member-receipt-*-run-${{ github.run_id }}
-          path: input/receipts
+          path: input/history
           merge-multiple: true
       - uses: actions/download-artifact@v4.3.0
         continue-on-error: true
         with:
           pattern: ucm-image-index-receipt-*-run-${{ github.run_id }}
-          path: input/receipts
+          path: input/history
           merge-multiple: true
       - uses: actions/download-artifact@v4.3.0
         if: ${{ needs.plan.outputs.publish_pypi == 'true' }}
@@ -1661,6 +1621,10 @@ jobs:
         with:
           name: ucm-pypi-receipt-run-${{ github.run_id }}
           path: input/receipts
+      - name: Select the latest image receipts for finalization
+        env:
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
+        run: PYTHONPATH=.github/release python -m ucm_release.image_delivery collect --output input/receipts
       - name: Merge publication receipts into internal release state
         env:
           BUILD_OUTCOME: ${{ needs.build-images.result }}
@@ -2037,7 +2001,7 @@ jobs:
     # Planning, publication, and manifest failures must not bypass retention.
     if: >-
       ${{
-        always() && inputs.release_type != 'nightly' &&
+        always() && (inputs.release_type == 'stable' || inputs.release_type == 'prerelease') &&
         needs.release-preflight.result == 'success' &&
         needs.release-preflight.outputs.enabled == 'true'
       }}

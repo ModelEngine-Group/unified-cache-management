@@ -7,7 +7,7 @@ self-hosted-runner:
     - npu
 
 paths:
-  .github/workflows/{cleanup-ucm-release,nightly-cleanup,release-nightly,release-tag,release-ucm,sync-builders,release-operations,release-delivery-status}.yml:
+  .github/workflows/{cleanup-ucm-release,draft-cleanup,nightly-cleanup,release-nightly,release-tag,release-ucm,sync-builders,release-operations,release-delivery-status}.yml:
     # actionlint v1.7.7 does not recognize concurrency.queue (rhysd/actionlint#654).
     # Release workflow contract tests check queue values and cancellation policy.
     # Remove this ignore when upgrading to a version with native queue support.

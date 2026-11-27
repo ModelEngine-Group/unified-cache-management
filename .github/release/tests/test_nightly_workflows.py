@@ -71,12 +71,31 @@ def test_nightly_mutations_share_an_outer_lock_separate_from_the_core_tag_lock()
         == "ucm-release-${{ github.repository_id }}-${{ inputs.git_tag }}"
     )
     retention = core["jobs"]["retain-releases"]
-    assert "inputs.release_type != 'nightly'" in retention["if"]
+    assert (
+        "inputs.release_type == 'stable' || inputs.release_type == 'prerelease'"
+        in retention["if"]
+    )
     assert "always()" in retention["if"]
     assert not any(
         step.get("id") == "retention"
         for step in core["jobs"]["update-release-images"]["steps"]
     )
+
+
+def test_bot_dispatched_worker_queues_default_branch_retention_after_publication():
+    job = _load("release-nightly.yml")["jobs"]["queue-retention"]
+    assert job["needs"] == ["prepare-nightly", "release"]
+    assert "always() && github.actor == 'github-actions[bot]'" in job["if"]
+    assert job["permissions"] == {"actions": "write"}
+    step = job["steps"][0]
+    assert (
+        step["env"]["DEFAULT_BRANCH"] == "${{ github.event.repository.default_branch }}"
+    )
+    assert (
+        step["env"]["DRY_RUN"] == "${{ vars.UCM_NIGHTLY_RETENTION_PREVIEW == 'true' }}"
+    )
+    assert "nightly-cleanup.yml/dispatches" in step["run"]
+    assert '-f ref="${DEFAULT_BRANCH}" -F "inputs[dry_run]=${DRY_RUN}"' in step["run"]
 
 
 def test_nightly_ownership_precedes_creation_and_exact_targets_gate_publishers() -> (

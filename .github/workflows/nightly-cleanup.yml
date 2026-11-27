@@ -55,7 +55,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      DRY_RUN: ${{ inputs.dry_run || (github.event_name == 'workflow_run' && vars.UCM_NIGHTLY_RETENTION_PREVIEW == 'true') }}
       HISTORY_INVENTORY: ${{ inputs.history_inventory }}
     steps:
       # Completed runs supply evidence only; privileged cleanup executes default-branch code.
@@ -121,8 +121,11 @@ jobs:
           test "${source_path}" = .github/workflows/release-tag.yml
           test "${source_event}" = push
           source_tag="$(jq -er '.workflow_run.head_branch' "${GITHUB_EVENT_PATH}")"
-          classification="$(python scripts/materialize_version.py --tag "${source_tag}" --classify)"
-          test "$(jq -er '.release_type' <<<"${classification}")" = nightly
+          PYTHONPATH=.github/release python - "${source_tag}" <<'PYTHON'
+          import sys
+          from ucm_release.version_config import tag_type
+          assert tag_type(sys.argv[1]) == "nightly"
+          PYTHON
           artifact_prefix="ucm-release-cleanup-run-${run_id}-attempt-"
           legacy_prefix="ucm-nightly-cleanup-run-${run_id}-attempt-"
           artifacts="$(gh api --paginate --slurp \
@@ -186,6 +189,17 @@ jobs:
                 --report out/cleanup/report.json)
           if [ "${DRY_RUN}" = true ]; then
             args+=(--dry-run)
+          fi
+          branches="${RUNNER_TEMP}/nightly-branches.txt"
+          if gh api --paginate "/repos/${GH_REPO}/branches?per_page=100" --jq '.[].name' >"${branches}"; then
+            latest="$(python .github/release/ucm_release/nightly.py <"${branches}")"
+            if [ -n "${latest}" ]; then
+              args+=(--latest-branch "${latest}")
+            else
+              echo "::warning::No maintenance branch found. Skipping branch retirement."
+            fi
+          else
+            echo "::warning::Branch discovery failed. Skipping branch retirement."
           fi
           if [ -n "${HISTORY_INVENTORY}" ]; then
             # Only reviewed data in the trusted checkout can expand historical ownership.
