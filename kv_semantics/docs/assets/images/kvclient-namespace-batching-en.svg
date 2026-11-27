@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1020" viewBox="0 0 1240 1020">
+<rect width="100%" height="100%" fill="#fff"/>
+<text x="36" y="56.0" font-family="Microsoft YaHei, sans-serif" font-size="32" fill="#182737" text-anchor="start">KVClient namespace batching and result assembly</text>
+<text x="36" y="91.0" font-family="Microsoft YaHei, sans-serif" font-size="18" fill="#465a70" text-anchor="start">SGLang direct-linker example. Brackets show original input indices. The illustrative protocol limit is two entries.</text>
+<rect x="36" y="115" width="906" height="78" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="489.0" y="148.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">Mooncake string keys</text>
+<text x="489.0" y="177.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Indices 0 and 1 are KV and index for block 0, followed by the same pairs for blocks 1, 2, and 3.</text>
+<rect x="981" y="115" width="223" height="78" fill="#edf8f3" stroke="#51967d" stroke-width="2"/>
+<text x="1092.5" y="148.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">ASUStore</text>
+<text x="1092.5" y="177.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Preserve 8 key bytes</text>
+<path d="M489 193L489 222 M484.47113714620934 213.0843171180467L489 222L493.52886285379066 213.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M1092 193L1092 222 M1087.4711371462092 213.0843171180467L1092 222L1096.5288628537908 213.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="222" width="906" height="79" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="489.0" y="255.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">KeyResolver · String keys</text>
+<text x="489.0" y="284.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Group or pool and PP select the namespace → XXH32. Remaining key → XXH64.</text>
+<rect x="981" y="222" width="223" height="79" fill="#edf8f3" stroke="#51967d" stroke-width="2"/>
+<text x="1092.5" y="255.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">Binary keys</text>
+<text x="1092.5" y="284.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Use config kv_ns_id</text>
+<path d="M489 301L489 330 M484.47113714620934 321.0843171180467L489 330L493.52886285379066 321.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M1092 301L1092 330 M1087.4711371462092 321.0843171180467L1092 330L1096.5288628537908 321.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="330" width="1168" height="80" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<text x="620.0" y="363.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">KVClient · ASU routing</text>
+<text x="620.0" y="392.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Select ASU by 8-byte key. Blocks 0, 2, and 3 go to ASU 1. Block 1 goes to ASU 2.</text>
+<path d="M620 410L620 439 M615.4711371462093 430.0843171180467L620 439L624.5288628537907 430.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="439" width="1168" height="178" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<text x="620.0" y="474.0" font-family="Microsoft YaHei, sans-serif" font-size="23" fill="#182737" text-anchor="middle">Client · TransportTask per ASU and namespace</text>
+<text x="620.0" y="501.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Move entries directly into their tasks and record originalIndices in the same pass.</text>
+<rect x="58" y="526" width="354" height="72" fill="#edf5fc" stroke="#5485af" stroke-width="2"/>
+<text x="235.0" y="559.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">ASU 1 · KV task</text>
+<text x="235.0" y="588.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">[0, 4, 6]</text>
+<rect x="440" y="526" width="354" height="72" fill="#fff3e2" stroke="#c87824" stroke-width="2"/>
+<text x="617.0" y="559.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">ASU 1 · Index task</text>
+<text x="617.0" y="588.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">[1, 5, 7]</text>
+<rect x="822" y="526" width="360" height="72" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<text x="1002.0" y="559.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">ASU 2 · Two tasks</text>
+<text x="1002.0" y="588.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">[2] and [3]</text>
+<path d="M235 617L235 648 M230.47113714620932 639.0843171180467L235 648L239.52886285379068 639.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M617 617L617 648 M612.4711371462093 639.0843171180467L617 648L621.5288628537907 639.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<path d="M1002 617L1002 648 M997.4711371462093 639.0843171180467L1002 648L1006.5288628537907 639.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="648" width="1168" height="138" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<text x="620.0" y="686.0" font-family="Microsoft YaHei, sans-serif" font-size="23" fill="#182737" text-anchor="middle">IoScheduler · SplitBatchView applies the protocol limit</text>
+<text x="620.0" y="719.0" font-family="Microsoft YaHei, sans-serif" font-size="19" fill="#182737" text-anchor="middle">KV: [0, 4] + [6]     Index: [1, 5] + [7]     ASU 2: [2] and [3]</text>
+<text x="620.0" y="756.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Each sub-batch carries the task's namespaceId in SQE.kv_ns_id.</text>
+<path d="M620 786L620 819 M615.4711371462093 810.0843171180467L620 819L624.5288628537907 810.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="819" width="1168" height="78" fill="#f2f5f8" stroke="#8c9bad" stroke-width="2"/>
+<text x="620.0" y="852.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">TransportTask · Assemble in sub-batch order</text>
+<text x="620.0" y="881.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">The KV task assembles [0, 4, 6] even if [6] completes first.</text>
+<path d="M620 897L620 928 M615.4711371462093 919.0843171180467L620 928L624.5288628537907 919.0843171180467" fill="none" stroke="#465a70" stroke-width="2"/>
+<rect x="36" y="928" width="1168" height="70" fill="#edf8f3" stroke="#51967d" stroke-width="2"/>
+<text x="620.0" y="961.0" font-family="Microsoft YaHei, sans-serif" font-size="21" fill="#182737" text-anchor="middle">ClientTask · Restore input order using originalIndices</text>
+<text x="620.0" y="990.0" font-family="Microsoft YaHei, sans-serif" font-size="17" fill="#465a70" text-anchor="middle">Restore positions [0–7]. Notify waiters when all tasks finish.</text>
+</svg>
