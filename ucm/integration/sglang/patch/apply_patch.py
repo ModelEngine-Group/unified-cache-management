@@ -7,6 +7,9 @@ import importlib.metadata
 import os
 
 from ucm.integration.sglang.patch.cache_match_logging import install_cache_match_logging
+from ucm.integration.sglang.patch.layerwise_counter_metrics import (
+    install_counter_metrics,
+)
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -76,6 +79,7 @@ def apply_all_patches() -> None:
             version,
         )
         install_cache_match_logging()
+        install_counter_metrics()
         return
     package_suffix = patch_package_for(version)
     if package_suffix is None:
@@ -90,6 +94,7 @@ def apply_all_patches() -> None:
         module = importlib.import_module(package)
         module.apply()
         install_cache_match_logging()
+        install_counter_metrics()
     except Exception as error:
         raise RuntimeError(
             f"Failed to apply UCM SGLang patch for {expected}."

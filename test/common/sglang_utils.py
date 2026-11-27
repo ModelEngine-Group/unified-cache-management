@@ -5,6 +5,7 @@ import __future__
 import ast
 import copy
 import hashlib
+import importlib
 import json
 import logging
 import re
@@ -12,7 +13,10 @@ import sys
 import threading
 import time
 import types
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from functools import wraps
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, List
 
@@ -43,8 +47,10 @@ def _load_source(relative_path, definitions=None, **dependencies):
 
 def load_source(relative_path, definitions=None, **dependencies):
     defaults = dict(
+        wraps=wraps,
         dataclass=dataclass,
         replace=replace,
+        field=field,
         np=np,
         copy=copy,
         hashlib=hashlib,
@@ -67,9 +73,33 @@ def load_source(relative_path, definitions=None, **dependencies):
     return _load_source(relative_path, definitions=definitions, **defaults)
 
 
-adapter_module = load_source("ucm/integration/sglang/ucm_direct_store_adapter.py")
+metrics_module = load_source(
+    "ucm/integration/sglang/metrics.py", contextmanager=contextmanager, time=time
+)
+counter_metrics_module = load_source(
+    "ucm/integration/sglang/patch/layerwise_counter_metrics.py",
+    importlib=importlib,
+    PackageNotFoundError=PackageNotFoundError,
+    version=version,
+    counter_metrics_enabled=metrics_module.counter_metrics_enabled,
+    start_timing=metrics_module.start_timing,
+    finish_timing=metrics_module.finish_timing,
+)
+adapter_module = load_source(
+    "ucm/integration/sglang/ucm_direct_store_adapter.py",
+    _record_interface_duration=metrics_module._record_interface_duration,
+    record_metrics=metrics_module.record_metrics,
+)
 linker_module = load_source(
     "ucm/integration/sglang/ucm_direct_linker.py",
+    LinkerOperation=metrics_module.LinkerOperation,
+    _record_interface_duration=metrics_module._record_interface_duration,
+    measure_phase=metrics_module.measure_phase,
+    start_timing=metrics_module.start_timing,
+    finish_timing=metrics_module.finish_timing,
+    record_metrics=metrics_module.record_metrics,
+    shutdown_metrics_logger=metrics_module.shutdown_metrics_logger,
+    create_metrics_logger=metrics_module.create_metrics_logger,
     **{
         name: getattr(adapter_module, name)
         for name in ("UcmDirectStoreAdapter", "UcmLayerTransfer", "UcmPoolMetadata")

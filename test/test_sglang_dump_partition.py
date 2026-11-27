@@ -47,6 +47,7 @@ class DumpPartitionTest(unittest.TestCase):
 
     def linker(self, rank, ranks=(0, 1, 2, 3)):
         obj = object.__new__(linker_module.UcmDirectLinker)
+        obj._metrics_enabled = False
         obj._tp_rank, obj._tp_size = rank, 4
         obj._dump_ranks = ranks
         obj._lookup_owner = True
@@ -243,7 +244,8 @@ class DumpPartitionTest(unittest.TestCase):
         expected = obj._partition_offload(transfers)
         self.assertTrue(obj.offload(transfers))
         self.assertEqual(len(expanded), 1)
-        queued, ready = obj._offload_queue.get_nowait()
+        queued, ready, observation = obj._offload_queue.get_nowait()
+        self.assertIsNone(observation)
         self.assertEqual([t.name for t in queued], [t.name for t in expected])
         self.assertEqual(len(events), int(bool(expected)))
         if not expected:
