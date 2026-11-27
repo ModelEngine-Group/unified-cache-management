@@ -27,7 +27,6 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <cstdlib>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -72,7 +71,22 @@ public:
         std::signal(SIGILL, &_signal_handler);
         std::signal(SIGINT, &_signal_handler);
     }
-    static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
+
+    static void _signal_handler(int signum)
+    {
+        // Only flush logs on first entry, to prevent reentrancy from a different
+        // fatal signal arriving during Flush
+        static std::atomic_flag flushed = ATOMIC_FLAG_INIT;
+        if (!flushed.test_and_set()) { Logger::GetInstance().Flush(); }
+
+        // Restore the default action and re-raise to ourselves:
+        // SIGSEGV/SIGABRT/SIGFPE/SIGILL default to Term+Core, generating a core dump;
+        // SIGINT defaults to Term, no core dump.
+        // Whether to dump is decided by the kernel based on signal type, no need to
+        // handle it in code.
+        std::signal(signum, SIG_DFL);
+        std::raise(signum);
+    }
 
     void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
