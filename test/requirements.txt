@@ -17,3 +17,6 @@ httpx>=0.25.0
 #uc_eval
 jieba>=0.42.1
 openpyxl>=3.1.5
+#monitor
+pandas>=1.5.0
+matplotlib>=3.6.0
