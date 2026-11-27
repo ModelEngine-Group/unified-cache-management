@@ -426,7 +426,7 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
                                  const std::vector<std::size_t> &owned, Request &request,
                                  std::string &err)
 {
-    request.nsid = task.nsid;
+    request.ns = task.ns;
     request.keys.reserve(task.entries.size());
     request.keyHighs.reserve(task.entries.size());
     request.rawKeys.reserve(task.entries.size());
@@ -440,10 +440,10 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
     for (std::size_t index = 0; index < task.entries.size(); ++index) {
         const RequestOrc &orc = task.entries[index];
 
-        // key 低 64 位填入二进制 key
-        kv::BinaryKey keyBytes{};
-        std::memcpy(keyBytes.data(), &orc.keyLow64, sizeof(orc.keyLow64));
-        kv::CacheKey key = kv::CacheKey::FromBytes(keyBytes);
+        // key 低 64 位十进制串构造 string key：走 KeyResolver 字符串分支，请求级 namespace
+        // （IoOptions.kvns）才能生效（binary key 不消费 kvns；generic 引擎下整串身份
+        // XXH64 派生 8 字节路由 key，同 key 同哈希、读写删功能等价）
+        kv::CacheKey key = kv::CacheKey::FromString(std::to_string(orc.keyLow64));
 
         // value 前缀（只写前缀不补齐）写入领用块起始（device 语义经分配器 H2D 拷贝）；
         // GET 例外——预填哨兵串（见下）
