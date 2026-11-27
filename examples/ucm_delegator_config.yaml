@@ -1,0 +1,41 @@
+# UCM Delegator + DramStore pipeline example.
+#
+# Use with:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_delegator_dram.yaml"}
+#
+# Pipeline order is outermost-to-innermost: Delegator|Dram.
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Delegator|Dram"
+
+      # Delegator device staging slots and D2D copy streams.
+      delegator_buffer_number: 4
+      delegator_stream_number: 4
+
+      # DramStore local control and transport-manager endpoints.
+      # The connector supplies device_id and tensor_size_list for workers at runtime.
+      # DramStore treats a negative device_id as the scheduler role.
+      local_control_endpoint: "127.0.0.1:9001"
+      local_host: "127.0.0.1"
+      local_transport_manager_id: "127.0.0.1:4502"
+      hixl_listen_port: 36666
+      enable_hixl_cs: false
+
+      # DramPool node endpoints. The two lists must have matching lengths.
+      node_control_endpoints: ["127.0.0.1:9000"]
+      node_transport_manager_ids: ["127.0.0.1:4501"]
+
+      max_io_entries: 10000
+      router_type: "ring_hash"
+      transport_worker_count: 1
+      node_runner_count: 1
+      lookup_timeout_ms: 1000
+      dump_timeout_ms: 3000
+      load_timeout_ms: 3000
+      reconnect_interval_ms: 3000
+
+enable_event_sync: true
+use_layerwise: true
+persist_token_threshold: 0
