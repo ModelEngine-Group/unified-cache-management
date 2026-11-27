@@ -83,7 +83,7 @@ public:
     struct StepExpect {
         std::vector<int> missGids;
         std::vector<int> missSlots;
-        std::vector<int> output;      // expected useBlockTable / topkIndices row
+        std::vector<int> output;  // expected useBlockTable / topkIndices row
         std::vector<int64_t> loadIndex;
         std::vector<std::array<uint8_t, kTokenBytes>> kRows;  // staging rows
         std::vector<std::array<uint8_t, kTokenBytes>> vRows;  // staging rows
@@ -299,14 +299,13 @@ struct KVFixture {
         store = std::make_unique<MockStoreV1>();
         store->distinctTokenPayload = true;
         auto model = MakeModelInfo(kLayerNum, /*maxBlockLen=*/4096, kSpaTopkLen, kStreamNum,
-                                    kSparseLen, /*prefetchType=*/1, dpRank, /*tpSize=*/1,
-                                    /*indexerOffload=*/0, /*isSfaC8=*/0, /*maxBs=*/2);
+                                   kSparseLen, /*prefetchType=*/1, dpRank, /*tpSize=*/1,
+                                   /*indexerOffload=*/0, /*isSfaC8=*/0, /*maxBs=*/2);
         auto size = MakeSizeInfo(kBlockSize, kNumHead, kKDim, kVDim, kElemSize);
         std::vector<int> topkLayerMap(kLayerNum, 0);
-        engine = std::make_unique<GSAPrefetchEngineC>(model, size, /*isLog=*/false,
-                                                      /*rank=*/0, /*threadNum=*/1,
-                                                      std::vector<int>{0}, topkLayerMap,
-                                                      logFile->Path());
+        engine = std::make_unique<GSAPrefetchEngineC>(
+            model, size, /*isLog=*/false,
+            /*rank=*/0, /*threadNum=*/1, std::vector<int>{0}, topkLayerMap, logFile->Path());
         engine->SetStoreV1(store.get());
 
         auto kCaches =
@@ -531,11 +530,11 @@ TEST(PrefetchKVLruDt, SeededChurnKeepsLruSlotsAndCacheBytesInSync)
     RefLru model(blockTable, f.nonUcmK, f.nonUcmV);
     for (int slot = 0; slot < RefLru::kCapacity; ++slot) {
         const int64_t flat = model.flatDst(slot);
-        ASSERT_EQ(0, std::memcmp(f.CacheK() + flat * kTokenBytes, model.slotK(slot).data(),
-                                 kTokenBytes))
+        ASSERT_EQ(
+            0, std::memcmp(f.CacheK() + flat * kTokenBytes, model.slotK(slot).data(), kTokenBytes))
             << "setup cache K slot " << slot;
-        ASSERT_EQ(0, std::memcmp(f.CacheV() + flat * kTokenBytes, model.slotV(slot).data(),
-                                 kTokenBytes))
+        ASSERT_EQ(
+            0, std::memcmp(f.CacheV() + flat * kTokenBytes, model.slotV(slot).data(), kTokenBytes))
             << "setup cache V slot " << slot;
     }
 

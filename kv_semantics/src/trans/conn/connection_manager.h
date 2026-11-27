@@ -53,7 +53,7 @@ struct ScatterGatherEntry;
 class ConnectionManager {
 public:
     ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout,
-                      std::uint32_t maxErrorCount = 2);
+                      std::uint32_t maxErrorCount = 2, std::int32_t deviceId = -1);
     ~ConnectionManager();
 
     Status AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num);
@@ -96,6 +96,9 @@ private:
     std::uint32_t timeout_;
     std::uint32_t maxErrorCount_;
     std::uint32_t maxInflightPerChannel_{256};
+    // Device the provider runs on. The recover thread must bind it before it
+    // calls back into the provider. A negative value means "no binding".
+    std::int32_t deviceId_{-1};
 
     void RecoverLoop();
     void RebuildChannelCache();

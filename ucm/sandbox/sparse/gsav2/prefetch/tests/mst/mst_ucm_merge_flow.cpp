@@ -104,10 +104,10 @@ struct MergeFixture {
         engine->SetBlocksMap("req1", hashes, /*maxIdx=*/2, blockIdxs, addrs, addrs);
         // 4 misses, 2 per block: tokens 0,1,4,5 -> blocks 0,0,1,1
         engine->mMissGlobalToken["req1"].assign(kLayerNum, {
-                                                                {0, 1, 4, 5}
+                                                               {0, 1, 4, 5}
         });
         engine->mLoadSlot["req1"].assign(kLayerNum, {
-                                                         {0, 1, 8, 9}
+                                                        {0, 1, 8, 9}
         });
         engine->mReqUseBlockTable["req1"] = {10, 20};  // block table
     }
@@ -120,8 +120,12 @@ struct MergeFixture {
         std::vector<int> blockIdxs = {0, 1};
         std::vector<uintptr_t> addrs = {0x1000, 0x2000};
         engine->SetBlocksMap(reqID, hashes, /*maxIdx=*/2, blockIdxs, addrs, addrs);
-        engine->mMissGlobalToken[reqID].assign(kLayerNum, {{0, 1, 4, 5}});
-        engine->mLoadSlot[reqID].assign(kLayerNum, {{0, 1, 4, 5}});
+        engine->mMissGlobalToken[reqID].assign(kLayerNum, {
+                                                              {0, 1, 4, 5}
+        });
+        engine->mLoadSlot[reqID].assign(kLayerNum, {
+                                                       {0, 1, 4, 5}
+        });
         engine->mReqUseBlockTable[reqID] = {10, 20};
     }
 
@@ -270,7 +274,7 @@ TEST(UCMMergeFlow, BatchTwoRequestsSubmitOneTaskPerLegWithCorrectAddresses)
 
     std::vector<uint64_t> hbmSlotIndex;
     f.engine->UCMTensorMergeBatch(f.MakeBatchTaskInfo({"req0", "req1"}), {0, 1}, 0, 0,
-        hbmSlotIndex);
+                                  hbmSlotIndex);
 
     /* Exactly one task per leg (K then V), each concatenating both requests'
      * owned blocks: req0 block0/block1 then req1 block0/block1. The call log
@@ -338,7 +342,7 @@ TEST(UCMMergeFlow, BatchStoreLoadFailureZeroesBothRequests)
 
     std::vector<uint64_t> hbmSlotIndex;
     f.engine->UCMTensorMergeBatch(f.MakeBatchTaskInfo({"req0", "req1"}), {0, 1}, 0, 0,
-        hbmSlotIndex);
+                                  hbmSlotIndex);
 
     /* All 8 owned tokens of both requests are zero-filled; hbmSlotIndex is
      * still populated for every token (all-rank invariant). */
@@ -375,7 +379,7 @@ TEST(UCMMergeFlow, BatchMixedUcmAndNonUcmRequestsKeepLocalCopies)
 
     std::vector<uint64_t> hbmSlotIndex;
     f.engine->UCMTensorMergeBatch(f.MakeBatchTaskInfo({"req0", "req1"}), {0, 1}, 0, 0,
-        hbmSlotIndex);
+                                  hbmSlotIndex);
 
     ASSERT_EQ(hbmSlotIndex.size(), 10u);
     EXPECT_EQ(f.engine->mLoadNum[0], 10u);

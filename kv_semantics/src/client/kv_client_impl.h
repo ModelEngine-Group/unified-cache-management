@@ -55,11 +55,16 @@ std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory,
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
+    // Namespace this snapshot was built from; kDefaultKvNsId for legacy single-view servers.
+    KvNsId nsId{kDefaultKvNsId};
     std::shared_ptr<kv::Router> router;
     std::vector<NodeId> asuIds;
     GlobalView view;
     std::unordered_map<NodeId, std::shared_ptr<AsuTransport>> transports;
 };
+
+using ViewSnapshotPtr = std::shared_ptr<ViewSnapshot>;
+using ViewSnapshotMap = std::unordered_map<KvNsId, ViewSnapshotPtr>;
 
 class KvClientImpl;
 
@@ -191,6 +196,8 @@ private:
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
     // Current immutable routing and transport snapshot.
     std::shared_ptr<ViewSnapshot> snapshot_;
+    // Per-namespace snapshots; publishing and construction are owned by the view layer.
+    ViewSnapshotMap snapshots_;
     // Transports removed from the active snapshot but still needed by old tasks.
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports_;
     // Worker used for non-blocking refresh requests.

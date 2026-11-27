@@ -61,7 +61,8 @@ TaskManager::TaskManager(int deviceID, int dpRank, int tpSize, void* args, size_
 
             if (ObtainStream(&stream, &context, deviceID, mStreamNum) != 0) {
                 std::cerr << "[GSA] [ERROR] worker thread " << i
-                          << " failed to init ascend stream/context, this worker exits" << std::endl;
+                          << " failed to init ascend stream/context, this worker exits"
+                          << std::endl;
                 return;
             }
             ThreadInfo local_thread_info(static_cast<uint64_t>(hasher(std::this_thread::get_id())),

@@ -41,6 +41,19 @@ ucm_connectors:
       # Set true to bypass fake-backend IO; lookups miss while other requests complete successfully.
       asu_fake_backend_complete_immediately: false
 
+      # HCCP KV-over-RoCE backend: set asu_trans_provider_backend to
+      # "hccp_kv_over_roce" (alias "hccp"), then optionally override the provider
+      # defaults. The provider needs asu_ips/asu_ports for every ASU.
+      # asu_hccp_kv_roce_lib_path: "/usr/local/lib/libhccp_kv_over_roce.so"
+      # asu_hccp_kv_roce_max_connections: 3072
+      # InitConfig overrides; omitted fields keep the defaults documented in
+      # hccp_kv_over_roce_abi.h. Keys use the ABI field name in snake_case.
+      # asu_hccp_kv_roce_mem_size: 671088640
+      # asu_hccp_kv_roce_oob_transport: 0
+      # asu_hccp_kv_roce_sdk_ioq_depth: 128
+      # asu_hccp_kv_roce_timeout_ms: 60000
+      # asu_hccp_kv_roce_max_inflight_kv_per_ip: 2048
+
       # ASU wait/task timeout and connection recovery.
       asu_wait_timeout_ms: 5000
       asu_query_timeout_ms: 500
@@ -53,3 +66,31 @@ ucm_connectors:
 enable_event_sync: true
 use_layerwise: false
 persist_token_threshold: 0
+
+# ---------------------------------------------------------------------------
+# CPU-over-RoCE transport provider (asu_trans_provider_backend: "cpu").
+# The keys below are the ones the provider reads; see
+# kv_semantics/docs/guide/roce-provider.md for the full table and defaults.
+#
+#      asu_trans_provider_backend: "cpu"
+#      # Required: there is no automatic GID selection.
+#      asu_roce_gid_index: 0
+#      # Optional tuning.
+#      asu_roce_hca_name: "mlx5_0"
+#      asu_roce_hca_port: 1
+#      asu_roce_sl: 3
+#      asu_roce_traffic_class: 104
+#      asu_roce_qp_timeout: 17
+#      asu_roce_retry_cnt: 7
+#      asu_roce_rnr_retry: 7
+#      asu_roce_min_rnr_timer: 12
+#      asu_roce_qp_rd_atom: 16
+#      asu_roce_sq_depth: 256
+#      asu_roce_rq_depth: 64
+#      asu_roce_cq_depth: 512
+#      asu_roce_inline_threshold: 0
+#      asu_roce_qp_backend: "verbs"      # verbs | simulated
+#      asu_roce_oob_role: "client"       # client connects, server listens
+#      asu_roce_oob_bind_ip: "0.0.0.0"
+#      asu_roce_oob_connect_timeout_ms: 3000
+#      asu_roce_handshake_timeout_ms: 4000

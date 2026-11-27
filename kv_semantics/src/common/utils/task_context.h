@@ -134,6 +134,11 @@ struct ClientTask {
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;
+    // Number of entries that could not be routed to any healthy node (primary and
+    // secondary ring both failed). Such entries stay in entryStatus with
+    // StatusCode::NO_AVAILABLE_NODE. The task reports NO_AVAILABLE_NODE when every
+    // entry is unroutable, otherwise PARTIAL_FAILED.
+    std::size_t routingFailedEntries{0};
 
     std::atomic<std::size_t> remainingTransportTasks{0};
     std::atomic<std::size_t> remainingTransportSendTasks{0};

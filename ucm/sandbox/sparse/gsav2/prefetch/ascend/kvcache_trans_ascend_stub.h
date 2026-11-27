@@ -225,7 +225,7 @@ struct ScatterEmulator {
         std::vector<int64_t> dims;
         std::vector<int64_t> strides;
         aclDataType dtype = ACL_DT_UNDEFINED;
-        int64_t offset = 0;  // storage offset, in elements
+        int64_t offset = 0;    // storage offset, in elements
         void* data = nullptr;  // storage base
     };
 
@@ -289,8 +289,7 @@ struct ScatterEmulator {
         auto dstIt = registry.find(dst);
         auto idxIt = registry.find(index);
         auto srcIt = registry.find(src);
-        if (dstIt == registry.end() || idxIt == registry.end() ||
-            srcIt == registry.end()) {
+        if (dstIt == registry.end() || idxIt == registry.end() || srcIt == registry.end()) {
             return false;
         }
         PendingScatter op;
@@ -366,8 +365,7 @@ struct ScatterEmulator {
             idxOffset += coords[d] * op.index.strides[d];
             srcOffset += coords[d] * op.src.strides[d];
         }
-        const int64_t idxVal =
-            *reinterpret_cast<const int64_t*>(idxBase + idxOffset * idxElem);
+        const int64_t idxVal = *reinterpret_cast<const int64_t*>(idxBase + idxOffset * idxElem);
         if (idxVal < 0 || idxVal >= op.dst.dims[op.dim]) {
             /* Out-of-range scatter: real ACL errors; the emulator skips
              * the element so a broken index cannot corrupt the dump. */
@@ -387,10 +385,7 @@ inline ScatterEmulator& ScatterEmu()
     return emu;
 }
 
-inline void ResetScatterEmulator()
-{
-    ScatterEmu().Clear();
-}
+inline void ResetScatterEmulator() { ScatterEmu().Clear(); }
 
 }  // namespace acl_stub
 
@@ -609,7 +604,8 @@ inline void* GetOpApiFuncAddr(const char* apiName)
 class Logger;  // forward decl (kvcache_log.h is included by the .cpp)
 int32_t CopyTrans(void** host_ptrs_addr, void** device_ptrs_addr, size_t size_bytes, size_t number,
                   std::string type, void* stream_);
-int32_t ObtainStream(void** outputStream, void** outputContext, int32_t deviceID, int32_t mStreamNum);
+int32_t ObtainStream(void** outputStream, void** outputContext, int32_t deviceID,
+                     int32_t mStreamNum);
 int32_t Synchronize(void* context, void* stream, int streamNum, Logger& mLogger);
 bool IsStreamIdle(void* stream);
 void DestroyStream(void* stream, void* context, int32_t deviceID, int32_t mStreamNum);

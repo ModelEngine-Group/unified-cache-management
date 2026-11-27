@@ -372,11 +372,23 @@ void GSAPrefetchEngineC::DumpUReqLockStats()
      * （IndexerLoadProcess 整程锁收窄 / LastChunkMove 分相 / OMP 预取化）
      * 的裁决依据。名称表顺序必须与 UReqLockSite 枚举一一对应。 */
     static const char* kUReqLockSiteNames[static_cast<size_t>(UReqLockSite::Count)] = {
-        "WorkerCleanup",     "DelBlocksMap",        "SetBlocksMap",     "SetLastIndexerBlock",
-        "SetIndexerMap",     "UpdateIndexerMap",    "SubmitTaskIndexer", "SetTopkIndices",
-        "ResetReqTokenState", "ProcessTokensMapTopk", "RunLastChunkMoveGuarded",
-        "IndexerInitLoad",   "SubmitTask",          "IndexerLoadProcess", "IndexerLoadResolve",
-        "ProcessPrefetchRequest", "ReadPrefetchResults",
+        "WorkerCleanup",
+        "DelBlocksMap",
+        "SetBlocksMap",
+        "SetLastIndexerBlock",
+        "SetIndexerMap",
+        "UpdateIndexerMap",
+        "SubmitTaskIndexer",
+        "SetTopkIndices",
+        "ResetReqTokenState",
+        "ProcessTokensMapTopk",
+        "RunLastChunkMoveGuarded",
+        "IndexerInitLoad",
+        "SubmitTask",
+        "IndexerLoadProcess",
+        "IndexerLoadResolve",
+        "ProcessPrefetchRequest",
+        "ReadPrefetchResults",
     };
     static_assert(sizeof(kUReqLockSiteNames) / sizeof(kUReqLockSiteNames[0]) ==
                       static_cast<size_t>(UReqLockSite::Count),
@@ -393,11 +405,11 @@ void GSAPrefetchEngineC::DumpUReqLockStats()
         const uint64_t holdNs = mUReqLockStats[s].holdNs.exchange(0, std::memory_order_relaxed);
         if (acq == 0) { continue; }
         mLogger.log(LogLevel::INFO,
-                     "  %-24s acq=%-10llu contended=%-8llu waitUs=%-12llu holdUs=%-12llu\n",
-                     kUReqLockSiteNames[s], static_cast<unsigned long long>(acq),
-                     static_cast<unsigned long long>(contended),
-                     static_cast<unsigned long long>(waitNs / 1000),
-                     static_cast<unsigned long long>(holdNs / 1000));
+                    "  %-24s acq=%-10llu contended=%-8llu waitUs=%-12llu holdUs=%-12llu\n",
+                    kUReqLockSiteNames[s], static_cast<unsigned long long>(acq),
+                    static_cast<unsigned long long>(contended),
+                    static_cast<unsigned long long>(waitNs / 1000),
+                    static_cast<unsigned long long>(holdNs / 1000));
     }
 }
 
@@ -741,9 +753,7 @@ void GSAPrefetchEngineC::SetTokensMap(int layerID, const std::string& reqID,
         return;
     }
     int curTopkIndex = mTopkLayerMap[layerID];
-    if (layerID == 0) {
-        ResetReqTokenState(reqID, remainBlockTable, maxIdx, slots);
-    }
+    if (layerID == 0) { ResetReqTokenState(reqID, remainBlockTable, maxIdx, slots); }
     /* 提前识别：curTopkIndex 越界即拒绝（后续 mAvgHitRate/[manager] 下标依赖）。 */
     if (curTopkIndex < 0 || static_cast<size_t>(curTopkIndex) >= mAvgHitRate.size()) {
         mLogger.log(LogLevel::ERROR,
@@ -805,8 +815,7 @@ void GSAPrefetchEngineC::RunLastChunkMoveGuarded(int layerID, const std::string&
      * LastChunkMove 的 DDR IO 不再持 mUpdateReqMutex。 */
     std::vector<int> moveMap;
     {
-        UReqLockGuard lock(mUpdateReqMutex,
-                           UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
+        UReqLockGuard lock(mUpdateReqMutex, UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
         // manager 判别：未就绪/已被清理一律日志+跳过，杜绝空指针 core。
         auto managersIt = mHBMMangers.find(reqID);
         if (managersIt == mHBMMangers.end() || curTopkIndex < 0 ||
@@ -851,7 +860,7 @@ void GSAPrefetchEngineC::ProcessTokensMapTopk(int layerID, const std::string& re
         loadSlots.clear();
         useBlockTable.clear();
         manager->processTopkWithDebug(oneTopkList, useBlockTable, missGlobalTokens, loadSlots,
-                                     mLogger);
+                                      mLogger);
     }
     if (useBlockTable.size() != static_cast<size_t>(mSpaTopkLen)) {
         mLogger.log(LogLevel::ERROR,
@@ -872,10 +881,10 @@ HBMManagerLayered* GSAPrefetchEngineC::InitLayerManager(const std::string& reqID
     if (managersIt == mHBMMangers.end() ||
         static_cast<size_t>(layerID) >= managersIt->second.size()) {
         mLogger.log(LogLevel::ERROR,
-                     "Decode step: %u, |KVCache Prefetch| HBM managers not initialized, "
-                     "skip topk map: reqID=%s layerID=%d managerSize=%zu\n",
-                     mDecodeStep, reqID.c_str(), layerID,
-                     managersIt == mHBMMangers.end() ? 0 : managersIt->second.size());
+                    "Decode step: %u, |KVCache Prefetch| HBM managers not initialized, "
+                    "skip topk map: reqID=%s layerID=%d managerSize=%zu\n",
+                    mDecodeStep, reqID.c_str(), layerID,
+                    managersIt == mHBMMangers.end() ? 0 : managersIt->second.size());
         return nullptr;
     }
     /* layerId 供分层窗口表取值（与 mTopkIndexerNum 同一索引空间）；evictMode /
@@ -922,17 +931,16 @@ int GSAPrefetchEngineC::AcquireQTopkView(torch::Tensor& qTopkTensor, const std::
     topkView.stride0 = qTopkTensor.stride(0);
     topkView.numel = PrefetchTopkReadableNumel(qTopkTensor);
     /* 平坦读边界：末行读取范围不得超过张量元素数（防 OOB 读）。 */
-    const int64_t lastOffset = static_cast<int64_t>(qTopkNum > 0 ? qTopkNum - 1 : 0) *
-                                   topkView.stride0 +
-                               static_cast<int64_t>(topkSize);
+    const int64_t lastOffset =
+        static_cast<int64_t>(qTopkNum > 0 ? qTopkNum - 1 : 0) * topkView.stride0 +
+        static_cast<int64_t>(topkSize);
     if (lastOffset > topkView.numel) {
         mLogger.log(LogLevel::ERROR,
                     "Decode step: %u, |KVCache Prefetch| qTopkTensor read out of range, "
                     "skip topk map: reqID=%s layerID=%d qTopkNum=%d topkSize=%d "
                     "lastOffset=%lld numel=%lld\n",
                     mDecodeStep, reqID.c_str(), layerID, qTopkNum, topkSize,
-                    static_cast<long long>(lastOffset),
-                    static_cast<long long>(topkView.numel));
+                    static_cast<long long>(lastOffset), static_cast<long long>(topkView.numel));
         return -1;
     }
     return 0;
@@ -947,19 +955,19 @@ int GSAPrefetchEngineC::CopyUseBlockTableToIndicesTensor(const std::string& reqI
     if (tensorIt == mAllTopkIndicesTensor.end() || !tensorIt->second.defined() ||
         tensorIt->second.dim() < 1 ||
         static_cast<int64_t>(tensorIt->second.size(0)) <= static_cast<int64_t>(layerID)) {
-        mLogger.log(LogLevel::ERROR,
-                    "Decode step: %u, |KVCache Prefetch| mAllTopkIndicesTensor invalid, "
-                    "skip copy: reqID=%s layerID=%d defined=%d dim=%lld size0=%lld\n",
-                    mDecodeStep, reqID.c_str(), layerID,
-                    tensorIt == mAllTopkIndicesTensor.end() ? 0
-                                                            : (tensorIt->second.defined() ? 1 : 0),
-                    tensorIt != mAllTopkIndicesTensor.end() && tensorIt->second.defined()
-                        ? static_cast<long long>(tensorIt->second.dim())
-                        : -1LL,
-                    tensorIt != mAllTopkIndicesTensor.end() && tensorIt->second.defined() &&
-                            tensorIt->second.dim() >= 1
-                        ? static_cast<long long>(tensorIt->second.size(0))
-                        : -1LL);
+        mLogger.log(
+            LogLevel::ERROR,
+            "Decode step: %u, |KVCache Prefetch| mAllTopkIndicesTensor invalid, "
+            "skip copy: reqID=%s layerID=%d defined=%d dim=%lld size0=%lld\n",
+            mDecodeStep, reqID.c_str(), layerID,
+            tensorIt == mAllTopkIndicesTensor.end() ? 0 : (tensorIt->second.defined() ? 1 : 0),
+            tensorIt != mAllTopkIndicesTensor.end() && tensorIt->second.defined()
+                ? static_cast<long long>(tensorIt->second.dim())
+                : -1LL,
+            tensorIt != mAllTopkIndicesTensor.end() && tensorIt->second.defined() &&
+                    tensorIt->second.dim() >= 1
+                ? static_cast<long long>(tensorIt->second.size(0))
+                : -1LL);
         return -1;
     }
     auto dstTensor = tensorIt->second[layerID];
@@ -967,12 +975,11 @@ int GSAPrefetchEngineC::CopyUseBlockTableToIndicesTensor(const std::string& reqI
         mLogger.log(LogLevel::ERROR,
                     "Decode step: %u, |KVCache Prefetch| mAllTopkIndicesTensor too small, "
                     "skip copy: reqID=%s layerID=%d numel=%lld need=%zu\n",
-                    mDecodeStep, reqID.c_str(), layerID,
-                    static_cast<long long>(dstTensor.numel()), useBlockTable.size());
+                    mDecodeStep, reqID.c_str(), layerID, static_cast<long long>(dstTensor.numel()),
+                    useBlockTable.size());
         return -1;
     }
-    std::memcpy(dstTensor.data_ptr(), useBlockTable.data(),
-                useBlockTable.size() * sizeof(int));
+    std::memcpy(dstTensor.data_ptr(), useBlockTable.data(), useBlockTable.size() * sizeof(int));
     return 0;
 }
 
@@ -1027,14 +1034,11 @@ void GSAPrefetchEngineC::SetIndexerMapForLayer(const std::string& reqID, int lay
 }
 
 // 消费序：prefetch 段在前、remain 段在中、back() 给 last 块。
-void GSAPrefetchEngineC::BuildIndexerLayerTables(int layerID, std::vector<int>& blockTableList,
-                                                 std::vector<std::vector<int>>& remainIdx,
-                                                 std::vector<std::vector<int>>& prefetchIdx,
-                                                 std::vector<int>& blockSlot,
-                                                 std::map<int, int>& oneDocTable,
-                                                 std::map<int, int>& oneBlockMap,
-                                                 std::vector<int>& onePrefetchIdx,
-                                                 std::vector<std::pair<int, int>>& oneDsaSparseBlock)
+void GSAPrefetchEngineC::BuildIndexerLayerTables(
+    int layerID, std::vector<int>& blockTableList, std::vector<std::vector<int>>& remainIdx,
+    std::vector<std::vector<int>>& prefetchIdx, std::vector<int>& blockSlot,
+    std::map<int, int>& oneDocTable, std::map<int, int>& oneBlockMap,
+    std::vector<int>& onePrefetchIdx, std::vector<std::pair<int, int>>& oneDsaSparseBlock)
 {
     uint32_t offset = 0;
     for (uint32_t index = 0; index < prefetchIdx[layerID].size(); index++) {
@@ -1053,8 +1057,8 @@ void GSAPrefetchEngineC::BuildIndexerLayerTables(int layerID, std::vector<int>& 
     oneDsaSparseBlock.emplace_back(std::make_pair(blockSlot.size() - 1, blockTableList.back()));
 }
 
-void GSAPrefetchEngineC::WriteIndexerLayerTables(const std::string& reqID, int layerID,
-                                                 std::vector<std::pair<int, int>>& oneDsaSparseBlock)
+void GSAPrefetchEngineC::WriteIndexerLayerTables(
+    const std::string& reqID, int layerID, std::vector<std::pair<int, int>>& oneDsaSparseBlock)
 {
     std::sort(oneDsaSparseBlock.begin(), oneDsaSparseBlock.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
@@ -1118,8 +1122,10 @@ void GSAPrefetchEngineC::TokenIndexMapInter(std::vector<int>& oneTopkList, int b
     auto seqLenIt = mSeqLen.find(reqID);
     if (realTimeIt == mRealTimeIdx.end() || seqLenIt == mSeqLen.end() ||
         static_cast<size_t>(layerID) >= realTimeIt->second.size()) {
-        mLogger.log(LogLevel::ERROR, "[ERROR] Decode step: %u Trans topk state missing: "
-                    "req_id: %s, layer_id %d\n", mDecodeStep, reqID.c_str(), layerID);
+        mLogger.log(LogLevel::ERROR,
+                    "[ERROR] Decode step: %u Trans topk state missing: "
+                    "req_id: %s, layer_id %d\n",
+                    mDecodeStep, reqID.c_str(), layerID);
         return;
     }
     const auto& realTimeIdx = realTimeIt->second[static_cast<size_t>(layerID)];
@@ -1129,21 +1135,24 @@ void GSAPrefetchEngineC::TokenIndexMapInter(std::vector<int>& oneTopkList, int b
     for (int j = 0; j < topkLen; j++) {
         const int ori = oneTopkList[j];
         if (ori < 0) {
-            mLogger.log(LogLevel::ERROR, "[ERROR] Decode step: %u Trans topk ori token < 0: "
+            mLogger.log(LogLevel::ERROR,
+                        "[ERROR] Decode step: %u Trans topk ori token < 0: "
                         "layer_id %d, ori token %d, reqID %s\n",
                         mDecodeStep, layerID, ori, reqID.c_str());
             continue;
         }
         const uint32_t revIdx = static_cast<uint32_t>(ori / mBlockSize);
         if (revIdx >= realTimeIdx.size()) {
-            mLogger.log(LogLevel::ERROR, "[ERROR] Decode step: %u Trans topk revIdx out of "
+            mLogger.log(LogLevel::ERROR,
+                        "[ERROR] Decode step: %u Trans topk revIdx out of "
                         "range: layer_id %d, ori %d, revIdx %u, size %zu, reqID %s\n",
                         mDecodeStep, layerID, ori, revIdx, realTimeIdx.size(), reqID.c_str());
             continue;
         }
         const int translated = realTimeIdx[revIdx] * mBlockSize + ori % mBlockSize;
         if (translated < 0 || translated >= seqLen) {
-            mLogger.log(LogLevel::ERROR, "[ERROR] Decode step: %u Trans topk out of range: "
+            mLogger.log(LogLevel::ERROR,
+                        "[ERROR] Decode step: %u Trans topk out of range: "
                         "layer_id %d, ori %d, new %d, block_index %u, seq_len %d, reqID %s\n",
                         mDecodeStep, layerID, ori, translated, revIdx, seqLen, reqID.c_str());
             continue;
@@ -1168,8 +1177,7 @@ void GSAPrefetchEngineC::LastChunkMove(int layerID, const std::string& reqID,
     std::vector<int> blockTableCopy;
     size_t hashCount = 0;
     {
-        UReqLockGuard lock(mUpdateReqMutex,
-                           UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
+        UReqLockGuard lock(mUpdateReqMutex, UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
         auto hashIt = mAllBlocksHash.find(reqID);
         auto blockTableIt = mReqUseBlockTable.find(reqID);
         if (hashIt == mAllBlocksHash.end() || blockTableIt == mReqUseBlockTable.end()) {
@@ -1257,12 +1265,11 @@ bool GSAPrefetchEngineC::BuildLastChunkSources(int layerID, const std::string& r
     /* hashVec 值快照 mini 段：token 循环及其后的 LoadOnToken DDR IO 不持锁。 */
     std::vector<BlockId> hashVecCopy;
     {
-        UReqLockGuard lock(mUpdateReqMutex,
-                           UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
+        UReqLockGuard lock(mUpdateReqMutex, UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
         auto hashItLastChunk = mAllBlocksHash.find(reqID);
         if (hashItLastChunk == mAllBlocksHash.end()) {
-            mLogger.log(LogLevel::ERROR,
-                        "|LastChunkMove| Cannot find hashVec, reqID=%s\n", reqID.c_str());
+            mLogger.log(LogLevel::ERROR, "|LastChunkMove| Cannot find hashVec, reqID=%s\n",
+                        reqID.c_str());
             return false;
         }
         hashVecCopy = hashItLastChunk->second;
@@ -1284,8 +1291,7 @@ bool GSAPrefetchEngineC::BuildLastChunkSources(int layerID, const std::string& r
     // 非 UCM 条目（blockIdx >= lastUCMBlockIdx）快照，通常仅最后一块。
     std::unordered_map<int, LastKVBlockAddress> lastKVCopy;
     {
-        UReqLockGuard lock(mUpdateReqMutex,
-                           UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
+        UReqLockGuard lock(mUpdateReqMutex, UReqLockStatsAt(UReqLockSite::RunLastChunkMoveGuarded));
         auto lastKVReqIt = mLastKVBlockAddress.find(reqID);
         if (lastKVReqIt == mLastKVBlockAddress.end()) {
             mLogger.log(LogLevel::ERROR, "|LastChunkMove| no non-UCM block\n");
@@ -1301,13 +1307,11 @@ bool GSAPrefetchEngineC::BuildLastChunkSources(int layerID, const std::string& r
 
 // 每 UCM 块一个 shard：目的地址为该块首 token 在 staging buffer 的落位；
 // 块内 token 逐条追加 K/V TokenRange（dstOffset 相对 shard 首地址）。
-bool GSAPrefetchEngineC::AppendLastChunkTokens(int layerID, const std::string& reqID,
-                                              const std::vector<int>& moveMap,
-                                              const std::vector<BlockId>& hashVec,
-                                              const std::unordered_map<int, LastKVBlockAddress>& lastKVCopy,
-                                              int lastUCMBlockIdx,
-                                              std::vector<LastChunkSourceBlock>& sourceBlocks,
-                                              UCMTokenLoadPlan& plan)
+bool GSAPrefetchEngineC::AppendLastChunkTokens(
+    int layerID, const std::string& reqID, const std::vector<int>& moveMap,
+    const std::vector<BlockId>& hashVec,
+    const std::unordered_map<int, LastKVBlockAddress>& lastKVCopy, int lastUCMBlockIdx,
+    std::vector<LastChunkSourceBlock>& sourceBlocks, UCMTokenLoadPlan& plan)
 {
     const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
     const size_t vTokenBytes = static_cast<size_t>(mKVSizeBytesTokenRe);
@@ -1329,17 +1333,17 @@ bool GSAPrefetchEngineC::AppendLastChunkTokens(int layerID, const std::string& r
             continue;
         }
         const size_t blockIdxSz = static_cast<size_t>(blockIdx);
-        if (blockShardIdx[blockIdxSz] < 0) { OpenUcmShard(i, blockIdxSz, layerID, hashVec,
-                                                           blockFirstDst, blockShardIdx, plan); }
+        if (blockShardIdx[blockIdxSz] < 0) {
+            OpenUcmShard(i, blockIdxSz, layerID, hashVec, blockFirstDst, blockShardIdx, plan);
+        }
         const size_t shardIdx = static_cast<size_t>(blockShardIdx[blockIdxSz]);
         const size_t tokenIdxInBlock = static_cast<size_t>(globalToken % mBlockSize);
         const size_t dstOffset = i - blockFirstDst[blockIdxSz];
         plan.kFilters[shardIdx].ranges[kKTensorIndex].push_back(UC::Detail::TokenRange{
             tokenIdxInBlock * kTokenBytes, kTokenBytes, dstOffset * kTokenBytes});
         if (!mISSPAC8) {
-            plan.vFilters[shardIdx].ranges[kVTensorIndex].push_back(
-                UC::Detail::TokenRange{tokenIdxInBlock * vTokenBytes, vTokenBytes,
-                                       dstOffset * vTokenBytes});
+            plan.vFilters[shardIdx].ranges[kVTensorIndex].push_back(UC::Detail::TokenRange{
+                tokenIdxInBlock * vTokenBytes, vTokenBytes, dstOffset * vTokenBytes});
         }
     }
     return true;
@@ -1347,9 +1351,9 @@ bool GSAPrefetchEngineC::AppendLastChunkTokens(int layerID, const std::string& r
 
 // 块首触：为该 UCM 块开 K/V shard（目的窗口 = staging buffer 中首 token 落位）。
 void GSAPrefetchEngineC::OpenUcmShard(size_t i, size_t blockIdxSz, int layerID,
-                                     const std::vector<BlockId>& hashVec,
-                                     std::vector<size_t>& blockFirstDst,
-                                     std::vector<int>& blockShardIdx, UCMTokenLoadPlan& plan)
+                                      const std::vector<BlockId>& hashVec,
+                                      std::vector<size_t>& blockFirstDst,
+                                      std::vector<int>& blockShardIdx, UCMTokenLoadPlan& plan)
 {
     const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
     const size_t vTokenBytes = static_cast<size_t>(mKVSizeBytesTokenRe);
@@ -1358,16 +1362,14 @@ void GSAPrefetchEngineC::OpenUcmShard(size_t i, size_t blockIdxSz, int layerID,
         mISSPAC8 ? nullptr : reinterpret_cast<std::byte*>(mLastCHunkVPtr[layerID]);
     blockFirstDst[blockIdxSz] = i;
     blockShardIdx[blockIdxSz] = static_cast<int>(plan.kTask.size());
-    plan.kTask.emplace_back(UC::Detail::Shard{
-        hashVec[blockIdxSz], static_cast<size_t>(layerID),
-        std::vector<void*>{kDstBase + i * kTokenBytes}});
+    plan.kTask.emplace_back(UC::Detail::Shard{hashVec[blockIdxSz], static_cast<size_t>(layerID),
+                                              std::vector<void*>{kDstBase + i * kTokenBytes}});
     UC::Detail::TokenFilter kFilter;
     kFilter.ranges.resize(mStoreTensorCount);
     plan.kFilters.push_back(std::move(kFilter));
     if (!mISSPAC8) {
-        plan.vTask.emplace_back(UC::Detail::Shard{
-            hashVec[blockIdxSz], static_cast<size_t>(layerID),
-            std::vector<void*>{vDstBase + i * vTokenBytes}});
+        plan.vTask.emplace_back(UC::Detail::Shard{hashVec[blockIdxSz], static_cast<size_t>(layerID),
+                                                  std::vector<void*>{vDstBase + i * vTokenBytes}});
         UC::Detail::TokenFilter vFilter;
         vFilter.ranges.resize(mStoreTensorCount);
         plan.vFilters.push_back(std::move(vFilter));
@@ -1375,9 +1377,9 @@ void GSAPrefetchEngineC::OpenUcmShard(size_t i, size_t blockIdxSz, int layerID,
 }
 
 // 非 UCM 块：绑定 host 源地址（+layerID 块内偏移）到 sourceBlocks。
-bool GSAPrefetchEngineC::BindNonUcmSourceBlock(int blockIdx, int layerID,
-                                              const std::unordered_map<int, LastKVBlockAddress>& lastKVCopy,
-                                              std::vector<LastChunkSourceBlock>& sourceBlocks)
+bool GSAPrefetchEngineC::BindNonUcmSourceBlock(
+    int blockIdx, int layerID, const std::unordered_map<int, LastKVBlockAddress>& lastKVCopy,
+    std::vector<LastChunkSourceBlock>& sourceBlocks)
 {
     auto blockIt = lastKVCopy.find(blockIdx);
     if (blockIt == lastKVCopy.end()) {
@@ -1390,13 +1392,11 @@ bool GSAPrefetchEngineC::BindNonUcmSourceBlock(int blockIdx, int layerID,
         static_cast<size_t>(mBlockSize) * static_cast<size_t>(mKVSizeBytesTokenRe);
     if (sourceBlocks.size() <= static_cast<size_t>(blockIdx))
         sourceBlocks.resize(static_cast<size_t>(blockIdx) + 1);
-    sourceBlocks[blockIdx].kBase =
-        reinterpret_cast<const std::byte*>(blockIt->second.kAddr) +
-        static_cast<size_t>(layerID) * kBlockBytes;
+    sourceBlocks[blockIdx].kBase = reinterpret_cast<const std::byte*>(blockIt->second.kAddr) +
+                                   static_cast<size_t>(layerID) * kBlockBytes;
     if (!mISSPAC8) {
-        sourceBlocks[blockIdx].vBase =
-            reinterpret_cast<const std::byte*>(blockIt->second.vAddr) +
-            static_cast<size_t>(layerID) * vBlockBytes;
+        sourceBlocks[blockIdx].vBase = reinterpret_cast<const std::byte*>(blockIt->second.vAddr) +
+                                       static_cast<size_t>(layerID) * vBlockBytes;
     }
     return true;
 }
@@ -1515,10 +1515,9 @@ void GSAPrefetchEngineC::CopyLastChunkTokens(int layerID, const std::string& req
     }
 }
 
-bool GSAPrefetchEngineC::BuildUCMMergeLoadPlan(UCMTokenLoadPlan& plan,
-                                               const std::vector<UCMMergeBlockContext>& blockContexts,
-                                               int layerID, int streamIdx, const std::string& reqID,
-                                               size_t previousLoadNum)
+bool GSAPrefetchEngineC::BuildUCMMergeLoadPlan(
+    UCMTokenLoadPlan& plan, const std::vector<UCMMergeBlockContext>& blockContexts, int layerID,
+    int streamIdx, const std::string& reqID, size_t previousLoadNum)
 {
     // 当前 rank 无 UCM 加载任务时，plan 为空，不依赖 Store。
     const auto& hashVec = mAllBlocksHash.at(reqID);
@@ -1550,10 +1549,10 @@ bool GSAPrefetchEngineC::BuildUCMMergeLoadPlan(UCMTokenLoadPlan& plan,
 
 // 单个 owned UCM 块的 K/V shard 与 TokenRange 组装。
 void GSAPrefetchEngineC::AppendMergeBlockShard(const UCMMergeBlockContext& context,
-                                              const std::vector<BlockId>& hashVec,
-                                              const std::vector<int>& missGlobalIds, int layerID,
-                                              std::byte* kDstBase, std::byte* vDstBase,
-                                              size_t previousLoadNum, UCMTokenLoadPlan& plan)
+                                               const std::vector<BlockId>& hashVec,
+                                               const std::vector<int>& missGlobalIds, int layerID,
+                                               std::byte* kDstBase, std::byte* vDstBase,
+                                               size_t previousLoadNum, UCMTokenLoadPlan& plan)
 {
     const size_t kTokenBytes = static_cast<size_t>(mKVSizeBytesToken);
     const size_t vTokenBytes = static_cast<size_t>(mKVSizeBytesTokenRe);
@@ -1587,9 +1586,9 @@ void GSAPrefetchEngineC::AppendMergeBlockShard(const UCMMergeBlockContext& conte
 }
 
 bool GSAPrefetchEngineC::MemcpyUCMMergeTokens(std::vector<UCMMergeBlockContext>& blockContexts,
-                                               int layerID, int streamIdx,
-                                               std::vector<uint64_t>& hbmSlotIndex,
-                                               const std::string& reqID, size_t previousLoadNum)
+                                              int layerID, int streamIdx,
+                                              std::vector<uint64_t>& hbmSlotIndex,
+                                              const std::string& reqID, size_t previousLoadNum)
 {
     // constexpr int kMaxTokenThreadNum = 4;
     // constexpr size_t kTwoThreadTokenThreshold = 256;
@@ -1791,8 +1790,8 @@ size_t GSAPrefetchEngineC::FillFailedUCMMerge(
         /* zeroUcmOnly: the store-side load failed AFTER the local non-UCM
          * copies already landed, so keep them and only zero the UCM windows
          * (the store never splices a failed task). */
-        const bool zeroThis = context.owned && !tokenIndices.empty() &&
-                              (!zeroUcmOnly || !context.isnoUCMblock);
+        const bool zeroThis =
+            context.owned && !tokenIndices.empty() && (!zeroUcmOnly || !context.isnoUCMblock);
         if (zeroThis) {
             std::memset(kDst + dstBase * kTokenBytes, 0, tokenIndices.size() * kTokenBytes);
             if (!mISSPAC8) {
@@ -1808,8 +1807,8 @@ size_t GSAPrefetchEngineC::FillFailedUCMMerge(
 }
 
 // Zero-fallback 期间的 HBM 槽位索引回填：非法目的元数据按 abort 语义处理。
-void GSAPrefetchEngineC::BuildFallbackSlotIndices(const UCMMergeBlockContext& context, size_t dstBase,
-                                                  const std::vector<int>& missSlots,
+void GSAPrefetchEngineC::BuildFallbackSlotIndices(const UCMMergeBlockContext& context,
+                                                  size_t dstBase, const std::vector<int>& missSlots,
                                                   const std::vector<int>& blockTable,
                                                   std::vector<uint64_t>& hbmSlotIndex, int layerID,
                                                   const std::string& reqID)
@@ -1851,14 +1850,13 @@ bool GSAPrefetchEngineC::ValidateMergeStagingWindow(int streamIdx)
 {
     if (streamIdx < 0 || static_cast<size_t>(streamIdx) >= mSharedKBufferHostPtr.size() ||
         (!mISSPAC8 && static_cast<size_t>(streamIdx) >= mSharedVBufferHostPtr.size())) {
-        mLogger.log(LogLevel::ERROR,
-                    "|UCMTensorMerge| streamIdx out of range, streamIdx=%d\n", streamIdx);
+        mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| streamIdx out of range, streamIdx=%d\n",
+                    streamIdx);
         return false;
     }
     auto* kDstBase = reinterpret_cast<const std::byte*>(mSharedKBufferHostPtr[streamIdx]);
     const std::byte* vDstBase =
-        mISSPAC8 ? nullptr
-                 : reinterpret_cast<const std::byte*>(mSharedVBufferHostPtr[streamIdx]);
+        mISSPAC8 ? nullptr : reinterpret_cast<const std::byte*>(mSharedVBufferHostPtr[streamIdx]);
     if (kDstBase == nullptr || (!mISSPAC8 && vDstBase == nullptr)) {
         mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| shared buffer is nullptr\n");
         return false;
@@ -1928,9 +1926,8 @@ void GSAPrefetchEngineC::CollectUCMMergeRequests(const TaskInfo& taskInfo,
             /* Plan-build failures are staging-window conditions shared by every
              * request: keep accumulating so each request still gets its zero
              * fallback and advances mLoadNum (same as the per-request flow). */
-            mLogger.log(LogLevel::ERROR,
-                        "|UCMTensorMerge| plan build failed, layer=%d reqID=%s\n", layerID,
-                        reqID.c_str());
+            mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| plan build failed, layer=%d reqID=%s\n",
+                        layerID, reqID.c_str());
             planBuildOk = false;
         }
         runningLoadNum += mMissGlobalToken[reqID][mTopkLayerMap[layerID]].size();
@@ -1944,12 +1941,10 @@ bool GSAPrefetchEngineC::SubmitUCMMergeBatchLoad(const UCMTokenLoadPlan& plan,
 {
     /* 批量 LoadOnToken（K 后 V）在本线程直接提交（原为 std::async worker，
      * 现 worker 路径无异常源、spawn 失败不会静默跳过 zero fallback）。 */
-    if (!planOk || (plan.kTask.empty() && plan.vTask.empty())) {
-        return planOk;
-    }
+    if (!planOk || (plan.kTask.empty() && plan.vTask.empty())) { return planOk; }
     if (requests.empty()) {
-        mLogger.log(LogLevel::ERROR,
-                    "|UCMTensorMerge| no valid requests to load, layer=%d\n", layerID);
+        mLogger.log(LogLevel::ERROR, "|UCMTensorMerge| no valid requests to load, layer=%d\n",
+                    layerID);
         return false;
     }
     const std::string& firstReqID = requests.front().reqID;
@@ -1964,17 +1959,14 @@ void GSAPrefetchEngineC::FallbackUCMMergeRequests(const std::vector<UCMMergeRequ
 {
     /* Fallback：plan 失败时本地拷贝未跑，零填全部 owned token；load 失败时
      * 本地拷贝已落位，仅零填 UCM 窗口。hbmSlotIndex 对所有 rank 全量回填。 */
-    if (planOk && loadOk) {
-        return;
-    }
+    if (planOk && loadOk) { return; }
     for (auto& request : requests) {
-        if (std::find(localFailed.begin(), localFailed.end(), request.reqID) !=
-            localFailed.end()) {
+        if (std::find(localFailed.begin(), localFailed.end(), request.reqID) != localFailed.end()) {
             continue;
         }
         const size_t zeroTokens =
-            FillFailedUCMMerge(request.contexts, layerID, streamIdx, hbmSlotIndex,
-                               request.reqID, request.previousLoadNum, /*zeroUcmOnly=*/planOk);
+            FillFailedUCMMerge(request.contexts, layerID, streamIdx, hbmSlotIndex, request.reqID,
+                               request.previousLoadNum, /*zeroUcmOnly=*/planOk);
         mLogger.log(LogLevel::ERROR,
                     "|KVPack| zero fallback (batched load): rank=%d layer=%d reqID=%s "
                     "stage=%s zeroOwnedTokens=%zu\n",

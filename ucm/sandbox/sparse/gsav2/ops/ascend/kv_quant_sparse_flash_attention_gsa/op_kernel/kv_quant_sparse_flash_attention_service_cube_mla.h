@@ -1,12 +1,11 @@
 /**
  * Copyright (c) 2025 Huawei Technologies Co., Ltd.
- * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
- * CANN Open Software License Agreement Version 2.0 (the "License").
- * Please refer to the License for details. You may not use this file except in compliance with the License.
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
- * See LICENSE in the root of the software repository for the full text of the License.
- */
+ * This program is free software, you can redistribute it and/or modify it under the terms and
+conditions of  * CANN Open Software License Agreement Version 2.0 (the "License").  * Please refer
+to the License for details. You may not use this file except in compliance with the License.  * THIS
+SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR
+PURPOSE.  * See LICENSE in the root of the software repository for the full text of the License.  */
 
 /*!
  * \file kv_quant_sparse_flash_attention_service_cube_mla.h
@@ -18,9 +17,9 @@
 #include "kernel_operator.h"
 #include "kernel_operator_list_tensor_intf.h"
 #include "kernel_tiling/kernel_tiling.h"
+#include "kv_quant_sparse_flash_attention_common.h"
 #include "lib/matmul_intf.h"
 #include "lib/matrix/matmul/tiling.h"
-#include "kv_quant_sparse_flash_attention_common.h"
 
 struct Position {
     uint32_t bIdx;
@@ -31,11 +30,11 @@ struct Position {
 
 struct PAShape {
     uint32_t blockSize;
-    uint32_t headNum;             // 一般为kv的head num，对应n2
-    uint32_t headDim;             // mla下rope为64，nope为512, 对应d
-    uint32_t maxblockNumPerBatch; // block table 每一行的最大个数
-    uint32_t actHeadDim;          // 实际拷贝col大小,考虑到N切块   s*d, 对应d
-    uint32_t copyRowNum;          // 总共要拷贝的行数
+    uint32_t headNum;              // 一般为kv的head num，对应n2
+    uint32_t headDim;              // mla下rope为64，nope为512, 对应d
+    uint32_t maxblockNumPerBatch;  // block table 每一行的最大个数
+    uint32_t actHeadDim;           // 实际拷贝col大小,考虑到N切块   s*d, 对应d
+    uint32_t copyRowNum;           // 总共要拷贝的行数
     uint32_t copyRowNumAlign;
 };
 
@@ -46,15 +45,15 @@ struct PAShape {
 template <typename T>
 __aicore__ inline void DataCopyGmNDToL1(LocalTensor<T> &l1Tensor, GlobalTensor<T> &gmTensor,
                                         uint32_t rowAct, uint32_t rowAlign,
-                                        uint32_t col,       // D
-                                        uint32_t colStride) // D or N*D
+                                        uint32_t col,        // D
+                                        uint32_t colStride)  // D or N*D
 {
     Nd2NzParams nd2nzPara;
     nd2nzPara.ndNum = 1;
-    nd2nzPara.nValue = rowAct;       // nd矩阵的行数
+    nd2nzPara.nValue = rowAct;  // nd矩阵的行数
     // T为int4场景下，dValue = col / 2，srcDValue = colStride / 2
-    nd2nzPara.srcDValue = colStride; // 同一nd矩阵相邻行起始地址间的偏移
-    nd2nzPara.dValue = col;          // nd矩阵的列数
+    nd2nzPara.srcDValue = colStride;  // 同一nd矩阵相邻行起始地址间的偏移
+    nd2nzPara.dValue = col;           // nd矩阵的列数
     nd2nzPara.dstNzC0Stride = rowAlign;
     nd2nzPara.dstNzNStride = 1;
     nd2nzPara.dstNzMatrixStride = 0;
@@ -66,22 +65,23 @@ __aicore__ inline void DataCopyGmNDToL1(LocalTensor<T> &l1Tensor, GlobalTensor<T
     适用PA数据从GM拷贝到L1，支持ND、NZ数据；
     PA的layout分 BNBD（blockNum,N,blockSize,D） BBH（blockNum,blockSize,N*D
     BSH\BSND\TND 为BBH
-    shape.copyRowNumAlign 需要16字节对齐，如拷贝k矩阵，一次拷贝128*512，遇到尾块 10*512 需对齐到16*512
+    shape.copyRowNumAlign 需要16字节对齐，如拷贝k矩阵，一次拷贝128*512，遇到尾块 10*512
+   需对齐到16*512
 */
 template <typename T, QSFA_LAYOUT SRC_LAYOUT>
-__aicore__ inline void DataCopyPA(LocalTensor<T> &dstTensor,  // l1
-                                  GlobalTensor<T> &srcTensor, // gm
+__aicore__ inline void DataCopyPA(LocalTensor<T> &dstTensor,   // l1
+                                  GlobalTensor<T> &srcTensor,  // gm
                                   GlobalTensor<int32_t> &blockTableGm,
-                                  const PAShape &shape,       // blockSize, headNum, headDim
-                                  const Position &startPos)   // bacthIdx nIdx curSeqIdx
+                                  const PAShape &shape,      // blockSize, headNum, headDim
+                                  const Position &startPos)  // bacthIdx nIdx curSeqIdx
 {
     uint32_t copyFinishRowCnt = 0;
     uint64_t blockTableBaseOffset = startPos.bIdx * shape.maxblockNumPerBatch;
     uint32_t curS2Idx = startPos.s2Idx;
     uint32_t blockElementCnt = 32 / sizeof(T);
     while (copyFinishRowCnt < shape.copyRowNum) {
-        uint64_t blockIdOffset = curS2Idx / shape.blockSize;   // 获取block table上的索引
-        uint64_t reaminRowCnt = curS2Idx % shape.blockSize;    // 获取在单个块上超出的行数
+        uint64_t blockIdOffset = curS2Idx / shape.blockSize;  // 获取block table上的索引
+        uint64_t reaminRowCnt = curS2Idx % shape.blockSize;   // 获取在单个块上超出的行数
         // 从block table上的获取编号
         uint64_t idInBlockTable = blockTableGm.GetValue(blockTableBaseOffset + blockIdOffset);
         // 计算可以拷贝行数
@@ -89,7 +89,8 @@ __aicore__ inline void DataCopyPA(LocalTensor<T> &dstTensor,  // l1
         if (copyFinishRowCnt + copyRowCnt > shape.copyRowNum) {
             copyRowCnt = shape.copyRowNum - copyFinishRowCnt;  // 一个block未拷满
         }
-        uint64_t offset = idInBlockTable * shape.blockSize * shape.headNum * shape.headDim ;   // PA的偏移
+        uint64_t offset =
+            idInBlockTable * shape.blockSize * shape.headNum * shape.headDim;  // PA的偏移
 
         uint64_t dStride = shape.headDim;
         if constexpr (SRC_LAYOUT == QSFA_LAYOUT::BSND || SRC_LAYOUT == QSFA_LAYOUT::TND) {
@@ -106,13 +107,15 @@ __aicore__ inline void DataCopyPA(LocalTensor<T> &dstTensor,  // l1
         LocalTensor<T> tmpDstTensor = dstTensor[copyFinishRowCnt * blockElementCnt];
         GlobalTensor<T> tmpSrcTensor = srcTensor[offset];
 
-        DataCopyGmNDToL1<T>(tmpDstTensor, tmpSrcTensor, copyRowCnt, shape.copyRowNumAlign, dValue, srcDValue);
+        DataCopyGmNDToL1<T>(tmpDstTensor, tmpSrcTensor, copyRowCnt, shape.copyRowNumAlign, dValue,
+                            srcDValue);
         copyFinishRowCnt += copyRowCnt;
         curS2Idx += copyRowCnt;
     }
 }
 
-template <typename QSFAT> class QSFAMatmulService {
+template <typename QSFAT>
+class QSFAMatmulService {
 public:
     // 中间计算数据类型为float, 高精度模式
     using T = float;
@@ -120,18 +123,22 @@ public:
     using KV_T = typename QSFAT::kvType;
     using K_ROPE_T = typename QSFAT::kRopeType;
     using OUT_T = typename QSFAT::outputType;
-    using MM_OUT_T = T;             // L0C 累加域，Mmad 输出必须 fp32；GM 中间量同为 fp32
+    using MM_OUT_T = T;  // L0C 累加域，Mmad 输出必须 fp32；GM 中间量同为 fp32
 
     __aicore__ inline QSFAMatmulService(){};
     __aicore__ inline void InitParams(const ConstInfo &constInfo);
     __aicore__ inline void InitMm1GlobalTensor(GlobalTensor<Q_T> queryGm, GlobalTensor<Q_T> qRopeGm,
-                                               GlobalTensor<KV_T> keyGm, GlobalTensor<K_ROPE_T> kRopeGm,
+                                               GlobalTensor<KV_T> keyGm,
+                                               GlobalTensor<K_ROPE_T> kRopeGm,
                                                GlobalTensor<MM_OUT_T> mm1ResGm);
-    __aicore__ inline void InitMm2GlobalTensor(GlobalTensor<K_ROPE_T> vec1ResGm, GlobalTensor<KV_T> valueGm,
-                                               GlobalTensor<MM_OUT_T> mm2ResGm, GlobalTensor<OUT_T> attentionOutGm);
-    __aicore__ inline void InitPageAttentionInfo(const GlobalTensor<K_ROPE_T>& kvMergeGm,
-                                                 GlobalTensor<int32_t> blockTableGm, GlobalTensor<int32_t> topKGm,
-                                                 uint32_t blockSize, uint32_t maxBlockNumPerBatch);
+    __aicore__ inline void InitMm2GlobalTensor(GlobalTensor<K_ROPE_T> vec1ResGm,
+                                               GlobalTensor<KV_T> valueGm,
+                                               GlobalTensor<MM_OUT_T> mm2ResGm,
+                                               GlobalTensor<OUT_T> attentionOutGm);
+    __aicore__ inline void InitPageAttentionInfo(const GlobalTensor<K_ROPE_T> &kvMergeGm,
+                                                 GlobalTensor<int32_t> blockTableGm,
+                                                 GlobalTensor<int32_t> topKGm, uint32_t blockSize,
+                                                 uint32_t maxBlockNumPerBatch);
     __aicore__ inline void InitBuffers(TPipe *pipe);
     __aicore__ inline void UpdateKey(GlobalTensor<KV_T> keyGm);
     __aicore__ inline void UpdateValue(GlobalTensor<KV_T> valueGm);
@@ -151,13 +158,13 @@ private:
     static constexpr QSFA_LAYOUT LAYOUT_T = QSFAT::layout;
     static constexpr QSFA_LAYOUT KV_LAYOUT_T = QSFAT::kvLayout;
 
-    static constexpr uint32_t M_SPLIT_SIZE = 128;     // m方向切分
-    static constexpr uint32_t N_SPLIT_SIZE = 128;     // n方向切分
-    static constexpr uint32_t N_WORKSPACE_SIZE = 512; // n方向切分
-    static constexpr uint32_t K_SPLIT_SIZE = 288;     // K方向切分
+    static constexpr uint32_t M_SPLIT_SIZE = 128;      // m方向切分
+    static constexpr uint32_t N_SPLIT_SIZE = 128;      // n方向切分
+    static constexpr uint32_t N_WORKSPACE_SIZE = 512;  // n方向切分
+    static constexpr uint32_t K_SPLIT_SIZE = 288;      // K方向切分
 
     static constexpr uint32_t L1_BLOCK_SIZE = (64 * (512 + 64) * sizeof(Q_T));
-    static constexpr uint32_t L1_BLOCK_OFFSET = 64 * (512 + 64); // 72K的元素个数
+    static constexpr uint32_t L1_BLOCK_OFFSET = 64 * (512 + 64);  // 72K的元素个数
 
     static constexpr uint32_t L0A_PP_SIZE = (32 * 1024);
     static constexpr uint32_t L0B_PP_SIZE = (32 * 1024);
@@ -177,11 +184,14 @@ private:
     static constexpr uint32_t L1_EVENT5 = EVENT_ID7;
     static constexpr uint32_t L1_EVENT6 = EVENT_ID1;
 
-    static constexpr IsResetLoad3dConfig LOAD3DV2_CONFIG = {true, true}; // isSetFMatrix isSetPadding;
-    static constexpr uint32_t mte21QPIds[4] = {L1_EVENT0, L1_EVENT1, L1_EVENT2, L1_EVENT3}; // mte12复用
+    static constexpr IsResetLoad3dConfig LOAD3DV2_CONFIG = {true,
+                                                            true};  // isSetFMatrix isSetPadding;
+    static constexpr uint32_t mte21QPIds[4] = {L1_EVENT0, L1_EVENT1, L1_EVENT2,
+                                               L1_EVENT3};  // mte12复用
     static constexpr uint32_t mte21KVIds[3] = {L1_EVENT4, L1_EVENT5, L1_EVENT6};
 
-    static constexpr uint32_t BLOCK_ELEMENT_NUM = ConstInfo::BUFFER_SIZE_BYTE_32B / sizeof(K_ROPE_T);
+    static constexpr uint32_t BLOCK_ELEMENT_NUM =
+        ConstInfo::BUFFER_SIZE_BYTE_32B / sizeof(K_ROPE_T);
 
     uint32_t kvCacheBlockSize = 0;
     uint32_t maxBlockNumPerBatch = 0;
@@ -224,51 +234,58 @@ private:
     LocalTensor<Q_T> l1KVTensor;
 
     // L0AB m <> mte1 EventID
-    __aicore__ inline uint32_t Mte1MmABEventId(uint32_t idx)
-    {
-        return (L0AB_EVENT0 + idx);
-    }
+    __aicore__ inline uint32_t Mte1MmABEventId(uint32_t idx) { return (L0AB_EVENT0 + idx); }
 
     __aicore__ inline uint32_t GetQPL1RealIdx(uint32_t mIdx, uint32_t k1Idx)
     {
-        uint32_t idxMap[] = {0, 2}; // 确保0块和1块连在一起, 2和3块连在一起, 来保证同一m块的地址相连
+        uint32_t idxMap[] = {0,
+                             2};  // 确保0块和1块连在一起, 2和3块连在一起, 来保证同一m块的地址相连
         return idxMap[mIdx % 2] + k1Idx;
     }
 
-    __aicore__ inline void CopyGmToL1(LocalTensor<K_ROPE_T> &l1Tensor, GlobalTensor<K_ROPE_T> &gmSrcTensor,
-                                      uint32_t srcN, uint32_t srcD, uint32_t srcDstride);
-    __aicore__ inline void CopyInMm1AToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info, uint32_t mSeqIdx,
-                                          uint32_t mSizeAct, uint32_t headSize, uint32_t headOffset);
-    __aicore__ inline void CopyInMm1ARopeToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info, uint32_t mSeqIdx,
-                                              uint32_t mSizeAct);
-    __aicore__ inline void CopyInMm1BToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t keyGmBaseOffset,
+    __aicore__ inline void CopyGmToL1(LocalTensor<K_ROPE_T> &l1Tensor,
+                                      GlobalTensor<K_ROPE_T> &gmSrcTensor, uint32_t srcN,
+                                      uint32_t srcD, uint32_t srcDstride);
+    __aicore__ inline void CopyInMm1AToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info,
+                                          uint32_t mSeqIdx, uint32_t mSizeAct, uint32_t headSize,
+                                          uint32_t headOffset);
+    __aicore__ inline void CopyInMm1ARopeToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info,
+                                              uint32_t mSeqIdx, uint32_t mSizeAct);
+    __aicore__ inline void CopyInMm1BToL1(LocalTensor<K_ROPE_T> &bL1Tensor,
+                                          const uint64_t keyGmBaseOffset,
                                           uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt,
                                           uint32_t nActCopyRowCount, uint32_t headSize);
-    __aicore__ inline void CopyInMm1BRopeToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t keyGmBaseOffset,
-                                              uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt,
-                                              uint32_t nActCopyRowCount, uint32_t headSize);
-    __aicore__ inline void CopyInMm2AToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info, uint32_t mSeqIdx,
-                                          uint32_t subMSizeAct, uint32_t nSize, uint32_t nOffset);
-    __aicore__ inline void CopyInMm2BToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t valueGmBaseOffset,
+    __aicore__ inline void CopyInMm1BRopeToL1(LocalTensor<K_ROPE_T> &bL1Tensor,
+                                              const uint64_t keyGmBaseOffset,
+                                              uint32_t copyTotalRowCntAlign,
+                                              uint32_t copyStartRowCnt, uint32_t nActCopyRowCount,
+                                              uint32_t headSize);
+    __aicore__ inline void CopyInMm2AToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info,
+                                          uint32_t mSeqIdx, uint32_t subMSizeAct, uint32_t nSize,
+                                          uint32_t nOffset);
+    __aicore__ inline void CopyInMm2BToL1(LocalTensor<K_ROPE_T> &bL1Tensor,
+                                          const uint64_t valueGmBaseOffset,
                                           uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt,
                                           uint32_t nActCopyRowCount, uint32_t copyStartColumnCount,
                                           uint32_t copyColumnCount);
-    __aicore__ inline void LoadDataMm1A(LocalTensor<K_ROPE_T> &aL0Tensor, LocalTensor<K_ROPE_T> &aL1Tensor,
-                                        uint32_t idx, uint32_t kSplitSize, uint32_t mSize, uint32_t kSize);
-    __aicore__ inline void LoadDataMm1B(LocalTensor<K_ROPE_T> &bL0Tensor, LocalTensor<K_ROPE_T> &bL1Tensor,
-                                        uint32_t idx, uint32_t kSplitSize, uint32_t kSize, uint32_t nSize);
+    __aicore__ inline void LoadDataMm1A(LocalTensor<K_ROPE_T> &aL0Tensor,
+                                        LocalTensor<K_ROPE_T> &aL1Tensor, uint32_t idx,
+                                        uint32_t kSplitSize, uint32_t mSize, uint32_t kSize);
+    __aicore__ inline void LoadDataMm1B(LocalTensor<K_ROPE_T> &bL0Tensor,
+                                        LocalTensor<K_ROPE_T> &bL1Tensor, uint32_t idx,
+                                        uint32_t kSplitSize, uint32_t kSize, uint32_t nSize);
 };
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::InitParams(const ConstInfo &constInfo)
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::InitParams(const ConstInfo &constInfo)
 {
     this->constInfo = constInfo;
 }
 
 template <typename QSFAT>
-__aicore__ inline void
-QSFAMatmulService<QSFAT>::InitMm1GlobalTensor(GlobalTensor<Q_T> queryGm, GlobalTensor<Q_T> qRopeGm,
-                                              GlobalTensor<KV_T> keyGm, GlobalTensor<K_ROPE_T> kRopeGm,
-                                              GlobalTensor<MM_OUT_T> mm1ResGm)
+__aicore__ inline void QSFAMatmulService<QSFAT>::InitMm1GlobalTensor(
+    GlobalTensor<Q_T> queryGm, GlobalTensor<Q_T> qRopeGm, GlobalTensor<KV_T> keyGm,
+    GlobalTensor<K_ROPE_T> kRopeGm, GlobalTensor<MM_OUT_T> mm1ResGm)
 {
     // mm1
     this->queryGm = queryGm;
@@ -279,9 +296,9 @@ QSFAMatmulService<QSFAT>::InitMm1GlobalTensor(GlobalTensor<Q_T> queryGm, GlobalT
 }
 
 template <typename QSFAT>
-__aicore__ inline void
-QSFAMatmulService<QSFAT>::InitMm2GlobalTensor(GlobalTensor<K_ROPE_T> vec1ResGm, GlobalTensor<KV_T> valueGm,
-                                              GlobalTensor<MM_OUT_T> mm2ResGm, GlobalTensor<OUT_T> attentionOutGm)
+__aicore__ inline void QSFAMatmulService<QSFAT>::InitMm2GlobalTensor(
+    GlobalTensor<K_ROPE_T> vec1ResGm, GlobalTensor<KV_T> valueGm, GlobalTensor<MM_OUT_T> mm2ResGm,
+    GlobalTensor<OUT_T> attentionOutGm)
 {
     // mm2
     this->vec1ResGm = vec1ResGm;
@@ -291,10 +308,9 @@ QSFAMatmulService<QSFAT>::InitMm2GlobalTensor(GlobalTensor<K_ROPE_T> vec1ResGm, 
 }
 
 template <typename QSFAT>
-__aicore__ inline void
-QSFAMatmulService<QSFAT>::InitPageAttentionInfo(const GlobalTensor<K_ROPE_T>& kvMergeGm,
-                                                GlobalTensor<int32_t> blockTableGm, GlobalTensor<int32_t> topKGm,
-                                                uint32_t blockSize, uint32_t maxBlockNumPerBatch)
+__aicore__ inline void QSFAMatmulService<QSFAT>::InitPageAttentionInfo(
+    const GlobalTensor<K_ROPE_T> &kvMergeGm, GlobalTensor<int32_t> blockTableGm,
+    GlobalTensor<int32_t> topKGm, uint32_t blockSize, uint32_t maxBlockNumPerBatch)
 {
     this->blockTableGm = blockTableGm;
     this->topKGm = topKGm;
@@ -303,35 +319,39 @@ QSFAMatmulService<QSFAT>::InitPageAttentionInfo(const GlobalTensor<K_ROPE_T>& kv
     this->kvMergeGm_ = kvMergeGm;
 }
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::InitBuffers(TPipe *pipe)
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::InitBuffers(TPipe *pipe)
 {
-    pipe->InitBuffer(bufQPL1, L1_BLOCK_SIZE * 4); // (64K + 8K) * 4
+    pipe->InitBuffer(bufQPL1, L1_BLOCK_SIZE * 4);  // (64K + 8K) * 4
     l1QPTensor = bufQPL1.Get<Q_T>();
-    pipe->InitBuffer(bufKVL1, L1_BLOCK_SIZE * 3); // (64K + 8K) * 3
+    pipe->InitBuffer(bufKVL1, L1_BLOCK_SIZE * 3);  // (64K + 8K) * 3
     l1KVTensor = bufKVL1.Get<K_ROPE_T>();
 
     // L0A
-    pipe->InitBuffer(tmpBufL0A, L0A_PP_SIZE * 2); // 64K
+    pipe->InitBuffer(tmpBufL0A, L0A_PP_SIZE * 2);  // 64K
     aL0TensorPingPong = tmpBufL0A.Get<K_ROPE_T>();
     // L0B
-    pipe->InitBuffer(tmpBufL0B, L0B_PP_SIZE * 2); // 64K
+    pipe->InitBuffer(tmpBufL0B, L0B_PP_SIZE * 2);  // 64K
     bL0TensorPingPong = tmpBufL0B.Get<K_ROPE_T>();
     // L0C
-    pipe->InitBuffer(tmpBufL0C, L0C_PP_SIZE * 2); // 128K
+    pipe->InitBuffer(tmpBufL0C, L0C_PP_SIZE * 2);  // 128K
     cL0TensorPingPong = tmpBufL0C.Get<MM_OUT_T>();
 }
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::UpdateKey(GlobalTensor<KV_T> keyGm)
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::UpdateKey(GlobalTensor<KV_T> keyGm)
 {
     this->keyGm = keyGm;
 }
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::UpdateValue(GlobalTensor<KV_T> valueGm)
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::UpdateValue(GlobalTensor<KV_T> valueGm)
 {
     this->valueGm = valueGm;
 }
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::AllocEventID()
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::AllocEventID()
 {
     SetFlag<HardEvent::M_MTE1>(L0AB_EVENT0);
     SetFlag<HardEvent::M_MTE1>(L0AB_EVENT1);
@@ -344,7 +364,8 @@ template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::Alloc
     SetFlag<HardEvent::MTE1_MTE2>(L1_EVENT6);
 }
 
-template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::FreeEventID()
+template <typename QSFAT>
+__aicore__ inline void QSFAMatmulService<QSFAT>::FreeEventID()
 {
     WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT0);
     WaitFlag<HardEvent::M_MTE1>(L0AB_EVENT1);
@@ -359,15 +380,16 @@ template <typename QSFAT> __aicore__ inline void QSFAMatmulService<QSFAT>::FreeE
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::CopyGmToL1(LocalTensor<K_ROPE_T> &l1Tensor,
-                                                            GlobalTensor<K_ROPE_T> &gmSrcTensor, uint32_t srcN,
-                                                            uint32_t srcD, uint32_t srcDstride)
+                                                            GlobalTensor<K_ROPE_T> &gmSrcTensor,
+                                                            uint32_t srcN, uint32_t srcD,
+                                                            uint32_t srcDstride)
 {
     Nd2NzParams nd2nzPara;
     nd2nzPara.ndNum = 1;
     nd2nzPara.dValue = srcD;
-    nd2nzPara.nValue = srcN; // 行数
+    nd2nzPara.nValue = srcN;  // 行数
     nd2nzPara.srcDValue = srcDstride;
-    nd2nzPara.dstNzC0Stride = (srcN + 15) / 16 * 16; // 对齐到16 单位block
+    nd2nzPara.dstNzC0Stride = (srcN + 15) / 16 * 16;  // 对齐到16 单位block
     nd2nzPara.dstNzNStride = 1;
     nd2nzPara.dstNzMatrixStride = 0;
     nd2nzPara.srcNdMatrixStride = 0;
@@ -375,9 +397,11 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CopyGmToL1(LocalTensor<K_ROPE_T
 }
 
 template <typename QSFAT>
-__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1AToL1(LocalTensor<K_ROPE_T> &l1Tensor, const RunInfo &info,
+__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1AToL1(LocalTensor<K_ROPE_T> &l1Tensor,
+                                                                const RunInfo &info,
                                                                 uint32_t mSeqIdx, uint32_t mSizeAct,
-                                                                uint32_t headSize, uint32_t headOffset)
+                                                                uint32_t headSize,
+                                                                uint32_t headOffset)
 {
     auto srcGm = queryGm[info.tensorAOffset + mSeqIdx * constInfo.combineHeadDim + headOffset];
     CopyGmToL1(l1Tensor, srcGm, mSizeAct, headSize, headSize);
@@ -385,7 +409,8 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1AToL1(LocalTensor<K_RO
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1ARopeToL1(LocalTensor<K_ROPE_T> &l1Tensor,
-                                                                    const RunInfo &info, uint32_t mSeqIdx,
+                                                                    const RunInfo &info,
+                                                                    uint32_t mSeqIdx,
                                                                     uint32_t mSizeAct)
 {
     auto srcGm = qRopeGm[info.tensorARopeOffset + mSeqIdx * constInfo.headDimRope];
@@ -393,10 +418,9 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1ARopeToL1(LocalTensor<
 }
 
 template <typename QSFAT>
-__aicore__ inline void
-QSFAMatmulService<QSFAT>::CopyInMm1BToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t keyGmBaseOffset,
-                                         uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt,
-                                         uint32_t nActCopyRowCount, uint32_t headSize)
+__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1BToL1(
+    LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t keyGmBaseOffset, uint32_t copyTotalRowCntAlign,
+    uint32_t copyStartRowCnt, uint32_t nActCopyRowCount, uint32_t headSize)
 {
     uint64_t dStride = constInfo.headDim;
     if constexpr (LAYOUT_T == QSFA_LAYOUT::BSND || LAYOUT_T == QSFA_LAYOUT::TND) {
@@ -414,14 +438,15 @@ QSFAMatmulService<QSFAT>::CopyInMm1BToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const
     mm1Nd2NzParamsForB.dstNzC0Stride = copyTotalRowCntAlign;
     mm1Nd2NzParamsForB.srcNdMatrixStride = 0;
     mm1Nd2NzParamsForB.dstNzMatrixStride = 0;
-    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt], keyGm[keyGmBaseOffset], mm1Nd2NzParamsForB);
+    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt], keyGm[keyGmBaseOffset],
+             mm1Nd2NzParamsForB);
 }
 
 template <typename QSFAT>
-__aicore__ inline void
-QSFAMatmulService<QSFAT>::CopyInMm1BRopeToL1(LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t kRopeGmBaseOffset,
-                                             uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt,
-                                             uint32_t nActCopyRowCount, uint32_t headSize)
+__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm1BRopeToL1(
+    LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t kRopeGmBaseOffset,
+    uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt, uint32_t nActCopyRowCount,
+    uint32_t headSize)
 {
     uint64_t dStride = constInfo.headDimRope;
     if constexpr (LAYOUT_T == QSFA_LAYOUT::BSND || LAYOUT_T == QSFA_LAYOUT::TND) {
@@ -439,27 +464,29 @@ QSFAMatmulService<QSFAT>::CopyInMm1BRopeToL1(LocalTensor<K_ROPE_T> &bL1Tensor, c
     mm1Nd2NzParamsForB.dstNzMatrixStride = 0;
     mm1Nd2NzParamsForB.dstNzNStride = 1;
     mm1Nd2NzParamsForB.dstNzC0Stride = copyTotalRowCntAlign;
-    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt], kRopeGm[kRopeGmBaseOffset], mm1Nd2NzParamsForB);
+    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt], kRopeGm[kRopeGmBaseOffset],
+             mm1Nd2NzParamsForB);
 }
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::LoadDataMm1A(LocalTensor<K_ROPE_T> &aL0Tensor,
-                                                              LocalTensor<K_ROPE_T> &aL1Tensor, uint32_t idx,
-                                                              uint32_t kSplitSize, uint32_t mSize, uint32_t kSize)
+                                                              LocalTensor<K_ROPE_T> &aL1Tensor,
+                                                              uint32_t idx, uint32_t kSplitSize,
+                                                              uint32_t mSize, uint32_t kSize)
 {
     LocalTensor<K_ROPE_T> srcTensor = aL1Tensor[mSize * kSplitSize * idx];
     LoadData3DParamsV2<K_ROPE_T> loadData3DParams;
     // SetFmatrixParams
-    loadData3DParams.l1H = mSize / 16; // Hin=M1=8
-    loadData3DParams.l1W = 16;         // Win=M0
+    loadData3DParams.l1H = mSize / 16;  // Hin=M1=8
+    loadData3DParams.l1W = 16;          // Win=M0
     loadData3DParams.padList[0] = 0;
     loadData3DParams.padList[1] = 0;
     loadData3DParams.padList[2] = 0;
-    loadData3DParams.padList[3] = 255; // 尾部数据不影响滑窗的结果
+    loadData3DParams.padList[3] = 255;  // 尾部数据不影响滑窗的结果
 
     // SetLoadToA0Params
-    loadData3DParams.mExtension = mSize; // M
-    loadData3DParams.kExtension = kSize; // K
+    loadData3DParams.mExtension = mSize;  // M
+    loadData3DParams.kExtension = kSize;  // K
     loadData3DParams.mStartPt = 0;
     loadData3DParams.kStartPt = 0;
     loadData3DParams.strideH = 1;
@@ -471,15 +498,16 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::LoadDataMm1A(LocalTensor<K_ROPE
     loadData3DParams.dilationFilterH = 1;
     loadData3DParams.dilationFilterW = 1;
     loadData3DParams.fMatrixCtrl = 0;
-    loadData3DParams.channelSize = kSize; // Cin=K
+    loadData3DParams.channelSize = kSize;  // Cin=K
     loadData3DParams.enTranspose = 0;
     LoadData<K_ROPE_T, LOAD3DV2_CONFIG>(aL0Tensor, srcTensor, loadData3DParams);
 }
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::LoadDataMm1B(LocalTensor<K_ROPE_T> &l0Tensor,
-                                                              LocalTensor<K_ROPE_T> &l1Tensor, uint32_t idx,
-                                                              uint32_t kSplitSize, uint32_t kSize, uint32_t nSize)
+                                                              LocalTensor<K_ROPE_T> &l1Tensor,
+                                                              uint32_t idx, uint32_t kSplitSize,
+                                                              uint32_t kSize, uint32_t nSize)
 {
     // N 方向全载
     LocalTensor<K_ROPE_T> srcTensor = l1Tensor[nSize * kSplitSize * idx];
@@ -494,8 +522,10 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::LoadDataMm1B(LocalTensor<K_ROPE
 }
 
 template <typename QSFAT>
-__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm2AToL1(LocalTensor<K_ROPE_T> &aL1Tensor, const RunInfo &info,
-                                                                uint32_t mSeqIdx, uint32_t subMSizeAct,
+__aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm2AToL1(LocalTensor<K_ROPE_T> &aL1Tensor,
+                                                                const RunInfo &info,
+                                                                uint32_t mSeqIdx,
+                                                                uint32_t subMSizeAct,
                                                                 uint32_t nSize, uint32_t nOffset)
 {
     auto srcGm = vec1ResGm[(info.loop % constInfo.preLoadNum) * constInfo.mmResUbSize +
@@ -505,8 +535,9 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm2AToL1(LocalTensor<K_RO
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm2BToL1(
-    LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t valueGmBaseOffset, uint32_t copyTotalRowCntAlign,
-    uint32_t copyStartRowCnt, uint32_t nActCopyRowCount, uint32_t copyStartColumnCount, uint32_t copyColumnCount)
+    LocalTensor<K_ROPE_T> &bL1Tensor, const uint64_t valueGmBaseOffset,
+    uint32_t copyTotalRowCntAlign, uint32_t copyStartRowCnt, uint32_t nActCopyRowCount,
+    uint32_t copyStartColumnCount, uint32_t copyColumnCount)
 {
     uint64_t step = constInfo.headDim;
     if constexpr (LAYOUT_T == QSFA_LAYOUT::BSND || LAYOUT_T == QSFA_LAYOUT::TND) {
@@ -524,30 +555,29 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CopyInMm2BToL1(
     mm1Nd2NzParamsForB.dstNzC0Stride = copyTotalRowCntAlign;
     mm1Nd2NzParamsForB.srcNdMatrixStride = 0;
     mm1Nd2NzParamsForB.dstNzMatrixStride = 0;
-    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt], valueGm[valueGmBaseOffset + copyStartColumnCount],
-             mm1Nd2NzParamsForB);
+    DataCopy(bL1Tensor[copyStartRowCnt * blockElementCnt],
+             valueGm[valueGmBaseOffset + copyStartColumnCount], mm1Nd2NzParamsForB);
 }
 
 template <typename QSFAT>
 __aicore__ inline void QSFAMatmulService<QSFAT>::CalcTopKBlockInfo(
-    const RunInfo &info, uint32_t &curTopKIdx, uint64_t &curOffsetInSparseBlock,
-    uint32_t curSeqIdx, uint32_t &copyRowCnt, uint64_t &idInTopK)
+    const RunInfo &info, uint32_t &curTopKIdx, uint64_t &curOffsetInSparseBlock, uint32_t curSeqIdx,
+    uint32_t &copyRowCnt, uint64_t &idInTopK)
 {
     if (curTopKIdx == 0 && curOffsetInSparseBlock == 0 && copyRowCnt == 0) {
         uint64_t sparseLen = 0;
         for (uint64_t qsfaTopkidx = 0; qsfaTopkidx < constInfo.sparseBlockCount; qsfaTopkidx++) {
             int32_t qsfaSparseIndices = topKGm.GetValue(info.topKBaseOffset + qsfaTopkidx);
-            if (qsfaSparseIndices == -1) {
-                break;
-            }
+            if (qsfaSparseIndices == -1) { break; }
             uint64_t qsfaBlockBegin = qsfaSparseIndices * constInfo.sparseBlockSize;
-            if (qsfaBlockBegin >= info.threshold) {
-                continue;
-            }
-            uint64_t qsfaBlockEnd = (qsfaBlockBegin + constInfo.sparseBlockSize > info.curActualSeqLenOri) ?
-                info.curActualSeqLenOri : qsfaBlockBegin + constInfo.sparseBlockSize;
-            uint64_t qsfaBlockLen = (qsfaBlockEnd <= info.threshold) ? \
-                qsfaBlockEnd - qsfaBlockBegin : info.threshold - qsfaBlockBegin;
+            if (qsfaBlockBegin >= info.threshold) { continue; }
+            uint64_t qsfaBlockEnd =
+                (qsfaBlockBegin + constInfo.sparseBlockSize > info.curActualSeqLenOri)
+                    ? info.curActualSeqLenOri
+                    : qsfaBlockBegin + constInfo.sparseBlockSize;
+            uint64_t qsfaBlockLen = (qsfaBlockEnd <= info.threshold)
+                                        ? qsfaBlockEnd - qsfaBlockBegin
+                                        : info.threshold - qsfaBlockBegin;
             sparseLen += qsfaBlockLen;
             if (sparseLen >= curSeqIdx + 1) {
                 curTopKIdx = qsfaTopkidx;
@@ -560,25 +590,24 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CalcTopKBlockInfo(
         return;
     }
     uint64_t qsfaBlockBegin = idInTopK * constInfo.sparseBlockSize;
-    uint64_t qsfaBlockEnd = (qsfaBlockBegin + constInfo.sparseBlockSize > info.threshold) ?
-                        info.threshold : qsfaBlockBegin + constInfo.sparseBlockSize;
+    uint64_t qsfaBlockEnd = (qsfaBlockBegin + constInfo.sparseBlockSize > info.threshold)
+                                ? info.threshold
+                                : qsfaBlockBegin + constInfo.sparseBlockSize;
     uint64_t qsfaBlockLen = qsfaBlockEnd - qsfaBlockBegin;
     if (curOffsetInSparseBlock + copyRowCnt < qsfaBlockLen) {
         curOffsetInSparseBlock += copyRowCnt;
         copyRowCnt = qsfaBlockLen - curOffsetInSparseBlock;
     } else {
-        for (uint64_t qsfaTopkidx = curTopKIdx + 1; qsfaTopkidx < constInfo.sparseBlockCount; qsfaTopkidx++) {
+        for (uint64_t qsfaTopkidx = curTopKIdx + 1; qsfaTopkidx < constInfo.sparseBlockCount;
+             qsfaTopkidx++) {
             int64_t qsfaSparseIndices = topKGm.GetValue(info.topKBaseOffset + qsfaTopkidx);
-            if (qsfaSparseIndices == -1) {
-                break;
-            }
+            if (qsfaSparseIndices == -1) { break; }
 
             uint64_t qsfaBlockBegin = qsfaSparseIndices * constInfo.sparseBlockSize;
-            if (qsfaBlockBegin >= info.threshold) {
-                continue;
-            }
-            uint64_t qsfaBlockEnd = (qsfaBlockBegin + constInfo.sparseBlockSize > info.threshold) ?
-                                info.threshold : qsfaBlockBegin + constInfo.sparseBlockSize;
+            if (qsfaBlockBegin >= info.threshold) { continue; }
+            uint64_t qsfaBlockEnd = (qsfaBlockBegin + constInfo.sparseBlockSize > info.threshold)
+                                        ? info.threshold
+                                        : qsfaBlockBegin + constInfo.sparseBlockSize;
             uint64_t qsfaBlockLen = qsfaBlockEnd - qsfaBlockBegin;
             curTopKIdx = qsfaTopkidx;
             idInTopK = qsfaSparseIndices;
@@ -590,7 +619,8 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::CalcTopKBlockInfo(
 }
 
 template <typename QSFAT>
-__aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info, const MSplitInfo mSplitInfo)
+__aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
+                                                            const MSplitInfo mSplitInfo)
 {
     // 最外层还需要一层m的循环
     uint32_t mSize = mSplitInfo.nBufferDealM;
@@ -605,10 +635,10 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
 
     uint32_t kSize = 576;
     uint32_t kL1Size = 288;
-    uint32_t kL1Loops = 2; // 2 : 576/288, mla专用 这里不考虑d泛化
+    uint32_t kL1Loops = 2;  // 2 : 576/288, mla专用 这里不考虑d泛化
 
     uint32_t kL0Size = 96;
-    uint32_t kL0Loops = (kL1Size + kL0Size - 1) / kL0Size; // 288 / 96 = 3 kloops
+    uint32_t kL0Loops = (kL1Size + kL0Size - 1) / kL0Size;  // 288 / 96 = 3 kloops
 
     // ka表示左矩阵4buf选择哪一块buf, kb表示右矩阵3buf选择哪一块buf
     uint32_t ka = 0, kb = 0;
@@ -627,10 +657,11 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
         ka = GetQPL1RealIdx(mIdx, 0);
         LocalTensor<Q_T> aL1Tensor = l1QPTensor[ka * L1_BLOCK_OFFSET];
         WaitFlag<HardEvent::MTE1_MTE2>(mte21QPIds[ka]);
-        CopyInMm1AToL1(aL1Tensor, info, mSplitInfo.nBufferStartM + mL1 * M_SPLIT_SIZE, mL1Size, 576, 0);
+        CopyInMm1AToL1(aL1Tensor, info, mSplitInfo.nBufferStartM + mL1 * M_SPLIT_SIZE, mL1Size, 576,
+                       0);
         SetFlag<HardEvent::MTE2_MTE1>(mte21QPIds[ka]);
         WaitFlag<HardEvent::MTE2_MTE1>(mte21QPIds[ka]);
-        for (uint32_t nL1 = 0; nL1 < nL1Loops; nL1++) { // L1切n, 512/128=4
+        for (uint32_t nL1 = 0; nL1 < nL1Loops; nL1++) {  // L1切n, 512/128=4
             if (nL1 == (nL1Loops - 1)) {
                 // 尾块重新计算size
                 nL1Size = nSize - (nL1Loops - 1) * N_SPLIT_SIZE;
@@ -639,8 +670,9 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
 
             // 使用unitflag同步
             // 需要保证cL0BufIter和m步调一致
-            LocalTensor cL0Tensor = cL0TensorPingPong[(cL0BufIter % 2) * (L0C_PP_SIZE / sizeof(MM_OUT_T))];
-            for (uint32_t kL1 = 0; kL1 < kL1Loops; kL1++) { // L1切k, 576/288, 这里不考虑d泛化
+            LocalTensor cL0Tensor =
+                cL0TensorPingPong[(cL0BufIter % 2) * (L0C_PP_SIZE / sizeof(MM_OUT_T))];
+            for (uint32_t kL1 = 0; kL1 < kL1Loops; kL1++) {  // L1切k, 576/288, 这里不考虑d泛化
                 kvL1BufIter++;
                 uint32_t kb = kvL1BufIter % 3;
                 WaitFlag<HardEvent::MTE1_MTE2>(mte21KVIds[kb]);
@@ -653,22 +685,27 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
                         copyParams.blockLen = nL1Size;
                         copyParams.srcStride = constInfo.s2BaseSize - nL1Size;
                         copyParams.dstStride = nL1SizeAlign - nL1Size;
-                        DataCopy(bL1Tensor, kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize +
-                                            nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM], copyParams);
+                        DataCopy(bL1Tensor,
+                                 kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize +
+                                            nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM],
+                                 copyParams);
                     } else {
                         DataCopyParams copyParams;
                         copyParams.blockCount = 224 / BLOCK_ELEMENT_NUM;
                         copyParams.blockLen = nL1Size;
                         copyParams.srcStride = constInfo.s2BaseSize - nL1Size;
                         copyParams.dstStride = nL1SizeAlign - nL1Size;
-                        DataCopy(bL1Tensor, kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize +
-                                 288 * constInfo.s2BaseSize + nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM], copyParams);
+                        DataCopy(bL1Tensor,
+                                 kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize +
+                                            288 * constInfo.s2BaseSize +
+                                            nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM],
+                                 copyParams);
                         copyParams.blockCount = constInfo.headDimRope / BLOCK_ELEMENT_NUM;
-                        DataCopy(
-                            bL1Tensor[224 * nL1SizeAlign],
-                            kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize + N_WORKSPACE_SIZE * constInfo.headDim +
-                                        nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM],
-                            copyParams);
+                        DataCopy(bL1Tensor[224 * nL1SizeAlign],
+                                 kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * kSize +
+                                            N_WORKSPACE_SIZE * constInfo.headDim +
+                                            nL1 * N_SPLIT_SIZE * BLOCK_ELEMENT_NUM],
+                                 copyParams);
                     }
                 }
                 SetFlag<HardEvent::MTE2_MTE1>(mte21KVIds[kb]);
@@ -677,11 +714,11 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
                 aL1Tensor = l1QPTensor[ka * L1_BLOCK_OFFSET + kL1 * mL1SizeAlign * K_SPLIT_SIZE];
                 for (uint32_t kL0 = 0; kL0 < kL0Loops; kL0++) {
                     WaitFlag<HardEvent::M_MTE1>(Mte1MmABEventId(abL0BufIter % 2));
-                    LocalTensor<K_ROPE_T> aL0Tensor = aL0TensorPingPong[(abL0BufIter % 2) * (L0A_PP_SIZE /
-                        sizeof(K_ROPE_T))];
+                    LocalTensor<K_ROPE_T> aL0Tensor =
+                        aL0TensorPingPong[(abL0BufIter % 2) * (L0A_PP_SIZE / sizeof(K_ROPE_T))];
                     LoadDataMm1A(aL0Tensor, aL1Tensor, kL0, kL0Size, mL1SizeAlign, kL0Size);
-                    LocalTensor<K_ROPE_T> bL0Tensor = bL0TensorPingPong[(abL0BufIter % 2) * (L0B_PP_SIZE /
-                        sizeof(K_ROPE_T))];
+                    LocalTensor<K_ROPE_T> bL0Tensor =
+                        bL0TensorPingPong[(abL0BufIter % 2) * (L0B_PP_SIZE / sizeof(K_ROPE_T))];
                     LoadDataMm1B(bL0Tensor, bL1Tensor, kL0, kL0Size, kL0Size, nL1SizeAlign);
                     SetFlag<HardEvent::MTE1_M>(Mte1MmABEventId(abL0BufIter % 2));
                     WaitFlag<HardEvent::MTE1_M>(Mte1MmABEventId(abL0BufIter % 2));
@@ -693,52 +730,54 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm1(const RunInfo &info,
                     mmadParams.k = kL0Size;
                     mmadParams.cmatrixSource = false;
                     mmadParams.cmatrixInitVal = (kL1 == 0 && kL0 == 0);
-                    mmadParams.unitFlag =
-                        (kL1 == 1 && kL0 == (kL0Loops - 1)) ? 0b11 : 0b10; // 累加最后一次翻转flag, 表示可以搬出
+                    mmadParams.unitFlag = (kL1 == 1 && kL0 == (kL0Loops - 1))
+                                              ? 0b11
+                                              : 0b10;  // 累加最后一次翻转flag, 表示可以搬出
                     Mmad(cL0Tensor, aL0Tensor, bL0Tensor, mmadParams);
 
-                    if ((mmadParams.m / 16) * (mmadParams.n / 16) < 10) {
-                        PipeBarrier<PIPE_M>();
-                    }
+                    if ((mmadParams.m / 16) * (mmadParams.n / 16) < 10) { PipeBarrier<PIPE_M>(); }
                     SetFlag<HardEvent::M_MTE1>(Mte1MmABEventId(abL0BufIter % 2));
                     abL0BufIter++;
                 }
-                SetFlag<HardEvent::MTE1_MTE2>(mte21KVIds[kb]); // 反向同步, 表示L1已经被mte1消费完
+                SetFlag<HardEvent::MTE1_MTE2>(mte21KVIds[kb]);  // 反向同步, 表示L1已经被mte1消费完
             }
             FixpipeParamsV220 fixParams;
             fixParams.mSize = mL1SizeAlign;
             fixParams.nSize = nL1SizeAlign;
             fixParams.srcStride = mL1SizeAlign;
-            fixParams.ndNum = 1; // 输出ND
+            fixParams.ndNum = 1;  // 输出ND
             // 改成nSizeAlign
-            fixParams.dstStride = info.actualSingleProcessSInnerSizeAlign; // mm1ResGm两行之间的间隔
+            fixParams.dstStride =
+                info.actualSingleProcessSInnerSizeAlign;  // mm1ResGm两行之间的间隔
             fixParams.unitFlag = 0b11;
 
             // 输出偏移info.loop % (constInfo.preLoadNum)) * mmResUbSize是否在matmul里计算
-            Fixpipe(mm1ResGm[(info.loop % (constInfo.preLoadNum)) * constInfo.mmResUbSize + nL1 * N_SPLIT_SIZE +
-                                (mSplitInfo.nBufferStartM + mL1 * M_SPLIT_SIZE) *
-                                    info.actualSingleProcessSInnerSizeAlign],
+            Fixpipe(mm1ResGm[(info.loop % (constInfo.preLoadNum)) * constInfo.mmResUbSize +
+                             nL1 * N_SPLIT_SIZE +
+                             (mSplitInfo.nBufferStartM + mL1 * M_SPLIT_SIZE) *
+                                 info.actualSingleProcessSInnerSizeAlign],
                     cL0Tensor, fixParams);
             cL0BufIter++;
         }
-        SetFlag<HardEvent::MTE1_MTE2>(mte21QPIds[ka]); // 反向同步, 表示L1中的A已经被mte1消费完
+        SetFlag<HardEvent::MTE1_MTE2>(mte21QPIds[ka]);  // 反向同步, 表示L1中的A已经被mte1消费完
     }
     qpL1BufIter += mL1Loops;
 }
 
 template <typename QSFAT>
-__aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info, const MSplitInfo mSplitInfo)
+__aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
+                                                            const MSplitInfo mSplitInfo)
 {
     uint32_t mSize = mSplitInfo.nBufferDealM;
     uint32_t mSizeAlign = (mSize + 16 - 1) / 16;
     uint32_t mL1Loops = (mSize + M_SPLIT_SIZE - 1) / M_SPLIT_SIZE;
-    uint32_t mL1SizeAlign = M_SPLIT_SIZE; // 16对齐
-    uint32_t mL1Size = M_SPLIT_SIZE;      // m的实际大小
+    uint32_t mL1SizeAlign = M_SPLIT_SIZE;  // 16对齐
+    uint32_t mL1Size = M_SPLIT_SIZE;       // m的实际大小
 
     uint32_t nSize = BlockAlign<K_ROPE_T>(constInfo.headDim);
     uint32_t nL1Loops = (nSize + N_SPLIT_SIZE - 1) / N_SPLIT_SIZE;
-    uint32_t nL1SizeAlign = N_SPLIT_SIZE; // 16对齐
-    uint32_t nL1Size = N_SPLIT_SIZE;      // n的实际大小
+    uint32_t nL1SizeAlign = N_SPLIT_SIZE;  // 16对齐
+    uint32_t nL1Size = N_SPLIT_SIZE;       // n的实际大小
 
     uint32_t kSize = info.actualSingleProcessSInnerSize;
     uint32_t kL1Size = 256;
@@ -753,7 +792,7 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
     // ka表示左矩阵4buf选择哪一块buf, kb表示右矩阵3buf选择哪一块buf
     uint32_t ka = 0, qsfaKb = 0;
     uint32_t mBaseIdx = qpL1BufIter;
-    for (uint32_t nL1 = 0; nL1 < nL1Loops; nL1++) { // n切L1
+    for (uint32_t nL1 = 0; nL1 < nL1Loops; nL1++) {  // n切L1
         if (nL1 == (nL1Loops - 1)) {
             // 尾块
             nL1Size = nSize - (nL1Loops - 1) * N_SPLIT_SIZE;
@@ -763,7 +802,7 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
         // k l1写成一个循环, 和mm1保持一致
         kL1Size = 256;
         kL1SizeAlign = QSFAAlign(kL1Size, 16U);
-        for (uint32_t k1 = 0; k1 < kL1Loops; k1++) { // k切L1, 这里套了一层l0来操作
+        for (uint32_t k1 = 0; k1 < kL1Loops; k1++) {  // k切L1, 这里套了一层l0来操作
             if (k1 == (kL1Loops - 1)) {
                 // 尾块
                 kL1Size = kSize - (kL1Loops - 1) * 256;
@@ -775,10 +814,12 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
             bL1Tensor = l1KVTensor[qsfaKb * L1_BLOCK_OFFSET];
             uint32_t qsfaKOffset = k1 * kL0Loops;
             kL0Size = 128;
-            // 此处必须先初始化kL0Size, 再求kL0Loops, 否则由于循环会改变kL0Size大小, 导致kL0Loops错误
+            // 此处必须先初始化kL0Size, 再求kL0Loops, 否则由于循环会改变kL0Size大小,
+            // 导致kL0Loops错误
             kL0Loops = (kL1Size + kL0Size - 1) / kL0Size;
             kL0SizeAlign = kL0Size;
-            for (uint32_t qsfaKL1 = qsfaKOffset; qsfaKL1 < kL0Loops + qsfaKOffset; qsfaKL1++) { // 128 循环搬pa
+            for (uint32_t qsfaKL1 = qsfaKOffset; qsfaKL1 < kL0Loops + qsfaKOffset;
+                 qsfaKL1++) {  // 128 循环搬pa
                 if (qsfaKL1 == qsfaKOffset + kL0Loops - 1) {
                     // 尾块
                     kL0Size = kL1Size - (kL0Loops - 1) * kL0Size;
@@ -790,15 +831,17 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
                     copyParams.blockCount = nL1Size / BLOCK_ELEMENT_NUM;
                     copyParams.srcStride = constInfo.s2BaseSize - kL0Size;
                     copyParams.dstStride = kL0SizeAlign - kL0Size;
-                    DataCopy(bL1Tensor[(qsfaKL1 - qsfaKOffset) * 128 * N_SPLIT_SIZE], kvMergeGm_[info.loop % 4 *
-                        N_WORKSPACE_SIZE * 576 + qsfaKL1 * 128 * BLOCK_ELEMENT_NUM + nL1 * N_SPLIT_SIZE *
-                        constInfo.s2BaseSize], copyParams);
+                    DataCopy(bL1Tensor[(qsfaKL1 - qsfaKOffset) * 128 * N_SPLIT_SIZE],
+                             kvMergeGm_[info.loop % 4 * N_WORKSPACE_SIZE * 576 +
+                                        qsfaKL1 * 128 * BLOCK_ELEMENT_NUM +
+                                        nL1 * N_SPLIT_SIZE * constInfo.s2BaseSize],
+                             copyParams);
                 }
             }
             SetFlag<HardEvent::MTE2_MTE1>(mte21KVIds[qsfaKb]);
             WaitFlag<HardEvent::MTE2_MTE1>(mte21KVIds[qsfaKb]);
             mL1SizeAlign = M_SPLIT_SIZE;
-            mL1Size = M_SPLIT_SIZE;      // m的实际大小
+            mL1Size = M_SPLIT_SIZE;  // m的实际大小
             for (uint32_t qsfaML1 = 0; qsfaML1 < mL1Loops; qsfaML1++) {
                 if (qsfaML1 == (mL1Loops - 1)) {
                     // 尾块
@@ -811,15 +854,17 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
                 LocalTensor<K_ROPE_T> aL1Tensor = l1QPTensor[ka * L1_BLOCK_OFFSET];
                 if (nL1 == 0) {
                     WaitFlag<HardEvent::MTE1_MTE2>(mte21QPIds[ka]);
-                    CopyInMm2AToL1(aL1Tensor, info, mSplitInfo.nBufferStartM + qsfaML1 * M_SPLIT_SIZE, mL1Size, kL1Size,
-                                   256 * k1);
+                    CopyInMm2AToL1(aL1Tensor, info,
+                                   mSplitInfo.nBufferStartM + qsfaML1 * M_SPLIT_SIZE, mL1Size,
+                                   kL1Size, 256 * k1);
                     SetFlag<HardEvent::MTE2_MTE1>(mte21QPIds[ka]);
                     WaitFlag<HardEvent::MTE2_MTE1>(mte21QPIds[ka]);
                 }
 
                 LocalTensor cL0Tensor =
                     cL0TensorPingPong[(cL0BufIter % 2) *
-                                      (L0C_PP_SIZE / sizeof(MM_OUT_T))]; // 需要保证cL0BufIter和m步调一致
+                                      (L0C_PP_SIZE /
+                                       sizeof(MM_OUT_T))];  // 需要保证cL0BufIter和m步调一致
                 uint32_t qsfaBaseK = 128;
                 uint32_t qsfaBaseN = 128;
                 kL0Size = 128;
@@ -830,63 +875,75 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
                         kL0SizeAlign = QSFAAlign(kL0Size, 16U);
                     }
                     WaitFlag<HardEvent::M_MTE1>(Mte1MmABEventId(abL0BufIter % 2));
-                    LocalTensor<K_ROPE_T> bL0Tensor = bL0TensorPingPong[(abL0BufIter % 2) * (L0B_PP_SIZE /
-                        sizeof(K_ROPE_T))];
+                    LocalTensor<K_ROPE_T> bL0Tensor =
+                        bL0TensorPingPong[(abL0BufIter % 2) * (L0B_PP_SIZE / sizeof(K_ROPE_T))];
                     LoadData3DParamsV2<K_ROPE_T> loadData3DParamsForB;
-                    loadData3DParamsForB.l1H = kL0SizeAlign / 16; // 源操作数height
-                    loadData3DParamsForB.l1W = 16;                // 源操作数weight=16，目的height=l1H*L1W
+                    loadData3DParamsForB.l1H = kL0SizeAlign / 16;  // 源操作数height
+                    loadData3DParamsForB.l1W = 16;  // 源操作数weight=16，目的height=l1H*L1W
                     loadData3DParamsForB.padList[0] = 0;
                     loadData3DParamsForB.padList[1] = 0;
                     loadData3DParamsForB.padList[2] = 0;
-                    loadData3DParamsForB.padList[3] = 255;        // 尾部数据不影响滑窗的结果
+                    loadData3DParamsForB.padList[3] = 255;  // 尾部数据不影响滑窗的结果
 
-                    loadData3DParamsForB.mExtension = kL0SizeAlign; // 在目的操作数height维度的传输长度
-                    loadData3DParamsForB.kExtension = nL1SizeAlign; // 在目的操作数width维度的传输长度
-                    loadData3DParamsForB.mStartPt = 0;              // 卷积核在目的操作数width维度的起点
-                    loadData3DParamsForB.kStartPt = 0;              // 卷积核在目的操作数height维度的起点
+                    loadData3DParamsForB.mExtension =
+                        kL0SizeAlign;  // 在目的操作数height维度的传输长度
+                    loadData3DParamsForB.kExtension =
+                        nL1SizeAlign;                   // 在目的操作数width维度的传输长度
+                    loadData3DParamsForB.mStartPt = 0;  // 卷积核在目的操作数width维度的起点
+                    loadData3DParamsForB.kStartPt = 0;  // 卷积核在目的操作数height维度的起点
                     loadData3DParamsForB.strideH = 1;
                     loadData3DParamsForB.strideW = 1;
                     loadData3DParamsForB.filterW = 1;
-                    loadData3DParamsForB.filterSizeW = false; // 是否在filterW的基础上将卷积核width增加256个元素
+                    loadData3DParamsForB.filterSizeW =
+                        false;  // 是否在filterW的基础上将卷积核width增加256个元素
                     loadData3DParamsForB.filterH = 1;
-                    loadData3DParamsForB.filterSizeH = false; // 是否在filterH的基础上将卷积核height增加256个元素
-                    loadData3DParamsForB.dilationFilterH = 1; // 卷积核height膨胀系数
-                    loadData3DParamsForB.dilationFilterW = 1; // 卷积核width膨胀系数
-                    loadData3DParamsForB.enTranspose = 1;     // 是否启用转置功能
-                    // 使用FMATRIX_LEFT还是使用FMATRIX_RIGHT，=0使用FMATRIX_LEFT，=1使用FMATRIX_RIGHT 1
+                    loadData3DParamsForB.filterSizeH =
+                        false;  // 是否在filterH的基础上将卷积核height增加256个元素
+                    loadData3DParamsForB.dilationFilterH = 1;  // 卷积核height膨胀系数
+                    loadData3DParamsForB.dilationFilterW = 1;  // 卷积核width膨胀系数
+                    loadData3DParamsForB.enTranspose = 1;      // 是否启用转置功能
+                    // 使用FMATRIX_LEFT还是使用FMATRIX_RIGHT，=0使用FMATRIX_LEFT，=1使用FMATRIX_RIGHT
+                    // 1
                     loadData3DParamsForB.fMatrixCtrl = 0;
                     // 源操作数的通道数。膨胀系数为1时，目的weight为filterW*filterH*channelSize
                     loadData3DParamsForB.channelSize = nL1SizeAlign;
-                    LoadData<K_ROPE_T, LOAD3DV2_CONFIG>(bL0Tensor, bL1Tensor[qsfaKL0 * qsfaBaseK * qsfaBaseN],
-                        loadData3DParamsForB);
-                    LocalTensor<K_ROPE_T> aL0Tensor = aL0TensorPingPong[(abL0BufIter % 2) * (L0A_PP_SIZE /
-                        sizeof(K_ROPE_T))];
+                    LoadData<K_ROPE_T, LOAD3DV2_CONFIG>(bL0Tensor,
+                                                        bL1Tensor[qsfaKL0 * qsfaBaseK * qsfaBaseN],
+                                                        loadData3DParamsForB);
+                    LocalTensor<K_ROPE_T> aL0Tensor =
+                        aL0TensorPingPong[(abL0BufIter % 2) * (L0A_PP_SIZE / sizeof(K_ROPE_T))];
                     LoadData3DParamsV2<K_ROPE_T> loadData3DParamsForA;
-                    loadData3DParamsForA.l1H = mL1SizeAlign / 16;    // 源操作数height
-                    loadData3DParamsForA.l1W = 16;                   // 源操作数weight
+                    loadData3DParamsForA.l1H = mL1SizeAlign / 16;  // 源操作数height
+                    loadData3DParamsForA.l1W = 16;                 // 源操作数weight
                     loadData3DParamsForA.padList[0] = 0;
                     loadData3DParamsForA.padList[1] = 0;
                     loadData3DParamsForA.padList[2] = 0;
-                    loadData3DParamsForA.padList[3] = 255;           // 尾部数据不影响滑窗的结果
+                    loadData3DParamsForA.padList[3] = 255;  // 尾部数据不影响滑窗的结果
 
-                    loadData3DParamsForA.mExtension = mL1SizeAlign;  // 在目的操作数height维度的传输长度
-                    loadData3DParamsForA.kExtension = kL0SizeAlign;  // 在目的操作数width维度的传输长度
-                    loadData3DParamsForA.mStartPt = 0;               // 卷积核在目的操作数width维度的起点
-                    loadData3DParamsForA.kStartPt = 0;               // 卷积核在目的操作数height维度的起点
-                    loadData3DParamsForA.strideW = 1;                // 卷积核在源操作数width维度滑动的步长
-                    loadData3DParamsForA.strideH = 1;                // 卷积核在源操作数height维度滑动的步长
-                    loadData3DParamsForA.filterW = 1;                // 卷积核width
-                    loadData3DParamsForA.filterSizeW = false;        // 是否在filterW的基础上将卷积核width增加256个元素
-                    loadData3DParamsForA.filterH = 1;                // 卷积核height
-                    loadData3DParamsForA.filterSizeH = false;        // 是否在filterH的基础上将卷积核height增加256个元素
-                    loadData3DParamsForA.dilationFilterW = 1;        // 卷积核width膨胀系数
-                    loadData3DParamsForA.dilationFilterH = 1;        // 卷积核height膨胀系数
-                    loadData3DParamsForA.enTranspose = 0;            // 是否启用转置功能，对整个目标矩阵进行转置
+                    loadData3DParamsForA.mExtension =
+                        mL1SizeAlign;  // 在目的操作数height维度的传输长度
+                    loadData3DParamsForA.kExtension =
+                        kL0SizeAlign;                   // 在目的操作数width维度的传输长度
+                    loadData3DParamsForA.mStartPt = 0;  // 卷积核在目的操作数width维度的起点
+                    loadData3DParamsForA.kStartPt = 0;  // 卷积核在目的操作数height维度的起点
+                    loadData3DParamsForA.strideW = 1;   // 卷积核在源操作数width维度滑动的步长
+                    loadData3DParamsForA.strideH = 1;   // 卷积核在源操作数height维度滑动的步长
+                    loadData3DParamsForA.filterW = 1;   // 卷积核width
+                    loadData3DParamsForA.filterSizeW =
+                        false;  // 是否在filterW的基础上将卷积核width增加256个元素
+                    loadData3DParamsForA.filterH = 1;  // 卷积核height
+                    loadData3DParamsForA.filterSizeH =
+                        false;  // 是否在filterH的基础上将卷积核height增加256个元素
+                    loadData3DParamsForA.dilationFilterW = 1;  // 卷积核width膨胀系数
+                    loadData3DParamsForA.dilationFilterH = 1;  // 卷积核height膨胀系数
+                    loadData3DParamsForA.enTranspose =
+                        0;  // 是否启用转置功能，对整个目标矩阵进行转置
                     loadData3DParamsForA.fMatrixCtrl = 0;
                     // 源操作数的通道数。膨胀系数为1时，目的weight为filterW*filterH*channelSize
                     loadData3DParamsForA.channelSize = kL0SizeAlign;
-                    LoadData<K_ROPE_T, LOAD3DV2_CONFIG>(aL0Tensor, aL1Tensor[qsfaKL0 * qsfaBaseK * mL1SizeAlign],
-                                                    loadData3DParamsForA);
+                    LoadData<K_ROPE_T, LOAD3DV2_CONFIG>(
+                        aL0Tensor, aL1Tensor[qsfaKL0 * qsfaBaseK * mL1SizeAlign],
+                        loadData3DParamsForA);
                     SetFlag<HardEvent::MTE1_M>(Mte1MmABEventId(abL0BufIter % 2));
                     WaitFlag<HardEvent::MTE1_M>(Mte1MmABEventId(abL0BufIter % 2));
 
@@ -896,18 +953,18 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
                     mmadParams.k = kL0Size;
                     mmadParams.cmatrixInitVal = (qsfaKL0 == 0 && k1 == 0);
                     mmadParams.cmatrixSource = false;
-                    mmadParams.unitFlag = ((k1 == (kL1Loops - 1)) && (qsfaKL0 == (kL0Loops - 1))) ? 0b11 : 0b10;
+                    mmadParams.unitFlag =
+                        ((k1 == (kL1Loops - 1)) && (qsfaKL0 == (kL0Loops - 1))) ? 0b11 : 0b10;
 
                     Mmad(cL0Tensor, aL0Tensor, bL0Tensor, mmadParams);
-                    if ((mmadParams.m / 16) * (mmadParams.n / 16) < 10) {
-                        PipeBarrier<PIPE_M>();
-                    }
+                    if ((mmadParams.m / 16) * (mmadParams.n / 16) < 10) { PipeBarrier<PIPE_M>(); }
                     SetFlag<HardEvent::M_MTE1>(Mte1MmABEventId(abL0BufIter % 2));
                     abL0BufIter++;
                 }
 
-                if (nL1 == (nL1Loops - 1)) { // nL1最后一轮, 需要将B驻留在L1中, 用于下一轮的计算？
-                    SetFlag<HardEvent::MTE1_MTE2>(mte21QPIds[ka]); // 反向同步, 表示L1中的A已经被mte1消费完
+                if (nL1 == (nL1Loops - 1)) {  // nL1最后一轮, 需要将B驻留在L1中, 用于下一轮的计算？
+                    SetFlag<HardEvent::MTE1_MTE2>(
+                        mte21QPIds[ka]);  // 反向同步, 表示L1中的A已经被mte1消费完
                 }
 
                 if (k1 == (kL1Loops - 1)) {
@@ -916,28 +973,27 @@ __aicore__ inline void QSFAMatmulService<QSFAT>::ComputeMm2(const RunInfo &info,
                     fixParams.nSize = nL1SizeAlign;
                     fixParams.mSize = mL1SizeAlign;
                     fixParams.srcStride = mL1SizeAlign;
-                    fixParams.dstStride = nSize; // mm2ResGm两行之间的间隔
-                    fixParams.ndNum = 1;         // 输出ND
+                    fixParams.dstStride = nSize;  // mm2ResGm两行之间的间隔
+                    fixParams.ndNum = 1;          // 输出ND
                     fixParams.unitFlag = 0b11;
 
-                    uint64_t qsfaMm2Offset = (mSplitInfo.nBufferStartM + qsfaML1 * M_SPLIT_SIZE) * nSize +
+                    uint64_t qsfaMm2Offset =
+                        (mSplitInfo.nBufferStartM + qsfaML1 * M_SPLIT_SIZE) * nSize +
                         nL1 * N_SPLIT_SIZE;
-                    Fixpipe(mm2ResGm[(info.loop % (constInfo.preLoadNum)) *
-                            constInfo.bmm2ResUbSize + qsfaMm2Offset], cL0Tensor, fixParams);
+                    Fixpipe(
+                        mm2ResGm[(info.loop % (constInfo.preLoadNum)) * constInfo.bmm2ResUbSize +
+                                 qsfaMm2Offset],
+                        cL0Tensor, fixParams);
                 }
 
-                if (mL1Loops == 2) {
-                    cL0BufIter++;
-                }
+                if (mL1Loops == 2) { cL0BufIter++; }
             }
-            SetFlag<HardEvent::MTE1_MTE2>(mte21KVIds[qsfaKb]); // 反向同步, 表示L1已经被mte1消费完
+            SetFlag<HardEvent::MTE1_MTE2>(mte21KVIds[qsfaKb]);  // 反向同步, 表示L1已经被mte1消费完
         }
         // cL0BufIter已经不在使用
-        if (mL1Loops == 1) {
-            cL0BufIter++;
-        }
+        if (mL1Loops == 1) { cL0BufIter++; }
     }
     qpL1BufIter += mL1Loops;
 }
 
-#endif // KV_QUANT_SPARSE_FLASH_ATTENTION_SERVICE_CUBE_MLA_H
+#endif  // KV_QUANT_SPARSE_FLASH_ATTENTION_SERVICE_CUBE_MLA_H

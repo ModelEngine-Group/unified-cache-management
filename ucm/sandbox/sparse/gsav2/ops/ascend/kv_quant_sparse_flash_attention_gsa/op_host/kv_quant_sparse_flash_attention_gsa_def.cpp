@@ -8,7 +8,8 @@
  *   3. 新增可选输入 sinks
  *   4. kernel 入口 opFile 改为 kv_quant_sparse_flash_attention_gsa
  *
- * 参考: https://gitcode.com/cann/ops-transformer/tree/master/attention/kv_quant_sparse_flash_attention_v2
+ * 参考:
+ * https://gitcode.com/cann/ops-transformer/tree/master/attention/kv_quant_sparse_flash_attention_v2
  */
 
 #include "register/op_def_registry.h"
@@ -28,10 +29,7 @@ public:
             .DataType({ge::DT_INT8, ge::DT_INT8})
             .Format({ge::FORMAT_ND, ge::FORMAT_ND})
             .AutoContiguous();
-        this->Input("value")
-            .ParamType(REQUIRED)
-            .Follow("key")
-            .AutoContiguous();
+        this->Input("value").ParamType(REQUIRED).Follow("key").AutoContiguous();
         this->Input("sparse_indices")
             .ParamType(REQUIRED)
             .DataType({ge::DT_INT32, ge::DT_INT32})
@@ -93,7 +91,7 @@ public:
         this->Attr("sparse_block_size").AttrType(OPTIONAL).Int(1);
         this->Attr("layout_query").AttrType(OPTIONAL).String("BSND");
         this->Attr("layout_kv").AttrType(OPTIONAL).String("BSND");
-        this->Attr("sparse_mode").AttrType(OPTIONAL).Int(3);     // 3:默认值，只计算下三角
+        this->Attr("sparse_mode").AttrType(OPTIONAL).Int(3);  // 3:默认值，只计算下三角
         this->Attr("pre_tokens").AttrType(OPTIONAL).Int(INT64_MAX);
         this->Attr("next_tokens").AttrType(OPTIONAL).Int(INT64_MAX);
         this->Attr("attention_mode").AttrType(OPTIONAL).Int(0);
@@ -120,17 +118,20 @@ public:
         OpAICoreConfig aicore_config_95;
         aicore_config_95.Input("query")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_BF16, ge::DT_BF16, ge::DT_BF16, ge::DT_FLOAT16, ge::DT_FLOAT16, ge::DT_FLOAT16})
+            .DataType({ge::DT_BF16, ge::DT_BF16, ge::DT_BF16, ge::DT_FLOAT16, ge::DT_FLOAT16,
+                       ge::DT_FLOAT16})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         aicore_config_95.Input("key")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8, ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8})
+            .DataType({ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8, ge::DT_FLOAT8_E4M3FN,
+                       ge::DT_HIFLOAT8, ge::DT_INT8})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         aicore_config_95.Input("value")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8, ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8})
+            .DataType({ge::DT_FLOAT8_E4M3FN, ge::DT_HIFLOAT8, ge::DT_INT8, ge::DT_FLOAT8_E4M3FN,
+                       ge::DT_HIFLOAT8, ge::DT_INT8})
             .FormatList({ge::FORMAT_ND})
             .AutoContiguous();
         aicore_config_95.Input("sparse_indices")
@@ -175,7 +176,8 @@ public:
             .AutoContiguous();
         aicore_config_95.Output("attention_out")
             .ParamType(REQUIRED)
-            .DataType({ge::DT_BF16, ge::DT_BF16, ge::DT_BF16, ge::DT_FLOAT16, ge::DT_FLOAT16, ge::DT_FLOAT16})
+            .DataType({ge::DT_BF16, ge::DT_BF16, ge::DT_BF16, ge::DT_FLOAT16, ge::DT_FLOAT16,
+                       ge::DT_FLOAT16})
             .FormatList({ge::FORMAT_ND});
         aicore_config_95.Output("softmax_max")
             .ParamType(OPTIONAL)
@@ -197,4 +199,4 @@ public:
     }
 };
 OP_ADD(KvQuantSparseFlashAttentionGsa);
-} // namespace ops
+}  // namespace ops
