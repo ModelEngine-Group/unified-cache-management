@@ -76,8 +76,12 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     }
     if (config_.completionPollSpinLimit == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "completionPollSpinLimit must be greater than 0");
+                              "completionPollSpinLimit must be greater than 0");
     }
+    // Structured connection-reliability sections: illegal values are rejected
+    // with INVALID_ARGUMENT instead of silent fallback.
+    if (auto status = config_.recovery.Validate(); !status.ok()) { return status; }
+    if (auto status = config_.connection.Validate(); !status.ok()) { return status; }
 
     if (!transProvider_) {
         KV_ERROR("AsuTransportImpl::Init: TransProvider is null");
@@ -88,15 +92,8 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     auto it = config_.attrs.find("localIp");
     if (it != config_.attrs.end()) { localIp = it->second; }
 
-    std::uint32_t timeout = 5000;
-    auto tit = config_.attrs.find("timeout");
-    if (tit != config_.attrs.end()) {
-        timeout = static_cast<std::uint32_t>(std::stoul(tit->second));
-    }
-
     connManager_.reset();
-    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
-                                                       config_.maxErrorCount, config_.deviceId);
+    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, config_);
 
     const std::uint32_t qp_num = config_.qpNum;
     KV_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
@@ -227,6 +224,39 @@ Status AsuTransportImpl::CheckHealth()
         return Status::Error(StatusCode::NOT_INITIALIZED, "transport worker is not running");
     }
     return Status::OK();
+}
+
+Status AsuTransportImpl::GetConnectionHealth(NodeHealthSnapshot& snapshot)
+{
+    if (!connManager_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+    }
+    connManager_->GetHealthSnapshot(snapshot);
+    return Status::OK();
+}
+
+Status AsuTransportImpl::UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
+                                         const std::vector<NodeEndpoint>& toRemove,
+                                         UpdateResult& result)
+{
+    if (!connManager_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+    }
+    return connManager_->UpdateGroups(toAdd, toRemove, result);
+}
+
+std::future<UpdateResult> AsuTransportImpl::UpdateEndpointsAsync(
+    const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove)
+{
+    if (!connManager_) {
+        std::promise<UpdateResult> completion;
+        UpdateResult result;
+        result.status =
+            Status::Error(StatusCode::NOT_INITIALIZED, "transport is not initialized");
+        completion.set_value(std::move(result));
+        return completion.get_future();
+    }
+    return connManager_->UpdateGroupsAsync(toAdd, toRemove);
 }
 
 Status AsuTransportImpl::Submit(const TransportTaskPtr& task)

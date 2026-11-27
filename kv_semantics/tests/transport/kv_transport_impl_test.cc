@@ -286,7 +286,8 @@ TEST_F(TransportTaskCompletionTest, ExecutionTimeoutCountsEachSubBatch)
     transport_->taskExecutor_->Poll(ctx);
 
     EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{2});
-    EXPECT_EQ(channel->GetState(), ChannelState::DRAINING);
+    // X=2 达阈值排空；两个 subBatch 均释放后 inflight 归零，DRAINING -> FAILED。
+    EXPECT_EQ(channel->GetState(), ChannelState::FAILED);
     EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
 }
 

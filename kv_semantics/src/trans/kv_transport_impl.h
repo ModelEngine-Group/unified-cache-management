@@ -57,6 +57,15 @@ public:
 
     Status Cancel(TaskId taskId) override;
 
+    Status GetConnectionHealth(NodeHealthSnapshot& snapshot) override;
+
+    Status UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
+                           const std::vector<NodeEndpoint>& toRemove,
+                           UpdateResult& result) override;
+
+    std::future<UpdateResult> UpdateEndpointsAsync(
+        const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove) override;
+
 private:
     Status SubmitTask(const TransportTaskPtr& task);
     void WorkerLoop();

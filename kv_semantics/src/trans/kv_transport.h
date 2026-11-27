@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -60,6 +61,47 @@ public:
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
+
+    // Three-state connection health snapshot (GREEN/YELLOW/RED + updating
+    // window flag). Default UNSUPPORTED: stubs need no implementation.
+    virtual Status GetConnectionHealth(NodeHealthSnapshot& snapshot)
+    {
+        (void)snapshot;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "GetConnectionHealth is not supported by this transport");
+    }
+
+    // Incremental dynamic endpoint update (remove first, then add). Default
+    // UNSUPPORTED: stubs need no implementation.
+    virtual Status UpdateEndpoints(const std::vector<NodeEndpoint>& toAdd,
+                                    const std::vector<NodeEndpoint>& toRemove,
+                                    UpdateResult& result)
+    {
+        (void)toAdd;
+        (void)toRemove;
+        (void)result;
+        return Status::Error(StatusCode::UNSUPPORTED,
+                             "UpdateEndpoints is not supported by this transport");
+    }
+
+    // Asynchronous dynamic endpoint update (new external contract): submits
+    // the patch to the recover worker (strict FIFO, at most one add endpoint
+    // per tick) and returns a future that completes with the settled
+    // UpdateResult; shutdown/stopping completes pending futures with
+    // CANCELED. Default: a ready UNSUPPORTED future - stubs need no
+    // implementation.
+    virtual std::future<UpdateResult> UpdateEndpointsAsync(
+        const std::vector<NodeEndpoint>& toAdd, const std::vector<NodeEndpoint>& toRemove)
+    {
+        (void)toAdd;
+        (void)toRemove;
+        std::promise<UpdateResult> completion;
+        UpdateResult result;
+        result.status = Status::Error(
+            StatusCode::UNSUPPORTED, "UpdateEndpointsAsync is not supported by this transport");
+        completion.set_value(std::move(result));
+        return completion.get_future();
+    }
 };
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();

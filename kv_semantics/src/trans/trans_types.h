@@ -85,4 +85,43 @@ struct ServerKvCapabilities {
 
 using TaskCompletionCallback = std::function<void(TaskResult)>;
 
+// Node-level connection health aggregated across every group of one ASU:
+// GREEN  = every channel of every group is ACTIVE;
+// YELLOW = some channels are non-ACTIVE while at least one ACTIVE link
+//          remains (a single group in its recovery window never drives the
+//          node to RED on its own);
+// RED    = no ACTIVE channel in any group (consistent with the fail-fast
+//          no-candidate CONNECTION_ERROR of SelectConnection).
+enum class NodeHealth : std::uint8_t {
+    GREEN = 0,
+    YELLOW = 1,
+    RED = 2,
+};
+
+// Read-only derived snapshot; per-group/per-channel observation goes through
+// the existing fields and structured logs. updating distinguishes a config
+// window (UpdateEndpoints in progress) from a failure RED.
+struct NodeHealthSnapshot {
+    NodeHealth health{NodeHealth::RED};
+    bool updating{false};
+};
+
+// Outcome of one endpoint entry inside an UpdateEndpoints call.
+// action: created | replaced | skipped | removed | failed.
+struct EndpointUpdateOutcome {
+    NodeEndpoint endpoint;
+    std::string action;
+    Status status{Status::OK()};
+};
+
+// Best-effort aggregate result of an UpdateEndpoints call; partial failures
+// are listed in failedEndpoints without rolling back successful entries.
+struct UpdateResult {
+    Status status{Status::OK()};
+    std::vector<EndpointUpdateOutcome> removeResults;
+    std::vector<EndpointUpdateOutcome> addResults;
+    std::vector<NodeEndpoint> failedEndpoints;
+    bool updating{false};
+};
+
 }  // namespace kv

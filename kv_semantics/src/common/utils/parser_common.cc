@@ -261,4 +261,100 @@ NodeEndpoint ParseTransportEndpoint(const std::string& value)
     return endpoint;
 }
 
+namespace {
+
+// Marker used when a recognized numeric config value cannot be parsed. The
+// value is out of every legal range, so Validate() rejects it with
+// INVALID_ARGUMENT at Init time instead of silently falling back.
+constexpr std::uint32_t kInvalidConfigMarker = 0xFFFFFFFFu;
+
+std::uint32_t ParseStrictUint32(const std::string& value)
+{
+    const auto parsed = ParseConfigUint64(value, std::numeric_limits<std::uint64_t>::max());
+    if (parsed == std::numeric_limits<std::uint64_t>::max() ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return kInvalidConfigMarker;
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+}  // namespace
+
+Status RecoveryConfig::Validate() const
+{
+    if (connectTimeoutMs == 0 || connectTimeoutMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.connect_timeout_ms must be greater than 0");
+    }
+    if (connectRetryPerRound > 16) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.connect_retry_per_round must be in 0..16");
+    }
+    if (recoverInitialBackoffMs == 0 || recoverInitialBackoffMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_initial_backoff_ms must be greater than 0");
+    }
+    if (recoverMaxBackoffMs == 0 || recoverMaxBackoffMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_max_backoff_ms must be greater than 0");
+    }
+    if (recoverCheckIntervalMs == 0 || recoverCheckIntervalMs == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "recovery.recover_check_interval_ms must be greater than 0");
+    }
+    return Status::OK();
+}
+
+Status ConnectionConfig::Validate() const
+{
+    if (maxErrorCount == 0 || maxErrorCount == kInvalidConfigMarker) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "connection.max_error_count (X) must be greater than 0");
+    }
+    return Status::OK();
+}
+
+bool ApplyTransportRecoveryConfigField(TransportConfig& config, const std::string& key,
+                                      const std::string& value)
+{
+    if (key == "recovery.connectTimeoutMs" || key == "recovery.connect_timeout_ms") {
+        config.recovery.connectTimeoutMs = ParseStrictUint32(value);
+    } else if (key == "recovery.connectRetryPerRound" ||
+               key == "recovery.connect_retry_per_round") {
+        config.recovery.connectRetryPerRound = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverInitialBackoffMs" ||
+               key == "recovery.recover_initial_backoff_ms") {
+        config.recovery.recoverInitialBackoffMs = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverMaxBackoffMs" ||
+               key == "recovery.recover_max_backoff_ms") {
+        config.recovery.recoverMaxBackoffMs = ParseStrictUint32(value);
+    } else if (key == "recovery.recoverCheckIntervalMs" ||
+               key == "recovery.recover_check_interval_ms") {
+        config.recovery.recoverCheckIntervalMs = ParseStrictUint32(value);
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool ApplyTransportConnectionConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value)
+{
+    if (key == "connection.selectionPolicy" || key == "connection.selection_policy") {
+        const auto normalized = ToLower(value);
+        config.connection.selectionPolicy = normalized == "least_loaded"
+                                                ? SelectionPolicy::LEAST_LOADED
+                                                : SelectionPolicy::ROUND_ROBIN;
+    } else if (key == "connection.maxErrorCount" || key == "connection.max_error_count") {
+        config.connection.maxErrorCount = ParseStrictUint32(value);
+        // Keep the legacy mirror field in sync for compatibility consumers.
+        if (config.connection.maxErrorCount != kInvalidConfigMarker) {
+            config.maxErrorCount = config.connection.maxErrorCount;
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
 }  // namespace kv

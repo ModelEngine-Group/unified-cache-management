@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -48,6 +49,7 @@ public:
     ~ConnectionChannel();
 
     std::uint32_t GetChannelId() const { return channelId; }
+    std::uint32_t GetGroupId() const { return groupId; }
     ChannelState GetState() const { return state.load(std::memory_order_acquire); }
     std::uint32_t GetInflightCount() const { return inflightCount.load(std::memory_order_acquire); }
     ConnectionGroup* GetGroup() const { return group; }
@@ -62,8 +64,16 @@ public:
     void SetInflightCount(std::uint32_t c) { inflightCount.store(c, std::memory_order_release); }
 
     void IncrementInflight();
+    // Decrements inflight; a DRAINING channel whose inflight reaches zero
+    // transitions to FAILED (X=1 drain semantics).
     void ReleaseInflight();
+    // ACTIVE -> DRAINING (reached X consecutive link failures).
     bool MarkForDrain();
+    // DRAINING -> FAILED once inflight drains (also used by forced teardown).
+    bool MarkFailed();
+    // Returns and clears the provider handle so whole-group teardown can call
+    // DeleteConnections exactly once (destructor skips detached handles).
+    TransProvider::ConnectionHandle DetachHandle();
 
 private:
     // inflightCount: Maintained by upper-level users, it records the number of requests currently
@@ -72,32 +82,41 @@ private:
     alignas(64) std::atomic<ChannelState> state{ChannelState::ACTIVE};
 
     std::uint32_t channelId{0};
+    std::uint32_t groupId{0};
     ConnectionGroup* group{nullptr};
     TransProvider::ConnectionHandle handle_{nullptr};
     TransProvider* provider_{nullptr};
 
     // Cold path
     std::atomic<std::uint32_t> errorCount{0};
+    // (probe/flow-control fields are excluded on the core branch)
 };
 
 class ConnectionGroup {
 public:
     ConnectionGroup(std::uint32_t id, const NodeEndpoint& ep,
-                    const ServerKvCapabilities& capabilities = {});
+                    const ServerKvCapabilities& capabilities = {}, std::uint32_t qpNum = 1);
 
     std::uint32_t GetGroupId() const { return groupId; }
     const NodeEndpoint& GetEndpoint() const { return endpoint; }
     const ServerKvCapabilities& GetServerCapabilities() const { return serverCapabilities; }
     const std::vector<std::shared_ptr<ConnectionChannel>>& GetChannels() const { return channels; }
+    std::uint32_t GetQpNum() const { return qpNum_; }
 
     std::shared_ptr<ConnectionChannel> AddChannel(ConnectionHandle handle, TransProvider* provider);
     void RemoveChannel(ConnectionChannel* channel);
+    // Drops every channel reference (whole-group replacement); callers must
+    // already have detached the handles they own.
+    void ClearChannels();
     bool HasActiveChannel() const;
+    // Group inflight = sum of channel inflight counts.
+    std::uint32_t GetInflightCount() const;
 
 private:
     std::uint32_t groupId{0};
     NodeEndpoint endpoint;
     ServerKvCapabilities serverCapabilities;
+    std::uint32_t qpNum_{1};
     std::vector<std::shared_ptr<ConnectionChannel>> channels;
     std::atomic<std::uint32_t> nextChannelId_{0};
 };

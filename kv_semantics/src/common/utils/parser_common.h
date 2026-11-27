@@ -67,6 +67,15 @@ bool ApplyTransportProviderConfigField(TransportConfig& config, const std::strin
 bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string& key,
                                      const std::string& value);
 
+// Connection reliability config sections (recovery / connection). Keys are section prefixed, e.g.
+// "retry.busy_retry_count". Unparseable numeric values are stored as marker
+// values that the matching Validate() call rejects with INVALID_ARGUMENT
+// (no silent fallback to defaults).
+bool ApplyTransportRecoveryConfigField(TransportConfig& config, const std::string& key,
+                                       const std::string& value);
+bool ApplyTransportConnectionConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value);
+
 NodeEndpoint ParseTransportEndpoint(const std::string& value);
 
 }  // namespace kv
