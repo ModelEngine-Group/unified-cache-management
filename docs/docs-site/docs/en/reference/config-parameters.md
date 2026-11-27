@@ -19,7 +19,7 @@ Root fields configure engine integration; fields inside `ucm_connector_config` c
 
 These fields belong at the YAML root. Descriptions identify model- or engine-specific restrictions.
 
-On CUDA, models with indexer caches automatically use whole-block load/save (`use_layerwise=false`) and request-level asynchronous loading where the connector supports it. This combination requires vLLM `pipeline_parallel_size=1`; initialization fails when pipeline parallelism is enabled. Setting `use_layerwise=true` does not override this restriction.
+Whole-block UCM, HLA, and HMA connectors load external KV asynchronously at the request level. Workers poll the Store and block to drain a task that's still pending after `ucm_connector_config.timeout_ms`. The polling threshold defaults to 30 seconds, and `0` disables the timeout-triggered wait. On CUDA, models with indexer caches automatically use whole-block load/save (`use_layerwise=false`) and require vLLM `pipeline_parallel_size=1`. Initialization fails when pipeline parallelism is enabled.
 
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |

@@ -19,7 +19,7 @@ enable_metrics: true
 
 以下字段写在 YAML 根级，模型或引擎特定限制在说明中标出。
 
-在 CUDA 环境下，带有 indexer 缓存的模型自动使用整存整取模式（`use_layerwise=false`），并在 Connector 支持时启用请求级异步加载。该组合要求 vLLM 设置 `pipeline_parallel_size=1`；启用流水线并行时初始化会报错。设置 `use_layerwise=true` 不能绕过此限制。
+UCM、HLA 和 HMA 的整存整取模式使用请求级异步加载外部 KV。Worker 轮询 Store 任务，达到 `ucm_connector_config.timeout_ms` 后仍未完成时，会阻塞等待该任务的 I/O 排空。轮询阈值默认为 30 秒，设为 `0` 可关闭超时触发的等待。在 CUDA 环境下，带有 indexer 缓存的模型自动使用整存整取模式（`use_layerwise=false`），并要求 vLLM 设置 `pipeline_parallel_size=1`。启用流水线并行时初始化会报错。
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
