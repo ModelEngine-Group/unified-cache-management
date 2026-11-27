@@ -44,14 +44,13 @@ std::int64_t CurrentNs()
         .count();
 }
 
-/** 从 CacheKey 读回低 64 位（二进制 key 前 8 字节小端解释；仅明细日志显示用） */
-std::uint64_t ExtractKeyLow64(const kv::CacheKey &key)
+/** 构造 IO 提交的请求级选项：input 的 ns（namespace 名）直接填 IoOptions.kvns，
+ *  由 kv client 哈希派生协议帧 namespace id（与对端 view 从 namespace 名派生同口径） */
+kv::IoOptions MakeIoOptions(const Request &request)
 {
-    const kv::BinaryKey *bytes = key.TryGetBinaryKey();
-    if (bytes == nullptr) { return 0; }
-    std::uint64_t value = 0;
-    std::memcpy(&value, bytes->data(), sizeof(value));
-    return value;
+    kv::IoOptions options;
+    options.kvns = request.ns;
+    return options;
 }
 
 /** 打印任务结果的异常明细：任务级与逐 entry 非 OK 项逐条告警 */
@@ -70,20 +69,19 @@ void LogTaskResult(const kv::TaskResult &result, const char *opName)
 }
 
 /** 组装 exist/delete 聚合明细行的两个 key 字段：input 原文 key 逗号拼接与
- *  逐 key“低64位 高16位”拼接 */
-void BuildAggKeyFields(const Request &request, std::string &rawKeys, std::string &lowHighs)
+ *  逐 key“input 原文 key 高16位”拼接 */
+void BuildAggKeyFields(const Request &request, std::string &rawKeys, std::string &highs)
 {
     for (std::size_t i = 0; i < request.keys.size(); ++i) {
-        const std::uint64_t keyLow = ExtractKeyLow64(request.keys[i]);
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");
         if (i != 0) {
             rawKeys += ',';
-            lowHighs += ',';
+            highs += ',';
         }
         rawKeys += rawKey;
-        lowHighs += std::to_string(keyLow) + " " + std::to_string(keyHigh);
+        highs += rawKey + " " + std::to_string(keyHigh);
     }
 }
 
@@ -142,7 +140,7 @@ bool Executor::QueryAndRecord(const Request &request, std::string &err)
     const std::vector<kv::CacheKey> &keys = request.keys;
     kv::TaskId taskId = kv::kInvalidTaskId;
     const std::int64_t startNs = CurrentNs();
-    if (!client_->QueryAsync(keys, taskId, err)) {
+    if (!client_->QueryAsync(keys, taskId, MakeIoOptions(request), err)) {
         LOG_ERROR("Executor: query submit failed: {}", err);
         RecordTask(OpType::QUERY, keys.size(), 0, false, 0);
         return false;
@@ -183,7 +181,7 @@ bool Executor::StoreAndRecord(const Request &request, std::string &err)
     const std::vector<kv::KVBuffer> &entries = request.entries;
     kv::TaskId taskId = kv::kInvalidTaskId;
     const std::int64_t startNs = CurrentNs();
-    if (!client_->StoreAsync(entries, taskId, err)) {
+    if (!client_->StoreAsync(entries, taskId, MakeIoOptions(request), err)) {
         LOG_ERROR("Executor: store submit failed: {}", err);
         RecordTask(OpType::STORE, entries.size(), 0, false, 0);
         return false;
@@ -213,7 +211,7 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
     const std::vector<kv::KVBuffer> &entries = request.entries;
     kv::TaskId taskId = kv::kInvalidTaskId;
     const std::int64_t startNs = CurrentNs();
-    if (!client_->LoadAsync(entries, taskId, err)) {
+    if (!client_->LoadAsync(entries, taskId, MakeIoOptions(request), err)) {
         LOG_ERROR("Executor: load submit failed: {}", err);
         RecordTask(OpType::LOAD, entries.size(), 0, false, 0);
         return false;
@@ -327,16 +325,13 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
         // perf 模式仅打印失败请求（任务级或该 entry 返回码非 0，含未命中），成功跳过
         if (perf_ && batchCode == 0 && entryCode == 0) { continue; }
 
-        std::uint64_t keyLow = 0;
-        if (i < request.keys.size()) { keyLow = ExtractKeyLow64(request.keys[i]); }
         const std::uint16_t keyHigh = (i < request.keyHighs.size()) ? request.keyHighs[i] : 0;
         const std::string rawKey =
             (i < request.rawKeys.size()) ? request.rawKeys[i] : std::string("-");
-        const std::string keyLowStr = std::to_string(keyLow);
         const std::string keyHighStr = std::to_string(keyHigh);
         const std::string offsetStr = std::to_string(entries[i].offset);
-        // len：key_low 与 offset 两个十进制串的位数和（纯显示用途）
-        const std::size_t len = keyLowStr.size() + offsetStr.size();
+        // len：key 与 offset 两个十进制串的位数和（纯显示用途）
+        const std::size_t len = rawKey.size() + offsetStr.size();
 
         // entry 完成状态（entryStatus 缺失时以任务级代表）
         const bool entryOk =
@@ -374,12 +369,12 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
         }
 
         // value/tail 为二进制转字符串，可能含 '{' '}' 字节，经 "{}" 作参数而非格式串
-        const std::string line =
-            "(" + std::string(opcode) + "), nsid (" + std::to_string(request.nsid) +
-            "), return batch code (" + batchCodes + "), key code (" + std::to_string(entryCode) +
-            "), inputkey (" + rawKey + "), key+offset (" + keyLowStr + " " + keyHighStr + " " +
-            offsetStr + "), offset (" + offsetStr + "), len (" + std::to_string(len) + "), tail (" +
-            tail + "), value (" + value + ")";
+        const std::string line = "(" + std::string(opcode) + "), ns (" + request.ns +
+                                 "), return batch code (" + batchCodes + "), key code (" +
+                                 std::to_string(entryCode) + "), inputkey (" + rawKey +
+                                 "), key+offset (" + rawKey + " " + keyHighStr + " " + offsetStr +
+                                 "), offset (" + offsetStr + "), len (" + std::to_string(len) +
+                                 "), tail (" + tail + "), value (" + value + ")";
         if (isGet) {
             LOG_INFO_GET("{}", line);
         } else {
@@ -403,12 +398,12 @@ void Executor::WriteExistLog(const Request &request, const kv::TaskResult &resul
         if (allHit) { return; }
     }
 
-    // 每任务一行聚合：all_block_ids 为 input 原文 key 逗号拼接，key_low_high 为逐 key
-    // “低64位 高16位”拼接，prefix_hit_len 为 kv client 返回的前缀命中 key 数
+    // 每任务一行聚合：all_block_ids 为 input 原文 key 逗号拼接，key_high 为逐 key
+    // “原文key 高16位”拼接，prefix_hit_len 为 kv client 返回的前缀命中 key 数
     std::string rawKeys;
-    std::string lowHighs;
-    BuildAggKeyFields(request, rawKeys, lowHighs);
-    const std::string line = "(exist) all_block_ids[" + rawKeys + "] key_low_high[" + lowHighs +
+    std::string highs;
+    BuildAggKeyFields(request, rawKeys, highs);
+    const std::string line = "(exist) all_block_ids[" + rawKeys + "] key_high[" + highs +
                              "] prefix_hit_len (" +
                              std::to_string(result.queryResult->prefixHitKeys) + ")";
     LOG_INFO_OTHER("{}", line);
@@ -421,10 +416,10 @@ void Executor::WriteDeleteLog(const Request &request, std::uint64_t notFound, st
 
     // 每任务一行聚合：字段同 exist；delete 无前缀命中信息，prefix_hit_len 以 "-" 占位
     std::string rawKeys;
-    std::string lowHighs;
-    BuildAggKeyFields(request, rawKeys, lowHighs);
+    std::string highs;
+    BuildAggKeyFields(request, rawKeys, highs);
     const std::string line =
-        "(delete) all_block_ids[" + rawKeys + "] key_low_high[" + lowHighs + "] prefix_hit_len (-)";
+        "(delete) all_block_ids[" + rawKeys + "] key_high[" + highs + "] prefix_hit_len (-)";
     LOG_INFO_OTHER("{}", line);
 }
 
@@ -433,7 +428,7 @@ bool Executor::DeleteAndRecord(const Request &request, std::string &err)
     const std::vector<kv::CacheKey> &keys = request.keys;
     kv::TaskId taskId = kv::kInvalidTaskId;
     const std::int64_t startNs = CurrentNs();
-    if (!client_->DeleteAsync(keys, taskId, err)) {
+    if (!client_->DeleteAsync(keys, taskId, MakeIoOptions(request), err)) {
         LOG_ERROR("Executor: delete submit failed: {}", err);
         RecordTask(OpType::DELETE, keys.size(), 0, false, 0);
         return false;

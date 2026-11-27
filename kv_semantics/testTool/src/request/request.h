@@ -36,8 +36,9 @@
  * （key 转换、value 块生成写 buffer、注册凭证绑定与 offset 组装由 Scheduler 完成）。
  */
 struct Request {
-    /** 任务级节点标识 nsid（batch 头或单 key 行的 nsid；请求明细日志输出用） */
-    std::uint64_t nsid{0};
+    /** 请求级 namespace 名（batch 头或单 key 行的 ns；经 IoOptions.kvns 传给 kv client，
+     *  哈希派生协议帧 namespace——须与对端 namespace 名一致） */
+    std::string ns;
     /** key 列表（key128 低 64 位） */
     std::vector<kv::CacheKey> keys;
     /** key 128 位整数的高 16 位列表（与 keys 逐项对应；请求明细日志分开显示 key 分量用） */

@@ -37,15 +37,16 @@ enum class OrcOp {
 
 /**
  * input.txt 单条指令的原始解析结果（原始格式）：只承载输入文件中的信息，不做执行侧加工。
- * key 解析为 128 位整数后按两个分量保存：低 64 位（CacheKey 取此值）与 >>64 后的低 16 位
- * （bit64-79，testmode=1 的 value 生成规则使用）。
+ * key 解析为 128 位整数后按两个分量保存：低 64 位（CacheKey 以其十进制串构造）与 >>64 后的
+ * 低 16 位（bit64-79，testmode=1 的 value 生成规则使用）。
  */
 struct RequestOrc {
     /** 操作类型 */
     OrcOp op{OrcOp::GET};
-    /** 节点标识 nsid（解析暂存，本流程不消费） */
-    std::uint64_t nsid{0};
-    /** key 128 位整数的低 64 位（CacheKey 取此值） */
+    /** 请求级 namespace 名（batch 头或单 key 行的 ns；经 IoOptions.kvns 传给 kv client，
+     *  由 kv client 哈希派生协议帧 namespace id，须与对端 namespace 名一致） */
+    std::string ns;
+    /** key 128 位整数的低 64 位（CacheKey 以其十进制串构造 string key） */
     std::uint64_t keyLow64{0};
     /** key 128 位整数右移 64 位后的低 16 位（bit64-79；testmode=1 的 value 生成规则使用） */
     std::uint16_t keyHigh16{0};

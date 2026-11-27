@@ -112,7 +112,7 @@ private:
 
     /**
      * 把 put / get 任务响应明细写入请求明细日志（每 entry 一行，字段名(值) 形式：
-     * (opcode), nsid, return batch code(整批全部 entry 状态码逗号拼接，逐行重复),
+     * (opcode), ns, return batch code(整批全部 entry 状态码逗号拼接，逐行重复),
      * key code(本 entry 返回码), inputkey, key+offset(低64位 高16位 offset), offset,
      * value(读回缓冲实际内容), len(低64位位数+offset位数), tail(尾 8 字节)；
      * get 无论 entry 状态总是读回缓冲（预填哨兵串即“没读到数据”标记），put 仅成功

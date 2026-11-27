@@ -189,41 +189,43 @@ bool FillEntry(const std::string &keyToken, const std::string &offsetToken,
 
 /**
  * 解析单 key 行（fields 为 op 之后 token，textAfterOp 为 op 之后原文）：
- * 先试四整数（nsid key offset length [value...]），失败回退三整数（key offset length
- * [value...]，nsid 缺省 0）
+ * 先试四字段（ns key offset length [value...]，ns 为 namespace 名字符串，可为数字
+ * 形式的名字），失败回退三字段（key offset length [value...]，ns 缺省空）
  */
 bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
                       RequestOrc &out)
 {
-    std::uint64_t nsid = 0;
-    if (fields.size() >= 4 && ParseUint64(fields[0], nsid) &&
-        FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) {
-        out.nsid = nsid;
+    if (fields.size() >= 4 && FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) {
+        out.ns = fields[0];
         return true;
     }
     if (fields.size() >= 3 && FillEntry(fields[0], fields[1], fields[2], textAfterOp, 3, out)) {
-        out.nsid = 0;
+        out.ns.clear();
         return true;
     }
     return false;
 }
 
-/** 解析 batch 头字段（fields[0] 为 "batch"）：batch、batch nsid=x、batch nsid x 三种形态，nsid
- * 缺省 0 */
-bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsid)
+/** 解析 batch 头字段（fields[0] 为 "batch"）：batch、batch ns=x、batch ns x 三种形态，
+ * ns 为 namespace 名字符串（不允许空），缺省空 */
+bool ParseBatchHeader(const std::vector<std::string> &fields, std::string &ns)
 {
     if (fields.size() == 1) {
-        nsid = 0;
+        ns.clear();
         return true;
     }
-    if (fields.size() == 2 && fields[1].rfind("nsid=", 0) == 0) {
-        return ParseUint64(fields[1].substr(5), nsid);
+    if (fields.size() == 2 && fields[1].rfind("ns=", 0) == 0 && fields[1].size() > 3) {
+        ns = fields[1].substr(3);
+        return true;
     }
-    if (fields.size() == 3 && fields[1] == "nsid") { return ParseUint64(fields[2], nsid); }
+    if (fields.size() == 3 && fields[1] == "ns" && !fields[2].empty()) {
+        ns = fields[2];
+        return true;
+    }
     return false;
 }
 
-/** 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]（nsid 与
+/** 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]（ns 与
  * op 由批头继承） */
 bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
                      RequestOrc &out)
@@ -318,7 +320,7 @@ bool RequestManager::HandleBatchBody(std::size_t lineNo, const std::string &line
     }
     if (!CheckEntry(entry, lineNo, line, err)) { return false; }
     entry.op = batchTask_.op;
-    entry.nsid = batchTask_.nsid;
+    entry.ns = batchTask_.ns;
     batchTask_.entries.emplace_back(entry);
     return true;
 }
@@ -365,14 +367,14 @@ bool RequestManager::HandleTopLevel(std::size_t lineNo, const std::string &line,
 bool RequestManager::BeginBatch(OrcOp op, const std::vector<std::string> &fields,
                                 std::size_t lineNo, const std::string &line, std::string &err)
 {
-    std::uint64_t nsid = 0;
-    if (!ParseBatchHeader(fields, nsid)) {
+    std::string ns;
+    if (!ParseBatchHeader(fields, ns)) {
         err = LineErr(lineNo, "invalid batch header", line);
         return false;
     }
     batchTask_ = OrcTask{};
     batchTask_.op = op;
-    batchTask_.nsid = nsid;
+    batchTask_.ns = ns;
     inBatch_ = true;
     return true;
 }
@@ -390,7 +392,7 @@ bool RequestManager::AppendSingleTask(OrcOp op, const std::vector<std::string> &
     if (!CheckEntry(entry, lineNo, line, err)) { return false; }
     OrcTask task;
     task.op = op;
-    task.nsid = entry.nsid;
+    task.ns = entry.ns;
     task.entries.emplace_back(entry);
     steps_.emplace_back(task);
     return true;
