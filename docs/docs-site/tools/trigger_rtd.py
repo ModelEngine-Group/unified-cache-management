@@ -20,6 +20,8 @@ from release_manifest import (
 )
 
 API = "https://app.readthedocs.org/api/v3"
+VERSION_SYNC_TIMEOUT = 300
+VERSION_SYNC_POLL_INTERVAL = 10
 
 
 def request(path: str, *, method: str = "GET", data=None):
@@ -100,14 +102,28 @@ def notify_release(
         version_path = prefix + f"/versions/{quote(tag, safe='')}/"
         # RTD synchronizes discovered refs asynchronously. Poll only this
         # documented transition, not failed builds or arbitrary API errors.
-        for attempt in range(6):
+        sync_started = time.monotonic()
+        sync_deadline = sync_started + VERSION_SYNC_TIMEOUT
+        while True:
             try:
                 version = request(version_path)
                 break
             except HTTPError as error:
-                if error.code != 404 or attempt == 5:
+                if error.code != 404:
                     raise
-                time.sleep(5)
+                now = time.monotonic()
+                elapsed = now - sync_started
+                if now >= sync_deadline:
+                    raise TimeoutError(
+                        f"RTD version sync timed out: {project}/{tag} "
+                        f"was still unavailable after {elapsed:.0f}s"
+                    ) from error
+                print(
+                    f"[rtd] Waiting for version sync: {project}/{tag} "
+                    f"({elapsed:.0f}s elapsed, {VERSION_SYNC_TIMEOUT}s limit)",
+                    flush=True,
+                )
+                time.sleep(min(VERSION_SYNC_POLL_INTERVAL, sync_deadline - now))
         if not version["active"]:
             previous = request(prefix + "/builds/?limit=20")["results"]
             last_id = max((build["id"] for build in previous), default=0)
