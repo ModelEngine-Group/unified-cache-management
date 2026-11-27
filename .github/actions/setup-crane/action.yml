@@ -1,5 +1,5 @@
 name: Setup crane
-description: Install crane v0.20.3 for Linux amd64 and add it to PATH.
+description: Install crane v0.20.3 for Linux amd64 or arm64 and add it to PATH.
 runs:
   using: composite
   steps:

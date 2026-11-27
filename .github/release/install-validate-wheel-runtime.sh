@@ -27,7 +27,7 @@ runtime_requirements="$(jq -ce '.dependencies | select(type == "array")' "${resu
 wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' "${result}")"
 ucm_version="$(jq -er '.version' "${result}")"
 
-docker pull --platform "${RUNTIME_PLATFORM}" "${RUNTIME_IMAGE}"
+bash "${release_directory}/with-docker-disk-report.sh" docker pull --platform "${RUNTIME_PLATFORM}" "${RUNTIME_IMAGE}"
 docker run --rm --platform "${RUNTIME_PLATFORM}" --entrypoint bash \
   -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
   -e PLATFORM="${PLATFORM_ARG}" \
