@@ -46,6 +46,35 @@ public:
     virtual std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches,
                                      uint32_t kernelCount, uint32_t quietCount) = 0;
 
+    // AsyncSend only submits provider work. The caller must keep every referenced buffer alive
+    // and call WaitSend before destroying the returned operation.
+    class SendOperation {
+    public:
+        virtual ~SendOperation() = default;
+    };
+    using SendOperationPtr = std::unique_ptr<SendOperation>;
+
+    virtual bool SupportsAsyncSend() const { return false; }
+
+    virtual std::vector<Status> AsyncSend(const std::vector<SendIoBatch>& ioBatches,
+                                          uint32_t kernelCount, uint32_t quietCount,
+                                          SendOperationPtr& operation)
+    {
+        (void)kernelCount;
+        (void)quietCount;
+        operation.reset();
+        return std::vector<Status>(
+            ioBatches.size(),
+            Status::Error(StatusCode::UNSUPPORTED, "asynchronous send is not supported"));
+    }
+
+    virtual std::vector<Status> WaitSend(SendOperationPtr& operation)
+    {
+        operation.reset();
+        return {Status::Error(StatusCode::UNSUPPORTED,
+                              "asynchronous send is not supported")};
+    }
+
     enum class MemType { MEM_DEVICE, MEM_HOST };
 
     struct RegisterMemoryDesc {
