@@ -1,4 +1,6 @@
+#ifndef USE_ROCM
 #include <cuda.h>
+#endif
 #include <cuda_runtime.h>
 #include <torch/script.h>
 

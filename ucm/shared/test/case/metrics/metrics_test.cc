@@ -27,7 +27,9 @@
 #include <iostream>
 #include <numeric>
 #include <thread>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <vector>
 #include "metrics_api.h"
 

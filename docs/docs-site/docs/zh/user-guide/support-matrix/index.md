@@ -123,6 +123,7 @@ DeepSeek V4 系列与混合线性注意力模型仅支持通过 PCP 进行上下
 <tbody>
 <tr><th scope="row">CANN</th><td>Ascend</td><td>910C, 910B, 950PR, 950DT</td></tr>
 <tr><th scope="row">CUDA</th><td>NVIDIA</td><td>H100, H20, L40, L20</td></tr>
+<tr><th scope="row">ROCm</th><td>AMD</td><td>MI250X (gfx90a), Radeon Pro W7800 (gfx1100), Radeon PRO V710 (gfx1101), Radeon RX 9070 XT (gfx1201), Radeon 8060S (gfx1151)</td></tr>
 </tbody>
 </table>
 </div>

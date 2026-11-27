@@ -54,6 +54,12 @@ export ENABLE_UCM_PATCH=1
 Continue with the [vLLM quickstart](../user-guide/quick_start/index.md#vllm)
 for configuration, service startup, and external-cache verification.
 
+On AMD GPUs, set `PLATFORM=rocm` instead. This builds the same KV-transfer and
+Hamming-distance kernels with HIP and requires ROCm and a ROCm build of
+PyTorch. The GPU architecture is detected from the build host; to target a
+different GPU, configure with CMake directly and pass
+`-DCMAKE_HIP_ARCHITECTURES=<arch>` (e.g. `gfx90a`, `gfx1100`).
+
 ## vLLM-Ascend { #vllm-ascend-ascend-platform }
 
 Prepare a matching vLLM-Ascend, PyTorch, CANN, and driver environment. Choose

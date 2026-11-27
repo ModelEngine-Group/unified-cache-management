@@ -1,5 +1,8 @@
 file(GLOB_RECURSE UCMMETRICS_CC_SOURCE_FILES "./cc/*.cc")
 add_library(metrics SHARED ${UCMMETRICS_CC_SOURCE_FILES})
+if(WIN32)
+    set_target_properties(metrics PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
 target_include_directories(metrics PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/api
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/domain
