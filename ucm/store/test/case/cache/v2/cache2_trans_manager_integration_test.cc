@@ -121,7 +121,7 @@ TEST_F(UCCache2TransManagerIntegrationTest, BackendNotFoundIsPreserved)
     auto handle = transMgr.Submit({Task::Type::LOAD, std::move(desc)});
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
-    EXPECT_TRUE(buffer.GetTransBuffer()->Exist(block, 0));
+    EXPECT_FALSE(buffer.GetTransBuffer()->Exist(block, 0));
 }
 
 TEST_F(UCCache2TransManagerIntegrationTest, BackendSubmitNotFoundIsPreserved)
@@ -156,7 +156,7 @@ TEST_F(UCCache2TransManagerIntegrationTest, BackendSubmitNotFoundIsPreserved)
     auto handle = transMgr.Submit({Task::Type::LOAD, std::move(desc)});
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
-    EXPECT_TRUE(buffer.GetTransBuffer()->Exist(block, 0));
+    EXPECT_FALSE(buffer.GetTransBuffer()->Exist(block, 0));
 }
 
 TEST_F(UCCache2TransManagerIntegrationTest, DumpThenLoadWithLayerWise)

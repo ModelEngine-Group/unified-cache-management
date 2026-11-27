@@ -25,16 +25,20 @@
 
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <utility>
 #include "ctrl_layout.h"
 #include "ctrl_strategy.h"
 #include "data_strategy.h"
 #include "global_config.h"
+#include "logger/logger.h"
 #include "status/status.h"
 #include "type/types.h"
 
@@ -186,9 +190,10 @@ public:
     }
 
     // Requires successful worker-side Setup; observers must not call Get.
-    // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
-    Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
-               size_t preferredRank = kInvalid)
+    // Waits for a slot reference until acquired or timeout expires.
+    Expected<Handle> Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
+                         size_t preferredRank = kInvalid,
+                         std::optional<std::chrono::milliseconds> timeout = std::nullopt)
     {
         assert(myRank_ < rankCount_);
         assert(preferredRank == kInvalid || preferredRank < rankCount_);
@@ -197,11 +202,31 @@ public:
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
                             ? std::numeric_limits<size_t>::max()
                             : 2 * usable;
+        using Clock = std::chrono::steady_clock;
+        std::optional<Clock::time_point> deadline;
         for (;;) {
             bool owner = false;
             auto slot =
                 TryAcquireSlot(blockId, offset, allowReserved, attempts, owner, preferredRank);
             if (slot != kInvalid) { return Handle{this, slot, owner}; }
+            if (timeout.has_value()) {
+                const auto now = Clock::now();
+                if (!deadline.has_value()) {
+                    deadline =
+                        now + (timeout->count() > 0 ? *timeout : std::chrono::milliseconds{0});
+                }
+                if (now >= *deadline) {
+                    UC_ERROR(
+                        "Cache2 Buffer::Get timed out after {}ms (block={}, offset={}, "
+                        "myRank={}, preferredRank={}, allowReserved={}, mayOwn={}).",
+                        timeout->count(), fmt::format("{:02x}", fmt::join(blockId, "")), offset,
+                        myRank_,
+                        preferredRank == kInvalid ? int64_t{-1}
+                                                  : static_cast<int64_t>(preferredRank),
+                        allowReserved, preferredRank == kInvalid || myRank_ == preferredRank);
+                    return Status::Timeout();
+                }
+            }
             std::this_thread::yield();
         }
     }
@@ -226,18 +251,23 @@ public:
         auto iBucket = HashKey(blockId, offset);
         auto& layout = ctrl_.Layout();
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
-        if (iNode != kInvalid) {
+        if (iNode != kInvalid && GetState(iNode) == State::Ready) {
             bool owner = false;
             if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner, false)) {
+                const auto ready = GetState(iNode) == State::Ready;
                 Release(iNode);
-                return true;
+                return ready;
             }
         }
         auto* lock = layout.LockOf(iBucket);
         lock->Lock();
         iNode = Lookup(layout, iBucket, blockId, offset);
-        auto found = iNode != kInvalid;
-        if (found) { layout.SlotMetaArr()[iNode].accessed.store(1, std::memory_order_relaxed); }
+        auto found = false;
+        if (iNode != kInvalid) {
+            auto& meta = layout.SlotMetaArr()[iNode];
+            found = meta.state.load(std::memory_order_acquire) == State::Ready;
+            if (found) { meta.accessed.store(1, std::memory_order_relaxed); }
+        }
         lock->Unlock();
         return found;
     }

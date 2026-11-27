@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <future>
@@ -91,6 +92,7 @@ class LoadQ {
     size_t localRankSize_{1};
     size_t nShardPerBlock_{0};
     size_t shardSize_{0};
+    size_t timeoutMs_{0};
     std::vector<size_t> tensorSizes_{};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_{};
@@ -118,6 +120,7 @@ public:
         localRankSize_ = config.localRankSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
         shardSize_ = config.shardSize;
+        timeoutMs_ = config.timeoutMs;
         tensorSizes_ = config.tensorSizes;
         cpuAffinityCores_ = config.cpuAffinityCores;
         waiting_.Setup(config.waitingQueueDepth);
@@ -199,11 +202,24 @@ private:
         for (size_t i = 0; i < nShard; ++i) {
             const auto originalIndex = indexes[i];
             auto& shard = task->desc[originalIndex];
+            const auto remaining = RemainingTimeout(waiter);
             ShardTask shardTask;
-            auto handle =
+            auto handleRes =
                 task->desc.distributeBackendLoad
-                    ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_)
-                    : buffer_->Get(shard.owner, shard.index, true);
+                    ? buffer_->Get(shard.owner, shard.index, true, originalIndex % localRankSize_,
+                                   remaining)
+                    : buffer_->Get(shard.owner, shard.index, true, kInvalid, remaining);
+            if (!handleRes) [[unlikely]] {
+                UC_ERROR(
+                    "Failed({}) to acquire cache buffer slot for load task({}) shard({}, "
+                    "offset={}).",
+                    handleRes.Error(), task->id, originalIndex, shard.index);
+                RecordLoadSourceShards(i, waitShardCount);
+                RecordFailedShards(nShard - i);
+                AbortDispatchedTask(task, waiter, i, handleRes.Error());
+                return;
+            }
+            auto handle = std::move(handleRes).Value();
             shardTask.fromCache = handle.GetState() == SlotState::Ready;
             if (!shardTask.fromCache) { ++waitShardCount; }
             if (handle.Owner() && !shardTask.fromCache) {
@@ -212,8 +228,7 @@ private:
                     handle.MarkFailed();
                     RecordLoadSourceShards(i + 1, waitShardCount);
                     RecordFailedShards(nShard - i);
-                    task->Fail(res.Error());
-                    FailTask(task, waiter);
+                    AbortDispatchedTask(task, waiter, i, res.Error());
                     return;
                 }
                 shardTask.backendTaskHandle = res.Value();
@@ -430,8 +445,14 @@ private:
     }
     void DiscardFailedShard(ShardTask& task)
     {
-        if (task.bufferHandle->GetState() != SlotState::Ready) { task.bufferHandle->MarkFailed(); }
-        RecordFailedShards(1);
+        size_t failedShards = holder_.size();
+        if (task.bufferHandle.has_value()) {
+            if (task.bufferHandle->GetState() != SlotState::Ready) {
+                task.bufferHandle->MarkFailed();
+            }
+            ++failedShards;
+        }
+        if (failedShards > 0) { RecordFailedShards(failedShards); }
     }
     Status WaitShardReady(ShardTask& task)
     {
@@ -543,6 +564,32 @@ private:
     {
         Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_failed_shards_total"),
                              static_cast<double>(count));
+    }
+    std::optional<std::chrono::milliseconds> RemainingTimeout(const WaiterPtr& waiter) const
+    {
+        if (timeoutMs_ == 0) { return std::nullopt; }
+        const auto elapsed = std::chrono::duration<double>(NowTime::Now() - waiter->startTp);
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+        const auto budget = std::chrono::milliseconds(timeoutMs_);
+        if (elapsedMs >= budget) { return std::chrono::milliseconds{0}; }
+        return budget - elapsedMs;
+    }
+    void AbortDispatchedTask(const TaskPtr& task, const WaiterPtr& waiter, size_t dispatched,
+                             const Status& status)
+    {
+        task->Fail(status);
+        failureSet_->Insert(task->id);
+        if (dispatched == 0) {
+            waiter->Done();
+            return;
+        }
+        // Push a task with waiter to cleanup related resources in TransferOneTask
+        ShardTask abortTask;
+        abortTask.task = task;
+        abortTask.waiter = waiter;
+        abortTask.enqueueTp = NowTime::Now();
+        running_.Push(std::move(abortTask));
+        Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_running_enqueue_total"), 1.0);
     }
     void FailTask(const TaskPtr& task, const WaiterPtr& waiter)
     {

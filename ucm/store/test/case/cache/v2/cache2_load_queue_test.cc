@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -126,6 +127,7 @@ public:
         size_t offset;
         bool allowReserved;
         size_t preferredRank;
+        std::optional<std::chrono::milliseconds> timeout;
     };
     struct PreallocCall {
         UC::Detail::BlockId block;
@@ -141,10 +143,16 @@ public:
             slotSegments_[i] = 0;
         }
     }
-    Handle Get(const UC::Detail::BlockId& blockId, size_t offset, bool allowReserved = false,
-               size_t preferredRank = UC::Cache2::kInvalid)
+    UC::Expected<Handle> Get(const UC::Detail::BlockId& blockId, size_t offset,
+                             bool allowReserved = false,
+                             size_t preferredRank = UC::Cache2::kInvalid,
+                             std::optional<std::chrono::milliseconds> timeout = std::nullopt)
     {
-        getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank});
+        getCalls_.push_back(GetCall{blockId, offset, allowReserved, preferredRank, timeout});
+        if (onGet) {
+            auto s = onGet(getCalls_.back());
+            if (s.Failure()) { return s; }
+        }
         const auto key = std::make_pair(blockId, offset);
         auto it = slots_.find(key);
         if (it != slots_.end()) { return Handle{this, it->second, false, HostAccessibleOf(key)}; }
@@ -181,6 +189,7 @@ public:
     size_t SegmentOf(size_t slotIdx) const { return slotSegments_[slotIdx]; }
     const std::vector<GetCall>& GetCalls() const { return getCalls_; }
     const std::vector<PreallocCall>& PreallocCalls() const { return preallocCalls_; }
+    std::function<UC::Status(const GetCall&)> onGet;
     std::function<void(size_t)> onGetState;
 
 private:
@@ -1184,6 +1193,70 @@ TEST_F(UCCache2LoadQueueTest, DdrLoadRejectsMissingHostAddress)
     EXPECT_TRUE(failureSet_.Contains(task->id));
     EXPECT_EQ(task->FailureStatus(), UC::Status::InvalidParam());
     EXPECT_TRUE(FakeStream::scatters.empty());
+}
+
+TEST_F(UCCache2LoadQueueTest, LoadPassesTaskRemainingTimeoutToBufferGet)
+{
+    TestedQueue loadQ;
+    auto config = config_;
+    config.timeoutMs = 2000;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    const auto block = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(block, SlotState::Ready);
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    auto task = std::make_shared<Task>(Task::Type::LOAD, MakeDesc(block));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_FALSE(failureSet_.Contains(task->id));
+    ASSERT_EQ(buffer_.GetCalls().size(), 1);
+    ASSERT_TRUE(buffer_.GetCalls()[0].timeout.has_value());
+    EXPECT_GT(buffer_.GetCalls()[0].timeout->count(), 0);
+    EXPECT_LE(buffer_.GetCalls()[0].timeout->count(), 2000);
+}
+
+TEST_F(UCCache2LoadQueueTest, LoadMidTaskBufferGetTimeoutSyncsAndReleasesHolder)
+{
+    TestedQueue loadQ;
+    auto config = config_;
+    config.timeoutMs = 2000;
+    ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
+
+    const auto blockA = TypesHelper::MakeBlockIdRandomly();
+    const auto blockB = TypesHelper::MakeBlockIdRandomly();
+    buffer_.SetExisting(blockA, SlotState::Ready);
+    buffer_.SetExisting(blockB, SlotState::Ready);
+    UC::Latch shard0Scattered;
+    shard0Scattered.Up();
+    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
+        shard0Scattered.Done();
+        return UC::Status::OK();
+    };
+    size_t getCount = 0;
+    buffer_.onGet = [&](const FakeBuffer::GetCall&) {
+        if (++getCount == 2) {
+            EXPECT_TRUE(shard0Scattered.WaitFor(kWaitMs));
+            return UC::Status::Timeout();
+        }
+        return UC::Status::OK();
+    };
+    EXPECT_CALL(backend_, Load).Times(0);
+
+    UC::Detail::TaskDesc desc;
+    desc.push_back({blockA, 0, {reinterpret_cast<void*>(0x1000)}});
+    desc.push_back({blockB, 0, {reinterpret_cast<void*>(0x2000)}});
+    auto task = std::make_shared<Task>(Task::Type::LOAD, std::move(desc));
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitFor(kWaitMs));
+    EXPECT_TRUE(failureSet_.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    EXPECT_EQ(FakeStream::syncs.load(), 1);
+    EXPECT_TRUE(AwaitTrue([this] { return buffer_.LiveHandles() == 0; }));
+    auto stats = UC::Metrics::GetAllStatsAndClear();
+    EXPECT_EQ(std::get<0>(stats).at("cache_load_failed_shards_total"), 2);
 }
 
 }  // namespace
