@@ -648,11 +648,18 @@ def _v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
 
 
 def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
-    """Select one page-origin view per group/allocation for Ascend 0.30."""
+    """Select page-origin owners for legacy and shared-pool Ascend layouts."""
     sizes = {}
     tensors = getattr(kv_cache_config, "kv_cache_tensors", ())
     if not tensors:
         raise ValueError("Ascend V4.1 requires physical KV page descriptors.")
+
+    # Ascend #21083 publishes one backing and one descriptor per layer. An
+    # owner's data_ptr already includes its descriptor offset, so its
+    # block_stride is the only number this connector needs.
+    shared_pool = all(len(getattr(t, "layers", ())) == 1 for t in tensors)
+    descriptors = {t.layers[0]: t for t in tensors} if shared_pool else {}
+
     for group in kv_cache_config.kv_cache_groups:
         spec = group.kv_cache_spec
         nested = getattr(spec, "kv_cache_specs", None)
@@ -674,7 +681,21 @@ def _ascend_v41_whole_page_sizes(kv_cache_config) -> dict[str, int]:
             continue
         if not getattr(group, "enable_kv_transfer", True):
             raise ValueError("Ascend V4.1 cannot omit a persistent KV group.")
+
         remaining = set(group.layer_names)
+        if shared_pool:
+            if getattr(specs[0], "sliding_window", None) is not None:
+                sizes.update(
+                    (name, descriptors[name].block_stride) for name in remaining
+                )
+            else:
+                sizes.update(
+                    (name, descriptors[name].block_stride)
+                    for name in remaining
+                    if name.endswith(".long_kv_cache")
+                )
+            continue
+
         for tensor in tensors:
             members = remaining.intersection(tensor.layers)
             if not members:
