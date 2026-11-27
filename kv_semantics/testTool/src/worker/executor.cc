@@ -398,13 +398,13 @@ void Executor::WriteExistLog(const Request &request, const kv::TaskResult &resul
         if (allHit) { return; }
     }
 
-    // 每任务一行聚合：all_block_ids 为 input 原文 key 逗号拼接，key_high 为逐 key
-    // “原文key 高16位”拼接，prefix_hit_len 为 kv client 返回的前缀命中 key 数
+    // 每任务一行聚合：ns 为请求 namespace，all_block_ids 为 input 原文 key 逗号拼接，
+    // key_high 为逐 key “原文key 高16位”拼接，prefix_hit_len 为 kv client 返回的前缀命中 key 数
     std::string rawKeys;
     std::string highs;
     BuildAggKeyFields(request, rawKeys, highs);
-    const std::string line = "(exist) all_block_ids[" + rawKeys + "] key_high[" + highs +
-                             "] prefix_hit_len (" +
+    const std::string line = "(exist), ns (" + request.ns + "), all_block_ids[" + rawKeys +
+                             "] key_high[" + highs + "] prefix_hit_len (" +
                              std::to_string(result.queryResult->prefixHitKeys) + ")";
     LOG_INFO_OTHER("{}", line);
 }
@@ -418,8 +418,8 @@ void Executor::WriteDeleteLog(const Request &request, std::uint64_t notFound, st
     std::string rawKeys;
     std::string highs;
     BuildAggKeyFields(request, rawKeys, highs);
-    const std::string line =
-        "(delete) all_block_ids[" + rawKeys + "] key_high[" + highs + "] prefix_hit_len (-)";
+    const std::string line = "(delete), ns (" + request.ns + "), all_block_ids[" + rawKeys +
+                             "] key_high[" + highs + "] prefix_hit_len (-)";
     LOG_INFO_OTHER("{}", line);
 }
 

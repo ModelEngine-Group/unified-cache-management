@@ -189,31 +189,22 @@ bool FillEntry(const std::string &keyToken, const std::string &offsetToken,
 
 /**
  * 解析单 key 行（fields 为 op 之后 token，textAfterOp 为 op 之后原文）：
- * 先试四字段（ns key offset length [value...]，ns 为 namespace 名字符串，可为数字
- * 形式的名字），失败回退三字段（key offset length [value...]，ns 缺省空）
+ * 四字段格式 ns key offset length [value...]，ns 为必填非空的 namespace 名字符串
+ * （可为数字形式的名字），字段不足即非法（无三字段回退）
  */
 bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
                       RequestOrc &out)
 {
-    if (fields.size() >= 4 && FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) {
-        out.ns = fields[0];
-        return true;
-    }
-    if (fields.size() >= 3 && FillEntry(fields[0], fields[1], fields[2], textAfterOp, 3, out)) {
-        out.ns.clear();
-        return true;
-    }
-    return false;
+    if (fields.size() < 4) { return false; }
+    if (!FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) { return false; }
+    out.ns = fields[0];
+    return true;
 }
 
-/** 解析 batch 头字段（fields[0] 为 "batch"）：batch、batch ns=x、batch ns x 三种形态，
- * ns 为 namespace 名字符串（不允许空），缺省空 */
+/** 解析 batch 头字段（fields[0] 为 "batch"）：batch ns=x 或 batch ns x 两种形态，ns 为
+ * 必填非空的 namespace 名字符串（裸 batch 即非法） */
 bool ParseBatchHeader(const std::vector<std::string> &fields, std::string &ns)
 {
-    if (fields.size() == 1) {
-        ns.clear();
-        return true;
-    }
     if (fields.size() == 2 && fields[1].rfind("ns=", 0) == 0 && fields[1].size() > 3) {
         ns = fields[1].substr(3);
         return true;
@@ -369,7 +360,10 @@ bool RequestManager::BeginBatch(OrcOp op, const std::vector<std::string> &fields
 {
     std::string ns;
     if (!ParseBatchHeader(fields, ns)) {
-        err = LineErr(lineNo, "invalid batch header", line);
+        err = LineErr(lineNo,
+                      "invalid batch header (expect: op batch ns=<name> or op batch ns <name>, "
+                      "ns required and non-empty)",
+                      line);
         return false;
     }
     batchTask_ = OrcTask{};
@@ -386,7 +380,10 @@ bool RequestManager::AppendSingleTask(OrcOp op, const std::vector<std::string> &
     RequestOrc entry;
     entry.op = op;
     if (!ParseSingleEntry(fields, TextAfterTokens(line, 1), entry)) {
-        err = LineErr(lineNo, "invalid single entry", line);
+        err = LineErr(lineNo,
+                      "invalid single entry (expect: op ns key offset length [value...], "
+                      "ns required and non-empty)",
+                      line);
         return false;
     }
     if (!CheckEntry(entry, lineNo, line, err)) { return false; }
