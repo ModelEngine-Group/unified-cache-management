@@ -505,6 +505,7 @@ class UCMBlendConnector(UCMDirectConnector):
         # clear finished request
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self.requests_blend_meta.pop(request_id, None)
 
         return UCMBlendConnectorMetadata(requests_dispatch_meta)
 
