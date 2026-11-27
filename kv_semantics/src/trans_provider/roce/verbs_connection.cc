@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
+#include "logger.h"
 #include "roce_io_wire.h"
 
 namespace kv {
@@ -52,6 +53,20 @@ std::uint32_t SlotFromReceiveWrId(std::uint64_t wrId)
 StatusCode StatusCodeOf(const Status& status, StatusCode fallback)
 {
     return status.code == StatusCode::OK ? fallback : status.code;
+}
+
+std::string HexDump(const void* data, std::size_t length)
+{
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::string text;
+    text.reserve(length * 3U);
+    for (std::size_t index = 0U; index < length; ++index) {
+        if (index != 0U) { text.push_back(' '); }
+        text.push_back(kHexDigits[bytes[index] >> 4U]);
+        text.push_back(kHexDigits[bytes[index] & 0x0FU]);
+    }
+    return text;
 }
 
 }  // namespace
@@ -270,6 +285,13 @@ void VerbsConnection::PollCompletion()
                 // recycles the buffer the copy still reads from.
                 const std::size_t received =
                     std::min<std::size_t>(completion.byteLength, kResponseRecordBytes);
+                if (kv::logger::isEnabledFor(kv::logger::Level::DEBUG)) {
+                    KV_DEBUG(
+                        "VerbsConnection::PollCompletion answer cid={} byte_length={} received={} "
+                        "capacity={} record=[{}]",
+                        cid, completion.byteLength, received, found->second.responseBytes,
+                        HexDump(response, received));
+                }
                 const Status published = PublishResponse(response, received,
                                                          found->second.flagBuffer,
                                                          found->second.responseBytes);
