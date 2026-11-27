@@ -18,6 +18,7 @@ cmake --build build -j
 ./build/testTool <test config path> <kv client config path> [input file path, default input.txt]
 # 执行模式（onlyconnect=off）：input 可缺省，缺省取启动目录下 input.txt（相对当前工作目录查找）；例：./build/testTool conf/test_config.conf conf/kv_client.conf input/input.txt
 # 只建链模式（onlyconnect=on）：input 不使用（传入也会被忽略）
+# kv 日志缺省按调用点限流（同一调用点 60s 窗口内最多 3 条，超出静默丢弃）；排查日志缺条（如建链 Init 行数）时前置 KV_LOG_RATE_LIMIT_ENABLE=false
 ```
 
 ## 说明

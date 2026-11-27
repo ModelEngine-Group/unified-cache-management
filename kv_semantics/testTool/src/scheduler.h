@@ -159,8 +159,9 @@ private:
     std::size_t bufferSize_{0};
     /** 已注册内存区域凭证（与值缓冲块逐项对应，注销时使用） */
     std::vector<kv::RegisteredMemory> registered_;
-    /** put 基准表：keyLow64 → 最近一次写入块内容（get 回读比对基准；多 worker 并发访问加锁） */
-    std::unordered_map<std::uint64_t, std::vector<std::uint8_t>> keyBaseline_;
+    /** put 基准表：ns + keyLow64 复合定位最近一次写入块内容（get 回读比对基准；多 worker
+     * 并发访问加锁） */
+    std::unordered_map<std::string, std::vector<std::uint8_t>> keyBaseline_;
 
     // ---- 多 worker 并发执行状态（Run 期间有效，worker 全部 join 后失效） ----
     /** worker 数与起始绑核编号（conf：numjobs / startcoreid；worker i 绑 startcoreid+i） */

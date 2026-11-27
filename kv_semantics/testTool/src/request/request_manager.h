@@ -34,7 +34,8 @@
 struct OrcTask {
     /** 任务操作类型（batch 头或单 key 行的 optype） */
     OrcOp op{OrcOp::GET};
-    /** 任务级请求 namespace 名（batch 头或单 key 行的 ns；经 IoOptions.kvns 传给 kv client） */
+    /** 任务级请求 namespace 名（必填非空；batch 头或单 key 行的 ns；经 IoOptions.kvns 传给 kv
+     * client） */
     std::string ns;
     /** 任务内逐条原始数据（每条对应一个 kv entry） */
     std::vector<RequestOrc> entries;
@@ -55,9 +56,9 @@ using FlowStep = std::variant<OrcTask, SleepStep>;
 /**
  * 输入管理器：解析 input.txt 全部指令并缓存为步骤序列，供执行侧按序取用。
  * 解析规则（见 input/readme.md）：行首尾 trim（空格与 \t）、空行跳过、sleep 行解析为独立暂停步骤、
- * batch 头（可带 ns=x / ns x，缺省空）开始至 /batch 结束聚合（文件结束时未闭合的 batch
- * 属非法输入，报错退出）、单行先试四字段（ns key offset length，ns 为 namespace 名
- * 字符串）再试三字段（key offset length，ns 缺省空）；entry 字段须满足 kv 协议约束
+ * batch 头（必带非空 ns=x / ns x）开始至 /batch 结束聚合（文件结束时未闭合的 batch
+ * 属非法输入，报错退出）、单行四字段（ns key offset length，ns 为必填非空的 namespace
+ * 名字符串）；entry 字段须满足 kv 协议约束
  * （key 低 64 位非全 0、offset/length 512 字节对齐、length 非 0 且不超 24 位上限），
  * 违规启动即报错；
  * 任何非法输入数据（未知 op、字段解析失败等）不跳过不静默继续，直接返回启动错误提示管理员修正。
