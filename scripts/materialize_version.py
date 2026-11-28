@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="classify the next Nightly from a newline-delimited Tag file",
     )
+    parser.add_argument("--branch", help="Nightly source branch")
     parser.add_argument("--tags-file", type=Path)
     parser.add_argument("--date", help="Nightly date in YYYYMMDD form")
     parser.add_argument(
@@ -64,11 +65,14 @@ def main() -> int:
                         tags,
                         base_version=config["ucm_base_version"],
                         release_date=arguments.date,
+                        branch=arguments.branch,
                     ),
                     sort_keys=True,
                 )
             )
             return 0
+        if arguments.branch is not None:
+            raise ValueError("--branch requires --next-nightly")
         if arguments.tags_file is not None or arguments.date is not None:
             raise ValueError("--tags-file and --date require --next-nightly")
         if arguments.classify:
@@ -84,9 +88,17 @@ def main() -> int:
             print(json.dumps(classification, sort_keys=True))
             return 0
         version = (
-            version_config.version_from_tag(arguments.tag)
-            if arguments.tag is not None
-            else version_config.canonical_version(arguments.version)
+            str(
+                version_config.validate_tag_against_config(
+                    arguments.tag, arguments.version_config
+                )["version"]
+            )
+            if arguments.tag is not None and arguments.version_config is not None
+            else (
+                version_config.version_from_tag(arguments.tag)
+                if arguments.tag is not None
+                else version_config.canonical_version(arguments.version)
+            )
         )
         print(version_config.materialize_version(version, arguments.output))
     except (OSError, ValueError) as error:

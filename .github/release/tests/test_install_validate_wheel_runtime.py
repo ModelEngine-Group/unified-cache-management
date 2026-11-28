@@ -79,6 +79,7 @@ def test_local_wheel_validation_uses_native_pinned_runtime_and_propagates_failur
     completed, calls, wheel = _run_install(tmp_path, status=status)
 
     assert completed.returncode == status, completed.stderr
+    assert calls.pop(0) == ["info", "--format", "{{.DockerRootDir}}"]
     assert (
         len(calls) == 2
     )  # Validation failure never retries another Runtime or Builder.

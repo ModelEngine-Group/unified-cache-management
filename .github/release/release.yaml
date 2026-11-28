@@ -74,9 +74,9 @@ release_profiles:
       github_release: true
 
   nightly:
-    # 最多保留 7 个 Nightly。
+    # 每条活跃分支保留最近 3 条 Nightly 记录。
     # 仅向 GitHub Release 发布 Wheel。
-    max_count: 7
+    max_count: 3
     publish:
       pypi: false
       ghcr: false

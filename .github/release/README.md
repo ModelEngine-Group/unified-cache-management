@@ -195,7 +195,9 @@ The workflow accepts:
 | `draft/v0.9.0-1` | Draft | `0.9.0.dev1` | `0.9.0-draft.1` | `0.9.0.dev1` | Draft |
 | `draft/v0.9.0-test` | Draft | `0.9.0.dev0+draft.test` | `0.9.0-draft.test` | `0.9.0.dev0.draft.test` | Draft |
 | `draft/v0.9.0-1-test` | Draft | `0.9.0.dev0+draft.1.test` | `0.9.0-draft.1.test` | `0.9.0.dev0.draft.1.test` | Draft |
-| `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | `X.Y.Z.devYYYYMMDDNNN` | public prerelease after success |
+| `nightly/develop-YYYYMMDD[-N]` | Nightly | `X.Y.Z.devYYYYMMDDNNN+develop` | `X.Y.Z-nightly.YYYYMMDD.N.develop` | wheel version with `+` replaced by `.` | public prerelease |
+| `nightly/0.A.B-release-YYYYMMDD[-N]` | Nightly | `X.Y.Z.devYYYYMMDDNNN+release.0.A.B` | `X.Y.Z-nightly.YYYYMMDD.N.release.0.A.B` | wheel version with `+` replaced by `.` | public prerelease |
+| `nightly/vX.Y.Z-YYYYMMDD-N` | Historical Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | `X.Y.Z.devYYYYMMDDNNN` | public prerelease after success |
 
 An omitted Draft suffix still means `.dev0`; a numeric suffix must be a positive
 integer without leading zeros. A named suffix contains lowercase ASCII letters,
@@ -206,8 +208,7 @@ and leading/trailing hyphens are rejected. Inputs are not silently normalized.
 
 The complete named suffix identifies the build. Wheel versions preserve it in
 the `+draft.` local namespace; Chart `appVersion`, Meta/Toolkit versions and exact
-dependencies retain the complete Wheel version. Only these generated named Draft
-local versions are allowed for new releases. Other local forms are not enabled.
+dependencies retain the complete Wheel version. Branch Nightlies also use their own local labels in the table above. Other local forms are not enabled.
 The namespace avoids the known historical `+g<commit>` format, without claiming
 to exclude every manually created historical artifact coordinate.
 
@@ -252,17 +253,15 @@ not imply creation order. Draft retention keeps the existing Release ordering;
 new named Draft cleanup records must match the complete version, while old
 records retain historical local-version read compatibility.
 
-At 02:00 Asia/Shanghai (`18:00` UTC),
-`release-nightly.yml` reads the `X.Y.Z`
-base from `version.ini` and creates the next dated Nightly Tag from `develop`.
-An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
-Scheduled runs are restricted to the official repository. Maintainers can also
-dispatch the workflow on a Fork's `develop` branch to validate the same Nightly
-path; publication scope is derived from the repository and stays `fork` there.
-Because a `GITHUB_TOKEN` Tag creation does not
-recursively trigger another workflow, the same scheduled Run calls the common
-`release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
-same core through `release-tag.yml`.
+At 02:00 Asia/Shanghai, the official scheduler dispatches one run of
+`release-nightly.yml` on `develop` and one on the highest numeric
+`0.x.x-release` branch, including days without new commits. Each run builds
+its own checkout and reads the base version from its own `version.ini`.
+The Git tag and Release title use the branch and Shanghai date. The first
+publication has no suffix. Subsequent publications use `-2`, `-3`, and so on.
+A same-day incomplete tag at the same SHA can be resumed. Each job's summary
+links to its branch run. Dispatch the scheduler manually on a fork to test both
+branches, or dispatch the worker on one branch to rebuild it.
 
 Nightly publishes backend Wheels to GitHub Release, followed by the cleanup
 manifest. It builds directly from digest-pinned upstream Builders without
@@ -328,7 +327,11 @@ If image publication is disabled while other channels remain enabled, the image
 stages are skipped and publication continues only through those enabled
 channels. If every channel is disabled, validation completes without an
 external write. If requested image publication fails, already published
-artifacts remain usable and the public Release is marked `images-failed`. OCI
+artifacts remain usable and the public Release is marked `images-failed`. After the build matrix finishes, each registry receives a family index as soon
+as that registry has a verified digest for every planned architecture in the
+family. A failed CUDA member does not block a complete Ascend family. Release
+notes list usable references per registry and the missing architectures. The
+complete public manifest still requires all profile-enabled targets. OCI
 archives are not uploaded to GitHub Release. PyPI and Docker Hub follow the
 selected Release Profile in `release.yaml`, which is the sole authority for
 channel switches. Official releases use production targets. Forks use TestPyPI
@@ -613,8 +616,12 @@ After completion, verify all of the following:
 
 `max_count: -1` disables automatic retention. Nightly counts every unique
 Nightly Tag, including successful Releases, failed or cancelled Drafts, legacy
-manifests and orphaned Releases. It keeps the newest configured number by the
-Tag's date and numeric sequence, using the base version as the tie-breaker.
+manifests and orphaned Releases. It keeps the three newest by date and numeric
+sequence for each of develop and the newest maintenance branch. Historical
+version-based nightlies count towards develop. Older maintenance branches retire
+when a newer branch is confirmed; if discovery fails, retirement is skipped.
+Set the repository variable `UCM_NIGHTLY_RETENTION_PREVIEW=true` to preview
+automatic sweeps during rollout. Manual cleanup defaults to a preview.
 Duplicate Releases and run attempts count once. Existing objects determine the
 quota; a current Tag that was never created does not reserve a slot. Active,
 queued and waiting runs are protected even when their version is over quota,
@@ -638,9 +645,11 @@ artifact upload saves the local copy even if the remote write fails.
 
 Nightly preparation and the Nightly Tag caller use the local `record` command
 before a Release exists. Their artifact preserves the initial Tag/SHA binding
-when preparation fails or is cancelled. The independent `retain-releases` job
-runs after success or failure for non-Nightly publications; Nightly uses the
-separate lifecycle sweep described below.
+when preparation fails or is cancelled. Draft retention runs in the separate UCM Draft Retention workflow after a
+trusted Draft Tag run finishes, including failure and cancellation. Its report
+lists blocked versions independently of the new release. Manual dispatch on
+the default branch previews by default and accepts a reviewed historical
+inventory. Stable and prerelease use inline retention; Nightly uses its own sweep.
 
 Historical failures can recover an exact repository-owned Actions plan and
 persist it before deleting its run. A plan-less early failure is recoverable
@@ -648,8 +657,11 @@ when all-attempt job results prove every release publisher was skipped.
 Missing, expired or conflicting evidence otherwise reports a cleanup failure
 while the version remains in the count. Non-Nightly `--dry-run` resolves the
 same read-only target as actual cleanup, including pending historical evidence.
-Actual execution explicitly saves and reads back that evidence before deletion;
-the preview does not upload recovery assets or delete resources.
+If an old Draft still has a Git Tag but its Release is gone, execution verifies
+the legacy run against the live Tag commit and restores an unpublished Draft to
+hold the recovered snapshots. It reads them back before deleting resources. A
+retry reuses that Draft, whose new ID does not change retention order. Preview
+only reports the deletion targets and never creates a recovery Draft.
 
 Builders, base runtimes and PyPI packages are never cleanup targets. Existing
 Nightly `release-cleanup.json` records and `ucm-nightly-cleanup-*` artifacts remain
@@ -658,8 +670,12 @@ The public Schema 10 manifest continues to require complete publication. Schema 
 manifests remain readable, and the internal cleanup reader also supports proven
 legacy Schema 6 records without weakening the public contract.
 
-`nightly-cleanup.yml` runs after trusted Nightly or Nightly-Tag workflows finish,
-including failure and cancellation. It uses default-branch code and shares a
+`nightly-cleanup.yml` runs after trusted Nightly or Nightly-Tag workflows finish.
+Workers started by the scheduler explicitly dispatch cleanup on the default
+branch and link its run in their job summary. They forward
+`UCM_NIGHTLY_RETENTION_PREVIEW=true` as a dry run. User-started Nightlies and
+Nightly Tag pushes trigger cleanup through their completion event, including
+failure and cancellation. Cleanup uses default-branch code and shares a
 repository lifecycle concurrency group with both publishing entrypoints and
 manual Nightly cleanup, with `queue: max` and `cancel-in-progress: false`. The
 common release core retains its separate Tag-level group. Non-Nightly cleanup
@@ -685,7 +701,7 @@ Preview the configured quota without deleting:
 ```bash
 python .github/release/ucm_release/cleanup.py retention \
   --repository ModelEngine-Group/unified-cache-management \
-  --release-type nightly --max-count 7 --pypi-enabled false \
+  --release-type nightly --max-count 3 --pypi-enabled false \
   --dry-run --report out/cleanup/report.json
 ```
 
@@ -765,7 +781,7 @@ selection, so a SGLang `main-cann*` image can still be requested this way.
 
 ## Artifact names
 
-Artifacts are scoped by run and overwritten by failed-job reruns:
+Build inputs and staged results are scoped by run:
 
 - `ucm-runtime-candidates-run-<run>`;
 - `ucm-runtime-inspection-run-<run>`;
@@ -775,17 +791,20 @@ Artifacts are scoped by run and overwritten by failed-job reruns:
 - `ucm-wheel-<wheel-id>-run-<run>`;
 - `ucm-chart-run-<run>`;
 - `ucm-image-<image-id>-run-<run>` for PR Robot trust-boundary handoff only;
-- image member/index receipt artifacts;
 - `ucm-release-stage-run-<run>` containing internal `release-state.json`.
 
 Candidates or selection artifacts containing SGLang `main` images are no longer
 accepted. Regenerate discovery and selection with the updated code before
 planning; rerunning only the failed Plan job reuses the unsupported artifacts.
 
-When image publication is enabled, trusted Tag builds keep the verified OCI
-archive on the native build runner, copy it directly to GHCR, and upload only
-the small member receipt. They do not retain multi-gigabyte OCI archives as
-Actions artifacts. PR Robot builds keep the separate read-only build to trusted
+Tag publishers upload small member and index receipts per run and attempt.
+Receipts bind to the source SHA and frozen plan hash. The latest observation
+drives the release status; earlier verified digests allow a retry to copy from
+a registry without rebuilding the OCI archive. An existing tag with a different
+digest or without matching evidence is reported as a conflict and left intact.
+If a push succeeded but the receipt upload failed, verify the registry contents
+and recover the evidence before attempting that target again. OCI archives stay
+on the native build runner. PR Robot builds keep the separate read-only build to trusted
 publisher artifact boundary.
 
 ## Verification

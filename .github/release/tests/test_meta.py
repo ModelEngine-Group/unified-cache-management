@@ -281,11 +281,25 @@ def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> N
     )
 
 
-def test_named_draft_meta_preserves_full_version_and_installs_extra_offline(
+@pytest.mark.parametrize(
+    "release_type,version,tag",
+    [
+        ("draft", "0.9.0.dev0+draft.1.test", "draft/v0.9.0-1-test"),
+        (
+            "nightly",
+            "0.10.0.dev20261126001+release.0.10.0",
+            "nightly/0.10.0-release-20261126",
+        ),
+    ],
+)
+def test_local_version_meta_pins_backend_and_installs_offline(
     tmp_path: Path,
+    release_type: str,
+    version: str,
+    tag: str,
 ) -> None:
-    version = "0.9.0.dev0+draft.1.test"
-    plan = _named_draft_plan(version, "draft/v0.9.0-1-test")
+    plan = _named_draft_plan(version, tag)
+    plan["release_type"] = release_type
     meta_source = tmp_path / "meta-source"
     meta_wheelhouse = tmp_path / "named-draft-meta-wheelhouse"
     meta_wheelhouse.mkdir()
