@@ -1769,7 +1769,8 @@ def test_request_async_reschedule_does_not_dispatch_duplicate_load():
     assert dispatch.load_async is False
 
 
-def test_request_async_poll_reports_only_completed_loads():
+@pytest.mark.parametrize("early_event", [0, 17])
+def test_request_async_poll_reports_only_completed_loads(early_event):
     task = object()
     request_id = "req-async"
     previous_metrics = len(fake_ucmmetrics.updated)
@@ -1782,8 +1783,11 @@ def test_request_async_poll_reports_only_completed_loads():
     connector.cp_world_size = 1
     connector._kv_cache_config = SimpleNamespace(needs_kv_cache_zeroing=True)
     connector._async_load_timeout_s = 30
+    connector.enable_event_sync = True
     connector._get_event_handle = Mock(return_value=17)
-    connector.device = SimpleNamespace(destroy_event_handle=Mock())
+    connector.device = SimpleNamespace(
+        get_event_handle=Mock(return_value=early_event), destroy_event_handle=Mock()
+    )
     connector.kv_cache_layout = SimpleNamespace(
         extract_block_addrs=Mock(return_value=Mock(shape=(2, 1)))
     )
@@ -1794,8 +1798,9 @@ def test_request_async_poll_reports_only_completed_loads():
         wait_load=Mock(),
     )
     connector._pending_load_tasks = {}
+    connector._async_load_event_refs = {}
     connector._finished_async_load_req_ids = set()
-    connector._connector_metadata = ucm_connector_module.UCMConnectorMetadata(
+    metadata = ucm_connector_module.UCMConnectorMetadata(
         {
             request_id: RequestDispatchMeta(
                 load_block_ids=([b"u0", b"u1"], [40, 41]),
@@ -1805,10 +1810,16 @@ def test_request_async_poll_reports_only_completed_loads():
         }
     )
 
+    connector.bind_connector_metadata(metadata)
+    connector.device.get_event_handle.assert_called_once_with()
+    connector._get_event_handle.assert_not_called()
+    connector._rank_consistency.submit_load.assert_not_called()
     connector.start_load_kv(None)
+    assert connector._get_event_handle.call_count == int(not early_event)
     assert (
         connector._rank_consistency.submit_load.call_args.kwargs["event_handle"] == 17
     )
+    connector.clear_connector_metadata()
     assert connector._poll_pending_load_tasks() == set()
     connector._rank_consistency.wait_load.assert_not_called()
     connector.device.destroy_event_handle.assert_not_called()
@@ -3068,6 +3079,7 @@ def _async_fawa_worker(has_window=True, load_async=True):
     connector.window_group_ids = [1] if has_window else []
     connector.file_size = {"FA": 100, "WA": 40}
     connector._pending_fawa_loads = {}
+    connector._async_load_event_refs = {}
     connector._failed_fawa_loads = set()
     connector._async_dump_req_ids = set()
     connector._async_load_timeout_s = 30
@@ -3176,6 +3188,52 @@ def test_fawa_async_load_events_outlive_start_load_kv(shutdown):
     connector.wa_store.wait.assert_called_once()
     assert connector.device.destroyed == connector.device.created
     assert not connector._pending_fawa_loads
+
+
+def test_fawa_shares_pre_forward_event_until_last_request_drains():
+    connector = _async_fawa_worker()
+    metadata = connector._get_connector_metadata()
+    metadata.request_meta["second"] = copy.copy(metadata.request_meta["req"])
+    stores = (connector.fa_store, connector.wa_store)
+    done = set()
+    for store in stores:
+        store.load_data.side_effect = lambda *args, **kwargs: object()
+        store.check.side_effect = lambda task: task in done
+
+    connector.bind_connector_metadata(metadata)
+    assert len(connector.device.created) == 1
+    handle = connector.device.created[0]
+    for store in stores:
+        store.load_data.assert_not_called()
+
+    connector.start_load_kv(None)
+    connector.clear_connector_metadata()
+    for store in stores:
+        assert [
+            call.kwargs["prerequisite_handle"]
+            for call in store.load_data.call_args_list
+        ] == [handle, handle]
+    assert connector.device.created == [handle]
+    assert connector.device.destroyed == []
+
+    done.update(load.task for load in connector._pending_fawa_loads["req"].tasks)
+    assert connector.get_finished(set()) == (None, {"req"})
+    assert connector.device.destroyed == []
+
+    connector.shutdown()
+    assert connector.device.destroyed == [handle]
+    assert connector._async_load_event_refs == {}
+
+
+def test_fawa_releases_pre_forward_event_without_submitting():
+    connector = _async_fawa_worker()
+    connector.bind_connector_metadata(connector._get_connector_metadata())
+    assert len(connector.device.created) == 1
+
+    connector.clear_connector_metadata()
+    connector.shutdown()
+    assert connector.device.destroyed == connector.device.created
+    assert connector._async_load_event_refs == {}
 
 
 def test_fawa_async_load_event_released_when_wait_fails():
