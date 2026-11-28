@@ -165,6 +165,8 @@ def test_cache2_applies_capacity_and_numa_on_all_platforms(platform, monkeypatch
         "cache_buffer_capacity_gb": 64,
         "share_buffer_enable": True,
         "cache_detected_numa_node": 3,
+        "cache_fallback_numa_rank": 0,
+        "cache_fallback_numa_rank_count": 8,
     }
     device.get_numa_node.assert_called_once_with(0)
     cache_config.logger.warning_once.assert_not_called()
@@ -320,28 +322,139 @@ def test_cache_domain_counts_only_local_workers(world, local, count):
     )
 
 
-def test_affinity_short_circuits_fallback():
+def test_affinity_works_without_worker_geometry():
     config = {}
     cache_config.configure_cache_numa(config, NS(get_numa_node=lambda _: 6), 0, NS(), 0)
     assert config == {"cache_detected_numa_node": 6}
 
 
-def test_dp_isolation_does_not_restart_numa_slices():
-    results = []
+@pytest.mark.parametrize("dcp_size", [1, 2])
+def test_single_host_pcp_numa_counts_all_workers(dcp_size):
+    geometry = parallel(
+        data_parallel_size=1,
+        data_parallel_index=0,
+        data_parallel_rank_local=None,
+        tensor_parallel_size=2,
+        pipeline_parallel_size=2,
+        prefill_context_parallel_size=2,
+        decode_context_parallel_size=dcp_size,
+    )
+
+    for rank in range(8):
+        geometry.rank = rank
+        config = {}
+        cache_config.configure_cache_numa(
+            config, NS(get_numa_node=lambda _: None), rank, geometry, rank
+        )
+        assert config["cache_fallback_numa_rank"] == rank
+        assert config["cache_fallback_numa_rank_count"] == 8
+
+
+def test_multiproc_dp_pcp_numa_uses_executor_rank():
+    geometry = parallel(
+        distributed_executor_backend="mp",
+        data_parallel_rank_local=1,
+        data_parallel_size_local=2,
+        node_rank_within_dp=0,
+        tensor_parallel_size=4,
+        prefill_context_parallel_size=2,
+    )
+
+    for rank in range(8):
+        geometry.rank = rank
+        # vLLM's device rank uses an offset of TP x PP in this launch path.
+        device_rank = rank + 4
+        config = {}
+        cache_config.configure_cache_numa(
+            config, NS(get_numa_node=lambda _: None), device_rank, geometry, device_rank
+        )
+        assert config["cache_fallback_numa_rank"] == rank
+        assert config["cache_fallback_numa_rank_count"] == 8
+
+
+@pytest.mark.parametrize("affinity", [None, 6])
+@pytest.mark.parametrize("global_rank,local_rank", [(0, 0), (1, 1), (2, 0), (3, 1)])
+def test_cross_host_tp_numa_uses_local_worker_rank(affinity, global_rank, local_rank):
+    geometry = parallel(
+        data_parallel_size=1,
+        data_parallel_index=0,
+        data_parallel_rank_local=None,
+        tensor_parallel_size=4,
+        world_size=4,
+        local_world_size=2,
+        rank=global_rank,
+    )
+    config = {}
+    cache_config.configure_cache_numa(
+        config, NS(get_numa_node=lambda _: affinity), local_rank, geometry, local_rank
+    )
+
+    assert config.get("cache_detected_numa_node") == affinity
+    assert config["cache_fallback_numa_rank"] == local_rank
+    assert config["cache_fallback_numa_rank_count"] == 2
+
+
+@pytest.mark.parametrize("affinity", [None, 6])
+@pytest.mark.parametrize("rank_has_dp_offset", [False, True])
+@pytest.mark.parametrize(
+    "nnodes,expected_nodes",
+    [(1, [[1, 3, 5, 7], [1, 3, 5, 7]]), (2, [[1, 1, 3, 3], [5, 5, 7, 7]])],
+)
+def test_numa_slices_for_multiple_local_dp_groups(
+    affinity, rank_has_dp_offset, nnodes, expected_nodes
+):
+    available_nodes = [1, 3, 5, 7]
     for dp in range(2):
-        for rank in range(8):
+        geometry = parallel(
+            nnodes=nnodes,
+            data_parallel_size=2 * nnodes,
+            data_parallel_rank_local=dp,
+            data_parallel_size_local=2,
+            tensor_parallel_size=4,
+            world_size=4,
+            local_world_size=4,
+        )
+        selected_nodes = []
+        for rank in range(4):
+            device_id = dp * 4 + rank
             config = {}
             cache_config.configure_cache_numa(
                 config,
-                NS(get_numa_node=lambda _: None),
-                dp * 8 + rank,
-                parallel(data_parallel_rank_local=dp, data_parallel_size_local=2),
-                rank,
+                NS(get_numa_node=lambda _: affinity),
+                device_id,
+                geometry,
+                device_id if rank_has_dp_offset else rank,
             )
+            assert config.get("cache_detected_numa_node") == affinity
             worker = config["cache_fallback_numa_rank"]
             count = config["cache_fallback_numa_rank_count"]
-            results.append(worker * 8 // count)
-    assert results == [n for n in range(8) for _ in range(2)]
+            assert (worker, count) == ((rank, 4) if nnodes == 1 else (device_id, 8))
+            selected_nodes.append(
+                available_nodes[worker * len(available_nodes) // count]
+            )
+        assert selected_nodes == expected_nodes[dp]
+
+
+@pytest.mark.parametrize("affinity", [None, 6])
+@pytest.mark.parametrize("dp,local_rank", [(0, 2), (1, -1), (1, 4), (2, 0)])
+def test_invalid_numa_geometry_uses_cache_domain_rank(affinity, dp, local_rank):
+    geometry = parallel(
+        data_parallel_rank_local=dp,
+        data_parallel_size_local=2,
+        tensor_parallel_size=2,
+        world_size=2,
+        local_world_size=2,
+    )
+    config = {"cache_fallback_numa_rank": 4, "cache_fallback_numa_rank_count": 4}
+
+    cache_config.configure_cache_numa(
+        config, NS(get_numa_node=lambda _: affinity), 2, geometry, local_rank
+    )
+
+    assert config == (
+        {} if affinity is None else {"cache_detected_numa_node": affinity}
+    )
+    cache_config.logger.warning.assert_called_once()
 
 
 @pytest.mark.parametrize("worker", [False, True])

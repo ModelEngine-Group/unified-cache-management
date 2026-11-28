@@ -6,6 +6,7 @@
 #include "cache/v2/numa/numa_policy.h"
 #include <cerrno>
 #include <gtest/gtest.h>
+#include <limits>
 #include <linux/mempolicy.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -99,6 +100,45 @@ TEST_F(ThreadPolicyTest, InvalidBindingLeavesPolicyUnchanged)
     ScopedThreadPolicy policy;
     EXPECT_TRUE(policy.Bind(Plan{}).Failure());
     ExpectPolicy(originalMode_, originalMask_);
+}
+
+TEST_F(ThreadPolicyTest, PreferredMemfdPolicyLeavesThreadPolicyUnchanged)
+{
+    const auto pageSize = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    MemFd mem;
+    ASSERT_TRUE(mem.Create("ucm_preferred_policy", pageSize).Success());
+    const auto status =
+        ApplyPolicyBeforeTouch(mem.Addr(), pageSize, plan_, MemoryPolicy::Preferred);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    int mappingMode = -1;
+    std::vector<unsigned long> mappingMask(originalMask_.size(), 0);
+    ASSERT_EQ(0, ::syscall(SYS_get_mempolicy, &mappingMode, mappingMask.data(), kMaskBits,
+                           mem.Addr(), static_cast<unsigned long>(MPOL_F_ADDR)));
+    EXPECT_EQ(MPOL_PREFERRED | MPOL_F_STATIC_NODES, mappingMode);
+    std::vector<unsigned long> expectedMask(mappingMask.size(), 0);
+    expectedMask[plan_.node / (sizeof(unsigned long) * 8)] =
+        1UL << (plan_.node % (sizeof(unsigned long) * 8));
+    EXPECT_EQ(expectedMask, mappingMask);
+    ExpectPolicy(originalMode_, originalMask_);
+}
+
+TEST(NumaPolicyTest, UsesRankSliceWhenAffinityIsUnavailable)
+{
+    auto slice = Resolve(std::nullopt, 0, 1);
+    ASSERT_TRUE(slice) << slice.Error().ToString();
+    auto affinity = Resolve(slice.Value().node, 0, 1);
+    ASSERT_TRUE(affinity) << affinity.Error().ToString();
+    EXPECT_EQ(Placement::Affinity, affinity.Value().placement);
+    EXPECT_EQ(slice.Value().node, affinity.Value().node);
+
+    constexpr int32_t unavailable = std::numeric_limits<int32_t>::max();
+    auto fallback = Resolve(unavailable, 0, 1);
+    ASSERT_TRUE(fallback) << fallback.Error().ToString();
+    EXPECT_EQ(Placement::RankSlice, fallback.Value().placement);
+    EXPECT_EQ(slice.Value().node, fallback.Value().node);
+    EXPECT_FALSE(Resolve(unavailable, std::nullopt, 1));
+    EXPECT_FALSE(Resolve(-1, 0, 1));
 }
 
 TEST(NumaPolicyTest, SlicesSixteenRanksAcrossEightNodes)

@@ -79,9 +79,9 @@ struct Config {
     size_t localRankSize{8};
     /* Connector-derived hints, never user configuration. deviceNumaNode is the
      * accelerator's real NUMA affinity, absent when topology does not expose
-     * one; fallbackNumaRank and fallbackNumaRankCount describe this worker's
-     * position among all workers on its machine. They are independent of the
-     * number of ranks in this Cache domain. */
+     * one. When affinity is absent or unavailable, fallbackNumaRank and
+     * fallbackNumaRankCount supply the worker numbering used for rank slicing.
+     * The connector chooses the scope independently of the Cache domain layout. */
     std::optional<int32_t> detectedNumaNode{};
     std::optional<int64_t> fallbackNumaRank{};
     std::optional<int64_t> fallbackNumaRankCount{};

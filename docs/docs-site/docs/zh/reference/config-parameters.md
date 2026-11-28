@@ -60,6 +60,8 @@ UCM、HLA 和 HMA 的整存整取模式使用请求级异步加载外部 KV。Wo
 
 仅适用于包含 Cache 的流水线。Cache2 按 Cache 域规划容量，并在域内本机 worker 间分摊。
 
+Cache2 优先选择 worker 可用的设备亲和 NUMA 节点。单机 vLLM 部署有本地 DP 编号时，如果设备亲和节点未知或不可用，每个 DP 组各自对可用 NUMA 节点做 rank-slice。
+
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | 选填 | int | 默认 `160` | 原生调用方按 Cache 域配置容量，单位 GiB。vLLM 按节点预算分配给本机 DP 域和 FA/WA store，PP stage store 进一步分摊。外部 DP 服务配置每个实例的预算。Cache2 将每个域的容量均分给域内本机 worker。vLLM 对每个 store 分摊的容量低于 1 GiB 时启动报错。 |

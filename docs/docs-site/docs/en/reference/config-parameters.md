@@ -60,6 +60,8 @@ These options configure Posix in a Pipeline. Provide `storage_backends` when Pos
 
 These fields apply to pipelines containing Cache. Cache2 capacity is planned per cache domain and partitioned across its local workers.
 
+Cache2 prefers the device affinity node when the worker can use it. On single-host vLLM deployments with local DP rank information, each DP group independently slices the worker's allowed NUMA nodes when device affinity is missing or unavailable.
+
 | Parameter | Required | Type | Value Range | Description |
 | --- | --- | --- | --- | --- |
 | `cache_buffer_capacity_gb` | Optional | int | Default: `160` | Cache2 capacity in GiB per cache domain for native callers. vLLM treats it as a node budget, divides it across local DP domains and FA/WA stores, and further partitions PP stage stores. External-DP services supply their per-instance budget. Cache2 divides each domain across its local workers. vLLM rejects per-store capacity splits below 1 GiB. |

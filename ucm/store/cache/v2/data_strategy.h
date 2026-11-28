@@ -55,8 +55,8 @@ struct DataOptions {
     size_t setupTimeoutMs{600000};                 /* whole-Setup budget; 0 means no wait */
     bool requireHostDeviceAddress{false};          /* derived from the copy mode, not a switch */
     std::optional<int32_t> deviceNumaNode{};       /* device-layer probe; empty when unknown */
-    std::optional<size_t> fallbackNumaRank{};      /* local worker rank, NOT myRank */
-    std::optional<size_t> fallbackNumaRankCount{}; /* all workers on this machine */
+    std::optional<size_t> fallbackNumaRank{};      /* worker index for rank slicing */
+    std::optional<size_t> fallbackNumaRankCount{}; /* worker count for rank slicing */
 };
 
 class DataStrategy {

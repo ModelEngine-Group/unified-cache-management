@@ -35,33 +35,28 @@ namespace UC::Cache2::Numa {
  * result, never a user-facing policy: there is no config switch and no node
  * list. */
 enum class Placement {
-    Affinity,  /* device affinity detected: place on that node */
-    RankSlice, /* no affinity: contiguous worker-rank slices per NUMA node */
+    Affinity,  /* available device-affinity node */
+    RankSlice, /* contiguous worker-rank slices across available nodes */
 };
 
-/* Resolved placement of one local data segment. The whole segment goes on a
- * single node; it is never split per page or per block. */
+/* Selected NUMA node for one local data segment. */
 struct Plan {
     Placement placement{Placement::Affinity};
     int32_t node{-1};
 };
 
-/* Picks the node for the local segment before BindLocal. deviceNode is the
- * device-layer probe result and stays empty when unknown -- this module never
- * fabricates an affinity. fallbackNumaRank is the connector-derived local
- * worker rank, not the control-plane myRank; a missing one is an error, never
- * a silent 0. rankCount is the number of workers on the machine and defines
- * the contiguous rank slices; it can be larger than the current Cache domain.
- * The result stays fixed for the segment's lifetime. */
+/* Picks the node before BindLocal. If device affinity is unavailable, use
+ * the worker's fallback rank and count to slice the usable NUMA nodes. */
 Expected<size_t> RankSliceIndex(size_t rank, size_t rankCount, size_t nodeCount);
 
 Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> fallbackNumaRank,
                        size_t rankCount);
 
-/* Binds the whole local segment to plan.node before its first touch and before
- * device registration. Registration pins pages, so binding afterwards would
- * lock them onto the wrong node. Memfd path. */
-Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan);
+enum class MemoryPolicy { Bind, Preferred };
+
+/* Set the memfd mapping's policy before allocating and pinning its pages.
+ * Bind confines allocations to plan.node. Preferred permits other allowed nodes. */
+Status ApplyPolicyBeforeTouch(void* base, size_t bytes, const Plan& plan, MemoryPolicy policy);
 
 /* Temporarily bind file preallocation to one node on the calling thread.
  * Restore() must be checked before continuing setup; the destructor is a

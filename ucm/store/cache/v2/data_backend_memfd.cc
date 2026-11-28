@@ -356,7 +356,10 @@ Status MemfdDataBackend::PrepareLocalMemory(MemFd& mem, PageBacking backing, boo
         UC_WARN("memfd segment has no NUMA plan, leaving placement to the kernel: device={}",
                 deviceId_);
     } else {
-        auto bindStatus = Numa::BindBeforeTouch(mem.Addr(), bytes, localPlacement_);
+        // Ordinary pages may use other allowed nodes when the preferred node is full.
+        const auto policy =
+            backing == PageBacking::Base ? Numa::MemoryPolicy::Preferred : Numa::MemoryPolicy::Bind;
+        auto bindStatus = Numa::ApplyPolicyBeforeTouch(mem.Addr(), bytes, localPlacement_, policy);
         if (bindStatus.Failure()) {
             if (backing != PageBacking::Base) { return bindStatus; }
             UC_WARN(

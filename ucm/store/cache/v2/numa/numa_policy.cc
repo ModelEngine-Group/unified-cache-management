@@ -26,6 +26,7 @@
 #include <cerrno>
 #include <charconv>
 #include <cstring>
+#include <fmt/ranges.h>
 #include <fstream>
 #include <linux/mempolicy.h>
 #include <map>
@@ -187,29 +188,31 @@ Expected<Plan> Resolve(std::optional<int32_t> deviceNode, std::optional<size_t> 
             return Status::InvalidParam("cache2 numa: negative affinity node({})", *deviceNode);
         }
         const auto node = static_cast<size_t>(*deviceNode);
-        if (std::find(nodes.begin(), nodes.end(), node) == nodes.end()) {
-            /* A known but unusable affinity node is a real failure: falling back
-             * to rank slicing here would hide a broken device probe. */
-            return Status::Error(
-                fmt::format("cache2 numa: affinity node({}) is not available", node));
+        if (std::find(nodes.begin(), nodes.end(), node) != nodes.end()) {
+            return Plan{Placement::Affinity, *deviceNode};
         }
-        return Plan{Placement::Affinity, *deviceNode};
     }
 
     if (!fallbackNumaRank.has_value()) {
         return Status::InvalidParam(
-            "cache2 numa: no device affinity and no local worker rank to fall back on");
+            "cache2 numa: no usable device affinity and no local worker rank to fall back on");
     }
     auto nodeIndex = RankSliceIndex(*fallbackNumaRank, rankCount, nodes.size());
     if (!nodeIndex) { return nodeIndex.Error(); }
     const auto node = nodes[nodeIndex.Value()];
+    if (deviceNode.has_value()) {
+        UC_WARN(
+            "cache2 numa: affinity node={} unavailable, falling back to rank-slice: "
+            "available_nodes={} selected_node={}",
+            *deviceNode, fmt::join(nodes, ","), node);
+    }
     return Plan{Placement::RankSlice, static_cast<int32_t>(node)};
 }
 
-Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan)
+Status ApplyPolicyBeforeTouch(void* base, size_t bytes, const Plan& plan, MemoryPolicy policy)
 {
     if (base == nullptr || bytes == 0) {
-        return Status::InvalidParam("cache2 numa: cannot bind an empty segment");
+        return Status::InvalidParam("cache2 numa: cannot set policy on an empty segment");
     }
     if (plan.node < 0) { return Status::InvalidParam("cache2 numa: plan carries no node"); }
     const long pageSize = PageSize();
@@ -218,15 +221,17 @@ Status BindBeforeTouch(void* base, size_t bytes, const Plan& plan)
         return Status::InvalidParam("cache2 numa: segment address is not page-aligned");
     }
     const auto mask = SingleNodeMask(static_cast<size_t>(plan.node));
-    const long result = ::syscall(SYS_mbind, base, bytes, MPOL_BIND | MPOL_F_STATIC_NODES,
+    const bool strict = policy == MemoryPolicy::Bind;
+    const auto mode = strict ? MPOL_BIND : MPOL_PREFERRED;
+    const long result = ::syscall(SYS_mbind, base, bytes, mode | MPOL_F_STATIC_NODES,
                                   mask.words.data(), mask.maxNode, 0UL);
     if (result < 0) {
         const auto error = errno;
         return Status::OsApiError(
             fmt::format("cache2 numa: mbind node={} failed: {}", plan.node, std::strerror(error)));
     }
-    UC_INFO("cache2 numa bound: node={} placement={} bytes={}", plan.node,
-            plan.placement == Placement::Affinity ? "affinity" : "rank-slice", bytes);
+    UC_INFO("cache2 numa {}: node={} placement={} bytes={}", strict ? "bound" : "preferred",
+            plan.node, plan.placement == Placement::Affinity ? "affinity" : "rank-slice", bytes);
     return Status::OK();
 }
 

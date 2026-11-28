@@ -3052,12 +3052,29 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         layer_start: int,
         layer_count: int,
     ) -> None:
-        pp_size = self._vllm_config.parallel_config.pipeline_parallel_size
+        parallel = self._vllm_config.parallel_config
+        pp_size = parallel.pipeline_parallel_size
         local_ranks = self._get_world_size()
         # DCP reuses the TP/PCP worker grid; it adds no worker axis.
         stage_width = self.tp_size * getattr(
-            self._vllm_config.parallel_config, "prefill_context_parallel_size", 1
+            parallel, "prefill_context_parallel_size", 1
         )
+        stage_ranks = min(stage_width, local_ranks)
+        local_stages = max(1, math.ceil(local_ranks / stage_width))
+        if (
+            getattr(parallel, "distributed_executor_backend", None) == "mp"
+            and getattr(parallel, "nnodes_within_dp", 1) > 1
+        ):
+            # MultiprocExecutor assigns a contiguous rank interval to each host.
+            node_start = parallel.node_rank_within_dp * local_ranks
+            node_end = node_start + local_ranks
+            stage_start = pp_rank * stage_width
+            overlap = min(node_end, stage_start + stage_width) - max(
+                node_start, stage_start
+            )
+            if overlap > 0:
+                stage_ranks = overlap
+            local_stages = (node_end - 1) // stage_width - node_start // stage_width + 1
         if "storage_backends" not in config:
             raise ValueError(
                 "PP stages require a shared Posix backend: set storage_backends "
@@ -3070,10 +3087,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # Same signature in the Cache id, so a re-partition cannot reuse the
         # host buffers of the previous layer set.
         config["unique_id"] = f"{self.unique_id}_{stage_name}"
-        config["local_rank_size"] = min(stage_width, local_ranks)
-        # Cache2 is now the only Cache backend. Keep PCP in the stage width
-        # when splitting this node's budget between PP stage stores.
-        local_stages = max(1, math.ceil(local_ranks / stage_width))
+        config["local_rank_size"] = stage_ranks
         capacity = int(config["cache_buffer_capacity_gb"]) // local_stages
         if capacity < 1:
             raise ValueError(
