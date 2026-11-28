@@ -32,6 +32,7 @@ from ucm.integration.vllm.ucm_connector import (
     _get_store_gc_block_size,
     _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    build_kv_block_info,
     build_kv_hash_meta,
 )
 from ucm.logger import init_logger
@@ -2939,7 +2940,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._drain_best_effort_dump_tasks(finished_dumps)
         self._rank_consistency.finish_dump(finished_dumps)
         self._async_dump_req_ids.difference_update(finished_dumps)
-        finished_sending = finished_dumps - pending_async_loads - finished_recving
+        # The scheduler delays freeing HBM blocks for every FAWA request
+        # (request_finished_all_groups always returns delay_free=True) and
+        # relies on this hook to release them.  Requests that never had a dump
+        # plan (e.g. fully served from the external cache, dump blocks: 0) are
+        # not in _async_dump_req_ids, so they must still be reported here;
+        # otherwise their blocks are never returned and the KV pool leaks one
+        # request worth of blocks per finished request until it deadlocks.
+        # Requests whose dump is still in flight stay in _async_dump_req_ids
+        # (just difference-updated above) and are intentionally excluded.
+        finished_sending = (
+            finished_req_ids
+            - self._async_dump_req_ids
+            - pending_async_loads
+            - finished_recving
+        )
         return finished_sending or None, finished_recving or None
 
     def get_transfer_results(self, finished_req_ids: set[str]):
@@ -2956,6 +2971,37 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if self._pending_fawa_loads:
             self._poll_pending_fawa_loads(wait_all=True)
         self._release_bound_async_load_event()
+        if self._load_wait_executor is not None:
+            # Do not cancel queued waits: each submitted Store task needs its
+            # timeout/cancel/drain path to run before HBM can be reclaimed.
+            self._load_wait_executor.shutdown(wait=True)
+            self._load_wait_executor = None
+
+    def prefetch_data(self, block_ids: list[bytes]) -> None:
+        """Warm FA and WA stores with the same keys as the load path.
+
+        FA groups load every matched block, while WA groups only load the
+        final matched boundary (``load_keys[-1:]``). Warming only the FA store
+        would leave the WA tail on the slow backend.
+        """
+        if not block_ids:
+            return
+        if self.fa_store is not None:
+            self.fa_store.prefetch_data(block_ids)
+        if self.window_group_ids and self.wa_store is not None:
+            self.wa_store.prefetch_data(block_ids[-1:])
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        # Scheduler side method.
+        # Return this request's block hashes (prefetch handle) with the response
+        # so the upper layer can prefetch on demand. Short requests that were not
+        # dumped have no requests_meta entry and yield None.
+        req_meta = self.requests_meta.get(request.request_id)
+        return True, build_kv_block_info(req_meta, enabled=self.enable_prefetch)
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):
