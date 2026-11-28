@@ -6,6 +6,7 @@ or establish the safety of every model-selection/state-copy configuration.
 """
 
 import ast
+import copy
 import math
 import sys
 import time
@@ -80,6 +81,7 @@ def hla():
         "extend_non_null",
         "kv_cache_layout_name",
         "is_cuda_blhnc_layout",
+        "_normalize_tensor_size_list",
         "is_cuda_blnhc_layout",
         "is_npu_layer_major_blnhc",
         "npu_flash_next_store_columns",
@@ -124,6 +126,7 @@ def hla():
             "_generate_hla_dispatch_meta",
             "update_state_after_alloc",
             "build_connector_meta",
+            "_create_store",
             "start_load_kv",
             "_start_load_kv_async",
             "_poll_pending_hla_loads",
@@ -196,6 +199,8 @@ def hla():
         "UCMConnectorMetadata",
         "build_kv_hash_meta",
         "_get_sparse_c8_flags",
+        "_get_store_io_sizes",
+        "_get_store_gc_block_size",
         "_record_counter",
     }
     connector_tree = ast.parse(connector_path.read_text(encoding="utf-8-sig"))
@@ -228,6 +233,7 @@ def hla():
     namespace = {
         "__name__": __name__,
         "math": math,
+        "copy": copy,
         "time": time,
         "np": np,
         "defaultdict": defaultdict,
@@ -252,6 +258,9 @@ def hla():
             device_type="npu", is_cuda_alike=lambda: False, is_cuda=lambda: False
         ),
         "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
+        "UcmConnectorFactoryV1": SimpleNamespace(
+            create_connector=lambda name, config, module_path: config
+        ),
         "Task": object,
         "request_hasher_module": SimpleNamespace(
             _layout_source_digest=lambda: "test-layout-digest"
@@ -1391,6 +1400,65 @@ def test_dump_writes_state_only_when_step_ends_on_lcm_boundary(
         )
     ]
     assert seq_lens == expected
+
+
+@pytest.mark.parametrize("scheduled_tokens", [4, 5])
+def test_dump_uses_exact_engine_checkpoint_block(hla, state_connector, scheduled_tokens):
+    req_meta = _restore_request_meta(hla)
+    req_meta.token_processed = 0
+    state_connector.requests_meta = {"req": req_meta}
+    state_connector._async_load_req_ids.add("req")
+    output = SimpleNamespace(
+        scheduled_new_reqs=[
+            SimpleNamespace(req_id="req", block_ids=([11, 12], [21, 22]))
+        ],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={"req": scheduled_tokens},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+        kv_connector_block_state=SimpleNamespace(
+            boundary_state_offloads={"req": [(1, 99, 4)]}
+        ),
+    )
+    dispatch = state_connector.build_connector_meta(output).request_meta["req"]
+    assert dispatch.dump_block_ids == ([b"fa0", b"checkpoint"], [11, 99])
+    assert dispatch.dump_group_ids == [0, 1]
+    assert dispatch.dump_full_attn_count == 1
+
+
+def test_cuda_blhnc_store_aligns_io_without_padding_copy_lengths(hla):
+    hla.current_platform.is_cuda = lambda: True
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._kv_cache_config = SimpleNamespace(kv_cache_layout="BLHNC")
+    connector.connector_configs = [
+        {
+            "ucm_connector_name": "UcmPipelineStore",
+            "ucm_connector_config": {"store_pipeline": "Cache|Posix", "io_direct": True},
+        }
+    ]
+    connector._role = hla.KVConnectorRole.WORKER
+    connector.is_mla = True
+    connector._get_world_size = lambda: 1
+    connector._configure_numa_placement = MagicMock()
+    connector._set_default_shm_buffer_capacity = MagicMock()
+    connector._publish_block_size = MagicMock()
+    connector._gc_owner = False
+    connector.unique_id = "test"
+    connector.blocks_per_chunk = 1
+    connector.device_id = 0
+    layout = SimpleNamespace(
+        tensor_size_list=[30_400_000],
+        shard_size=30_400_000,
+        block_size=30_400_000,
+        base_ptrs=np.array([4096]),
+        buffer_sizes=np.array([30_400_000]),
+    )
+
+    config = connector._create_store(layout)
+
+    assert config["tensor_size_list"] == [30_400_000]
+    assert config["shard_size"] == config["block_size"] == 30_400_512
+    connector._publish_block_size.assert_called_once_with(30_400_512)
 
 
 @pytest.mark.parametrize("row_count", [2, 3])

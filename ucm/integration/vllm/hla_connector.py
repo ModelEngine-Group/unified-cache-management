@@ -38,6 +38,8 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnectorMetadata,
     UCMDirectConnector,
     UCMLiteConnector,
+    _get_store_gc_block_size,
+    _get_store_io_sizes,
     _record_counter,
     _scheduler_read_block_size,
     _short_list,
@@ -2225,6 +2227,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         need_load: bool = True,
         request_id: str = "",
         incoming_block_ids_are_full: bool = False,
+        use_boundary_state_offloads: bool = False,
     ) -> HLARequestDispatchMeta:
         """Build a flat (ucm, vllm) block id pair list across all groups."""
         assert self.group_manager is not None
@@ -2325,13 +2328,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     gid,
                 )
             dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
-            # Pass 2: mamba and PLE state only when this step ends exactly on
+            # Legacy Mamba and PLE state only when this step ends exactly on
             # an LCM boundary. The state at last_lcm_b is then the running
             # state. A step that merely crosses a boundary leaves that slot
             # overwritten by the partial block, so it is not dumped.
             if dump_tok_end == last_lcm_b and last_lcm_b >= first_lcm_b:
                 for gid, group in enumerate(groups_by_id):
                     if not group.is_state_hash:
+                        continue
+                    if use_boundary_state_offloads and group.is_mamba_align:
                         continue
                     self._append_mamba_align_state_block(
                         dump_ucm_block_ids,
@@ -2365,6 +2370,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         empty_per_group: tuple[list[int], ...] = tuple([] for _ in range(num_groups))
 
         requests_dispatch_meta: dict[str, HLARequestDispatchMeta] = {}
+        block_state = getattr(scheduler_output, "kv_connector_block_state", None)
+        boundary_offloads = getattr(block_state, "boundary_state_offloads", None)
+        use_boundary_state_offloads = boundary_offloads is not None
 
         # vLLM reports a preemption only in the step that frees the blocks.
         # Newer releases no longer flag the resumed request on CachedRequestData.
@@ -2390,6 +2398,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 need_load=request_id not in self._async_load_req_ids,
                 request_id=request_id,
                 incoming_block_ids_are_full=True,
+                use_boundary_state_offloads=use_boundary_state_offloads,
             )
 
         # Same three situations as the parent: chunked prefill (dump only),
@@ -2429,6 +2438,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     and request_id not in self._async_load_req_ids,
                     request_id=request_id,
                     incoming_block_ids_are_full=resumed_from_preemption,
+                    use_boundary_state_offloads=use_boundary_state_offloads,
                 )
         else:
             for request in scheduled_cached_reqs:
@@ -2445,6 +2455,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     and request_id not in self._async_load_req_ids,
                     request_id=request_id,
                     incoming_block_ids_are_full=request.resumed_from_preemption,
+                    use_boundary_state_offloads=use_boundary_state_offloads,
                 )
 
         for request_id in scheduler_output.finished_req_ids:
@@ -2455,6 +2466,35 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         requests_dispatch_meta.update(self._pending_async_load_dispatches)
         self._pending_async_load_dispatches = {}
+        for request_id, offloads in (boundary_offloads or {}).items():
+            req_meta = self.requests_meta.get(request_id)
+            if req_meta is None:
+                continue
+            # Multiple offers for one prefix share a Store key. Use the last
+            # snapshot and preserve the full-attention prefix of the dump list.
+            checkpoints = {
+                (gid, boundary): block_id
+                for gid, block_id, boundary in offloads
+                if block_id > 0 and 0 <= gid < num_groups
+            }
+            for (gid, boundary), block_id in checkpoints.items():
+                group = self.group_manager.groups_by_id[gid]
+                if not group.is_mamba_align or boundary > req_meta.num_token_ids:
+                    continue
+                key = self.group_manager.compute_mamba_align_state_hash(
+                    group, boundary, req_meta.group_ucm_block_ids
+                )
+                if key is None:
+                    continue
+                if request_id not in requests_dispatch_meta:
+                    requests_dispatch_meta[request_id] = HLARequestDispatchMeta(
+                        load_block_ids=([], []), dump_block_ids=([], [])
+                    )
+                dispatch = requests_dispatch_meta[request_id]
+                dump_keys, dump_blocks = dispatch.dump_block_ids
+                dump_keys.append(key)
+                dump_blocks.append(block_id)
+                dispatch.dump_group_ids.append(gid)
 
         return UCMConnectorMetadata(
             requests_dispatch_meta,
@@ -2667,7 +2707,18 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             config["shard_size"] = shard_size * self.blocks_per_chunk
             config["block_size"] = block_size * self.blocks_per_chunk
-            self._publish_block_size(config["block_size"])
+            gc_block_size = config["block_size"]
+            if is_cuda_blhnc_layout(self._kv_cache_config):
+                config["shard_size"], config["block_size"] = _get_store_io_sizes(
+                    config["shard_size"], config["block_size"]
+                )
+                gc_block_size = _get_store_gc_block_size(
+                    str(config.get("store_pipeline", "")),
+                    config["tensor_size_list"],
+                    config["shard_size"],
+                    config["block_size"],
+                )
+            self._publish_block_size(gc_block_size)
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()
