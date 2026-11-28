@@ -3019,7 +3019,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_layer_load_wait_duration_sum_ms = 0.0
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
-        logger.info("Init UCMLayerWiseConnector.")
+        self.layerwise_prefetch_depth = max(1, int(self.launch_config.get("layerwise_prefetch_depth", 1) or 1))
+        self._submitted_layer_ids: set[int] = set()
+        logger.info(f"Init UCMLayerWiseConnector. prefetch_depth={self.layerwise_prefetch_depth}")
 
     @staticmethod
     def _pp_stage_name(pp_rank: int, layer_start: int, layer_count: int) -> str:
@@ -3338,6 +3340,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # vLLM may defer start_load_kv until after forward on steps without
         # synchronous loads. Reset batch state before any attention hooks run.
         self._dumped_layer_ids.clear()
+        self._submitted_layer_ids = set()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
@@ -3348,6 +3351,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_load_bytes = 0
         self._layerwise_save_bytes = 0
         self.dump_total_ptrs = None
+
+    def _reset_submitted_layers(self) -> None:
+        self._submitted_layer_ids = set()
+
+    def _mark_layer_submitted(self, layer_id: int) -> None:
+        if not hasattr(self, "_submitted_layer_ids"):
+            self._submitted_layer_ids = set()
+        self._submitted_layer_ids.add(layer_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         first_layer_load_start = time.perf_counter()
@@ -3378,6 +3389,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 metadata,
                 first_layer_load_start,
             )
+            self._mark_layer_submitted(self.first_layer_id)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata:
@@ -3422,14 +3434,22 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             current_layer_id, wait_end
         )
 
-        next_layer_id = current_layer_id + 1
-        has_next = next_layer_id in self.layer_ids
-        if has_next:
+        prefetch_depth = max(1, int(getattr(self, "layerwise_prefetch_depth", 1) or 1))
+        has_next = False
+        for next_layer_id in range(
+            current_layer_id + 1, current_layer_id + prefetch_depth + 1
+        ):
+            if next_layer_id not in self.layer_ids:
+                break
+            has_next = True
+            if next_layer_id in getattr(self, "_submitted_layer_ids", ()):
+                continue
             next_local_row = next_layer_id - self.first_layer_id
             self._submit_request_load_tasks_for_layer(
                 next_layer_id, next_local_row, metadata
             )
-        elif load_duration_recorded:
+            self._mark_layer_submitted(next_layer_id)
+        if not has_next and load_duration_recorded:
             duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
             wait_duration_sum_ms = self._layerwise_layer_load_wait_duration_sum_ms
             ucmmetrics.update_stats(
