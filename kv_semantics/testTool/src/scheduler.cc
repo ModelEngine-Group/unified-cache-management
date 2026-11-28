@@ -472,7 +472,6 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
     request.keys.reserve(task.entries.size());
     request.keyHighs.reserve(task.entries.size());
     request.rawKeys.reserve(task.entries.size());
-    request.prefixLens.reserve(task.entries.size());
     request.entries.reserve(task.entries.size());
 
     // mode1 种子串时间戳 batch 内共用，for 外生成一次
@@ -530,14 +529,6 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
         request.keys.emplace_back(key);
         request.keyHighs.emplace_back(orc.keyHigh16);
         request.rawKeys.emplace_back(orc.rawKey);
-        // 明细日志 value 读回长度：mode1 为 keyLow/keyHigh/offset 三数十进制位数加
-        // 两个空格分隔，mode2 为完整块长度
-        const std::string keyLowStr = std::to_string(orc.keyLow64);
-        const std::string keyHighStr = std::to_string(orc.keyHigh16);
-        const std::string offsetStr = std::to_string(orc.offset);
-        request.prefixLens.emplace_back(testmode == 2 ? static_cast<std::size_t>(orc.length)
-                                                      : keyLowStr.size() + keyHighStr.size() +
-                                                            offsetStr.size() + 2);
         request.entries.emplace_back(entry);
     }
     return true;
