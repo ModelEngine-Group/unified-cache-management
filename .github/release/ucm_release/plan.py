@@ -569,7 +569,7 @@ def resolve_plan(
         if not chart_version:
             raise ValueError("Chart version override must not be empty")
         chart["version"] = chart_version
-    coordinates = version_config.validate_custom_draft_identity(
+    coordinates = version_config.validate_local_release_identity(
         resolved_version,
         resolved_git_tag,
         resolved_release_type,

@@ -1,11 +1,12 @@
 /**
  * Copyright (c) 2025 Huawei Technologies Co., Ltd.
- * This program is free software, you can redistribute it and/or modify it under the terms and
-conditions of  * CANN Open Software License Agreement Version 2.0 (the "License").  * Please refer
-to the License for details. You may not use this file except in compliance with the License.  * THIS
-SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
- * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR
-PURPOSE.  * See LICENSE in the root of the software repository for the full text of the License.  */
+ * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+ * CANN Open Software License Agreement Version 2.0 (the "License").
+ * Please refer to the License for details. You may not use this file except in compliance with the License.
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+ * See LICENSE in the root of the software repository for the full text of the License.
+ */
 
 /*!
  * \file kv_quant_sparse_flash_attention_common.h
@@ -21,8 +22,7 @@ PURPOSE.  * See LICENSE in the root of the software repository for the full tex
 
 using namespace AscendC;
 // 将isCheckTiling设置为false, 输入输出的max&sum&exp的shape为(m, 1)
-constexpr SoftmaxConfig QSFA_SOFTMAX_FLASHV2_CFG_WITHOUT_BRC = {
-    false, 0, 0, SoftmaxMode::SOFTMAX_OUTPUT_WITHOUT_BRC};
+constexpr SoftmaxConfig QSFA_SOFTMAX_FLASHV2_CFG_WITHOUT_BRC = {false, 0, 0, SoftmaxMode::SOFTMAX_OUTPUT_WITHOUT_BRC};
 
 enum class QSFA_LAYOUT {
     BSND = 0,
@@ -31,25 +31,24 @@ enum class QSFA_LAYOUT {
 };
 
 enum class QUANT_MODE {
-    PER_CHANNEL = 0,     // GQA支持
-    PER_TOKEN_HEAD = 1,  // GQA支持
-    PER_TILE = 2,        // MLA支持
+    PER_CHANNEL = 0,  // GQA支持
+    PER_TOKEN_HEAD = 1, // GQA支持
+    PER_TILE = 2,   // MLA支持
 };
 
 enum class ATTENTION_MODE {
-    GQA_MHA = 0,     // QKV headDim相等
-    MLA_NATIVE = 1,  // Dn=128, Dr=64
-    MLA_ABSORB = 2,  // Dn=512, Dr=64
+    GQA_MHA = 0,  // QKV headDim相等
+    MLA_NATIVE = 1, // Dn=128, Dr=64
+    MLA_ABSORB = 2,   // Dn=512, Dr=64
 };
 
 enum class QUANT_SCALE_REPO_MODE {
     SEPARATE = 0,  // 分开存储
-    COMBINE =
-        1,  // 合并存储，量化模式是PER_TOKEN_HEAD/PER_TILE时支持COMBINE模式，参数顺序为：Nope+Rope+DequantScale
+    COMBINE = 1, // 合并存储，量化模式是PER_TOKEN_HEAD/PER_TILE时支持COMBINE模式，参数顺序为：Nope+Rope+DequantScale
 };
 
 template <typename Q_T, typename KV_T, typename OUT_T, const bool FLASH_DECODE = false,
-          QSFA_LAYOUT LAYOUT_T = QSFA_LAYOUT::BSND, QSFA_LAYOUT KV_LAYOUT_T = QSFA_LAYOUT::BSND,
+	  QSFA_LAYOUT LAYOUT_T = QSFA_LAYOUT::BSND, QSFA_LAYOUT KV_LAYOUT_T = QSFA_LAYOUT::BSND,
           const int TEMPLATE_MODE = C_TEMPLATE, typename... Args>
 struct QSFAType {
     using queryType = Q_T;
@@ -64,22 +63,21 @@ struct QSFAType {
 };
 
 // ================================Util functions==================================
-template <typename T>
-__aicore__ inline T QSFAAlign(T num, T rnd)
+template <typename T> __aicore__ inline T QSFAAlign(T num, T rnd)
 {
-    return (((rnd) == 0) ? 0 : (((num) + (rnd)-1) / (rnd) * (rnd)));
+    return (((rnd) == 0) ? 0 : (((num) + (rnd) - 1) / (rnd) * (rnd)));
 }
 
-template <typename T>
-__aicore__ inline size_t BlockAlign(size_t s)
+template <typename T> __aicore__ inline size_t BlockAlign(size_t s)
 {
-    if constexpr (IsSameType<T, int4b_t>::value) { return (s + 63) / 64 * 64; }
+    if constexpr (IsSameType<T, int4b_t>::value) {
+        return (s + 63) / 64 * 64;
+    }
     size_t n = (32 / sizeof(T));
     return (s + n - 1) / n * n;
 }
 
-template <typename T1, typename T2>
-__aicore__ inline T1 Min(T1 a, T2 b)
+template <typename T1, typename T2> __aicore__ inline T1 Min(T1 a, T2 b)
 {
     return (a > b) ? (b) : (a);
 }
@@ -128,7 +126,9 @@ struct RunInfo {
     uint32_t actMBaseSize;
     int32_t nextTokensPerBatch = 0;
     bool isLastS2Loop;
-    uint8_t resv[3];
+    // splitKV(C): 当前(task,part)子任务在全局sub序列中的编号，用于FD workspace寻址
+    // sub编号 = taskIdx<tailStart ? taskIdx : tailStart+(taskIdx-tailStart)*P+part
+    uint32_t splitSubIdx = 0;
     int64_t threshold;
 };
 
@@ -137,7 +137,6 @@ struct ConstInfo {
     static constexpr uint32_t QSFA_SYNC_MODE2 = 2;
     // BUFFER的字节数
     static constexpr uint32_t BUFFER_SIZE_BYTE_1K = 1024;
-    static constexpr uint32_t BUFFER_SIZE_BYTE_2K = 2048;
     static constexpr uint32_t BUFFER_SIZE_BYTE_4K = 4096;
     static constexpr uint32_t BUFFER_SIZE_BYTE_8K = 8192;
     static constexpr uint32_t BUFFER_SIZE_BYTE_16K = 16384;
@@ -158,24 +157,23 @@ struct ConstInfo {
     uint32_t syncC1V1 = 0U;
     uint32_t syncV1C2 = 0U;
     uint32_t syncC2V2 = 0U;
-    uint32_t syncC2V1 = 0U;
     uint32_t syncV1NupdateC2 = 0U;
 
-    uint32_t mmResUbSize = 0U;    // Matmul1输出结果GM上的大小
-    uint32_t vec1ResUbSize = 0U;  // Vector1输出结果GM上的大小
-    uint32_t bmm2ResUbSize = 0U;  // Matmul2输出结果GM上的大小
+    uint32_t mmResUbSize = 0U;   // Matmul1输出结果GM上的大小
+    uint32_t vec1ResUbSize = 0U; // Vector1输出结果GM上的大小
+    uint32_t bmm2ResUbSize = 0U; // Matmul2输出结果GM上的大小
     uint64_t gSize = 0ULL;
     uint64_t batchSize = 0ULL;
     uint64_t qHeadNum = 0ULL;
     uint64_t kvHeadNum;
     uint64_t headDim;
     uint64_t headDimRope;
-    uint64_t combineHeadDim;  // quantScaleRepoMode为Combine模式时=headDim+headDimRope, 否则=headDim
-    uint64_t kvSeqSize = 0ULL;         // kv最大S长度
-    uint64_t qSeqSize = 1ULL;          // q最大S长度
-    int64_t kvCacheBlockSize = 0;      // PA场景的block size
-    uint32_t maxBlockNumPerBatch = 0;  // PA场景的最大单batch block number
-    uint32_t splitKVNum = 0U;          // S2核间切分的切分份数
+    uint64_t combineHeadDim; // quantScaleRepoMode为Combine模式时=headDim+headDimRope, 否则=headDim
+    uint64_t kvSeqSize = 0ULL;        // kv最大S长度
+    uint64_t qSeqSize = 1ULL;         // q最大S长度
+    int64_t kvCacheBlockSize = 0;    // PA场景的block size
+    uint32_t maxBlockNumPerBatch = 0; // PA场景的最大单batch block number
+    uint32_t splitKVNum = 0U;         // S2核间切分的切分份数
     QSFA_LAYOUT outputLayout;          // 输出的Transpose格式
     uint32_t sparseMode = 0;
     bool needInit = false;
@@ -183,14 +181,25 @@ struct ConstInfo {
     // FlashDecoding
     uint64_t combineLseOffset = 0ULL;
     uint64_t combineAccumOutOffset = 0ULL;
-    uint32_t actualCombineLoopSize = 0U;  // FlashDecoding场景, S2在核间切分的最大份数
+    uint32_t actualCombineLoopSize = 0U; // FlashDecoding场景, S2在核间切分的最大份数
 
     uint32_t actualLenDimsQ = 0U;   // query的actualSeqLength 的维度
     uint32_t actualLenDimsKV = 0U;  // KV 的actualSeqLength 的维度
 
     // TND
-    uint32_t s2Start = 0U;  // TND场景下，S2的起始位置
-    uint32_t s2End = 0U;    // 单核TND场景下S2循环index上限
+    uint32_t s2Start = 0U; // TND场景下，S2的起始位置
+    uint32_t s2End = 0U;   // 单核TND场景下S2循环index上限
+
+    // 本核在全局 sub 序列上的区间 [splitSubStart, splitSubEnd)
+    uint32_t splitSubStart = 0U;
+    uint32_t splitSubEnd = 0U;
+    // 本核首个被枚举任务的全局编号
+    uint32_t splitTaskStart = 0U;
+    // 尾波切分参数——kernel按真实任务总数推导tailStart=taskNumKernel-tailTaskNum
+    uint32_t splitTailTaskNum = 0U;
+    uint32_t splitTailStart = 0U;   // 真实尾波起点(=taskNumKernel-tailTaskNum)
+    uint32_t splitTaskNumKernel = 0U; // kernel枚举出的真实任务总数
+    uint32_t splitS2LoopsEst = 0U;  // host估计的每任务s2迭代数L(加权分核用)
 
     uint32_t bN2Start = 0U;
     uint32_t bN2End = 0U;
@@ -200,15 +209,13 @@ struct ConstInfo {
     uint32_t mBaseSize = 1ULL;
     uint32_t s2BaseSize = 1ULL;
 
-    uint32_t tndFDCoreArrLen = 0U;      // TNDFlashDecoding相关分核信息array的长度
-    uint32_t coreStartKVSplitPos = 0U;  // TNDFlashDecoding kv起始位置
+    uint32_t tndFDCoreArrLen = 0U;     // TNDFlashDecoding相关分核信息array的长度
+    uint32_t coreStartKVSplitPos = 0U; // TNDFlashDecoding kv起始位置
 
     // sparse attr
     uint32_t sparseBlockCount = 0;
     int64_t sparseBlockSize = 0;
-    // GSA-P1: 有效 sparse count（host侧扫描非-1的个数，0/等于sparseBlockCount表示全有效）
-    uint32_t effectiveSparseCount = 0;
-    // GSA-v2: 是否返回 softmax_max / softmax_sum
+    // 是否返回 softmax_max / softmax_sum
     uint32_t returnSoftmaxLse = 0;
 
     // attention模式与量化模式
@@ -227,4 +234,13 @@ struct MSplitInfo {
     uint32_t vecDealM = 0U;
 };
 
-#endif  // KV_QUANT_SPARSE_FLASH_ATTENTION_COMMON_H
+// combine 阶段的任务描述符，记录本核持有 part 0 的尾波切分任务
+// C阶段仅尾波任务(共x个)参与combine，单核owner任务数<=ceil(x/aicNum)+1，数组长度留有余量
+struct SplitKVTaskInfo {
+    uint64_t attenOutOffset = 0ULL; // 任务输出行0在attentionOut上的偏移(元素,TND/BSND各自公式)
+    uint32_t subBase = 0U;          // 任务part 0在全局sub序列中的编号(FD寻址基)
+    uint32_t partNum = 0U;          // 任务切分数P(仅尾波任务>1)
+    uint32_t s2Loops = 0U;          // 任务完整的s2迭代次数L(分part前)
+};
+
+#endif // KV_QUANT_SPARSE_FLASH_ATTENTION_COMMON_H

@@ -24,7 +24,6 @@ def indexer_select_post_process(
     use_torch_npu_lightning_indexer: bool,
 ) -> torch.Tensor:
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     # DSV3.2 currently has graph compilation issues when using torch_npu.npu.lightning_indexer.
     # So two branches are maintained temporarily.
@@ -35,7 +34,6 @@ def indexer_select_post_process(
 
     if (
         has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and sfa_impl.layer_id < sfa_impl.layer_num
         and (
             sfa_impl.is_pdmix
@@ -149,6 +147,14 @@ def execute_sparse_flash_attention_process(
             actual_seq_lengths_key,
             sparse_mode=sparse_mode,
             return_lse=return_lse,
+            # actual_sparse_lengths: per-req 真实 topk 长度（kernel 按 bIdx=req
+            # 索引读取，batchSize = len(actual_seq_lengths_query)），由 gsa.py
+            # _update_attn_gsa_lens 准备（decode 分支下发 per-req 数组：swap req=
+            # SPA_TOKENS_LEN，非 swap=DEFAULT_TOPK_LEN，padding req=0；prefill
+            # 分支置 None——两次 SFA 的 topk 均全宽有效且 swap 子批是重排 batch，
+            # 全量数组行号与其不对应），用于 kernel 跳过 topk_indices 尾部 -1
+            # padding 的迭代与 padding req。
+            actual_sparse_lengths=getattr(attn_metadata, "actual_sparse_lengths", None),
         )
 
     key_rope = kv_cache[1]
@@ -185,12 +191,92 @@ def execute_sparse_flash_attention_process(
     )
 
 
+def execute_kv_quant_sparse_flash_attention(
+    cls,
+    sfa_impl,
+    ql_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    kv: torch.Tensor,
+    block_table: torch.Tensor,
+    topk_indices: torch.Tensor,
+    actual_seq_lengths_query: torch.Tensor,
+    actual_seq_lengths_key: torch.Tensor,
+    *,
+    sparse_mode: int = 3,
+    return_lse: bool = False,
+    actual_sparse_lengths: torch.Tensor | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """A3 (BaseDeviceAdaptor) C8 sparse attention via torch.ops._C_gsa.
+
+    Replaces ``BaseDeviceAdaptor.execute_kv_quant_sparse_flash_attention``
+    (vllm-ascend device_op.py) which calls
+    ``torch.ops._C_ascend.npu_kv_quant_sparse_flash_attention``. The GSA op
+    (``torch.ops._C_gsa.npu_kv_quant_sparse_flash_attention_gsa``, registered
+    in ops/torch_binding.cpp) is the same aclnn-backed kernel but lives in the
+    standalone gsa_ops wheel so it no longer depends on the build-time
+    vllm-ascend csrc patch.
+
+    Parameter mapping: the GSA op accepts the same keyword args as the ascend
+    op plus 6 optional ones (key_dequant_scale / value_dequant_scale / sinks /
+    actual_sparse_lengths / pre_tokens / next_tokens). ``actual_sparse_lengths``
+    is a per-req 真实 topk 长度数组（kernel 按 bIdx=req 索引读取，batchSize =
+    len(actual_seq_lengths_query) = req 数；gsa.py _update_attn_gsa_lens 准备：
+    decode 分支下发，swap req=SPA_TOKENS_LEN / 非 swap=DEFAULT_TOPK_LEN /
+    padding req=0 即跳过；prefill 分支置 None——两次 SFA 的 topk 均全宽有效且
+    swap 子批是重排 batch，全量数组行号与其不对应），kernel 用它跳过
+    topk_indices 尾部 -1 padding 迭代与 padding req（5120-padding-1 性能关键）；
+    其余 5 个 optional 默认 None，省略以匹配原调用面。``key_quant_mode`` /
+    ``value_quant_mode`` 在 GSA schema 中位于 optional args 之前（见
+    torch_binding.cpp:223-235），用 keyword 传递以避免位置依赖。
+    """
+    query = torch.cat([ql_nope, q_pe], dim=-1).contiguous()
+    result = torch.ops._C_gsa.npu_kv_quant_sparse_flash_attention_gsa(
+        query=query,
+        key=kv,
+        value=kv,
+        sparse_indices=topk_indices,
+        scale_value=sfa_impl.scale,
+        key_quant_mode=2,
+        value_quant_mode=2,
+        block_table=block_table,
+        actual_seq_lengths_query=actual_seq_lengths_query,
+        actual_seq_lengths_kv=actual_seq_lengths_key,
+        actual_sparse_lengths=actual_sparse_lengths,
+        sparse_block_size=1,
+        layout_query="TND",
+        layout_kv="PA_BSND",
+        sparse_mode=sparse_mode,
+        attention_mode=2,
+        quant_scale_repo_mode=1,
+        tile_size=getattr(sfa_impl, "sfa_qsfa_tile_size", 128),
+        rope_head_dim=getattr(sfa_impl, "qk_rope_head_dim", q_pe.shape[-1]),
+        return_softmax_lse=return_lse,
+    )
+    if not isinstance(result, tuple):
+        if return_lse:
+            raise RuntimeError(
+                "C8 sparse flash attention did not return softmax max/sum for DCP LSE merge."
+            )
+        return result
+    attn_output, softmax_max, softmax_sum = result
+    return BaseDeviceAdaptor._format_sparse_flash_attention_output(
+        attn_output,
+        softmax_max,
+        softmax_sum,
+        return_lse,
+    )
+
+
 # NOTE: A3 (BaseDeviceAdaptor) and A5 (A5DeviceAdaptor) intentionally use
 # different indexer implementations. The function above (the first
-# ``indexer_select_post_process``) is the A3/DSV3.2 path: it routes through
-# ``torch.ops._C_ascend.*`` to avoid graph compilation issues observed when
-# using ``torch_npu.npu_lightning_indexer`` on A3. The function below is the
-# A5 path, which goes through ``torch_npu.*`` directly.
+# ``indexer_select_post_process``) is the A3/DSV3.2 path: it routes the
+# lightning indexer through ``torch.ops._C_ascend.*`` (npu_lightning_indexer /
+# npu_lightning_indexer_quant, not yet migrated to gsa_ops) to avoid graph
+# compilation issues observed when using ``torch_npu.npu_lightning_indexer``
+# on A3. The C8 sparse attention path (``execute_kv_quant_sparse_flash_attention``
+# above) is routed through ``torch.ops._C_gsa.npu_kv_quant_sparse_flash_attention_gsa``
+# (standalone gsa_ops wheel). The function below is the A5 path, which goes
+# through ``torch_npu.*`` directly.
 #
 # They MUST keep distinct names. If both are named
 # ``indexer_select_post_process`` the second ``def`` shadows the first at
@@ -211,14 +297,12 @@ def indexer_select_post_process_a5(
     use_torch_npu_lightning_indexer: bool,
 ) -> torch.Tensor:
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     packed_kv_cache = getattr(sfa_impl, "enable_sparse_sfa_c8", False)
     indexer_cache_idx = 1 if packed_kv_cache else 2
     indexer_scale_cache_idx = 2 if packed_kv_cache else 3
     if (
         has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and sfa_impl.layer_id < sfa_impl.layer_num
         and (
             sfa_impl.is_pdmix
@@ -326,6 +410,29 @@ def _patch(mod):
         )
         logger.info(
             "UCM GSA BaseDeviceAdaptor.execute_sparse_flash_attention_process patch applied"
+        )
+
+    if hasattr(mod.BaseDeviceAdaptor, "execute_kv_quant_sparse_flash_attention"):
+        # Route C8 (kv-quant) sparse attention through torch.ops._C_gsa
+        # (standalone gsa_ops wheel) instead of torch.ops._C_ascend.
+        _patched = FunctionType(
+            execute_kv_quant_sparse_flash_attention.__code__,
+            vars(mod),
+            name=execute_kv_quant_sparse_flash_attention.__name__,
+            argdefs=execute_kv_quant_sparse_flash_attention.__defaults__,
+            closure=execute_kv_quant_sparse_flash_attention.__closure__,
+        )
+        _patched.__annotations__ = (
+            execute_kv_quant_sparse_flash_attention.__annotations__
+        )
+        _patched.__kwdefaults__ = execute_kv_quant_sparse_flash_attention.__kwdefaults__
+        patch_or_inject(
+            mod.BaseDeviceAdaptor,
+            "execute_kv_quant_sparse_flash_attention",
+            classmethod(_patched),
+        )
+        logger.info(
+            "UCM GSA BaseDeviceAdaptor.execute_kv_quant_sparse_flash_attention patch applied"
         )
 
     if hasattr(mod.A5DeviceAdaptor, "indexer_select_post_process"):

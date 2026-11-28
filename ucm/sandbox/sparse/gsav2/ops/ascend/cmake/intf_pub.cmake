@@ -21,6 +21,7 @@ target_include_directories(intf_pub
             ${ASCEND_CANN_PACKAGE_PATH}/include/experiment/platform
             ${ASCEND_CANN_PACKAGE_PATH}/include/experiment/runtime
             ${ASCEND_CANN_PACKAGE_PATH}/include/experiment/msprof
+            ${CMAKE_CURRENT_SOURCE_DIR}/common/include
 )
 target_link_directories(intf_pub
         INTERFACE

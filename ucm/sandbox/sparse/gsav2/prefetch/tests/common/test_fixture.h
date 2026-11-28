@@ -34,9 +34,7 @@ inline std::vector<int> MakeModelInfo(int layerNum = 2, int maxBlockLen = 4096, 
 /* Build a std::vector<int> of the 5 sizeinfo slots. */
 inline std::vector<int> MakeSizeInfo(int blockSize = 4, int numHead = 1, int kDim = 4, int vDim = 4,
                                      int elementSize = 2)
-{
-    return {blockSize, numHead, kDim, vDim, elementSize};
-}
+{ return {blockSize, numHead, kDim, vDim, elementSize}; }
 
 /* Unique shared-memory names per test avoid cross-test collisions when the
  * previous run did not clean up. Returns a never-used dp rank id. */

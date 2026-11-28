@@ -73,6 +73,7 @@ def test_runtime_install_uses_local_wheel_and_propagates_failure(
     assert completed.returncode == status, completed.stderr
     calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     pinned_runtime = os.environ["RUNTIME_IMAGE"]
+    assert calls.pop(0) == ["info", "--format", "{{.DockerRootDir}}"]
     assert len(calls) == 2  # No Runtime/Builder retry after a validation failure.
     assert calls[0] == ["pull", "--platform", "linux/arm64", pinned_runtime]
     assert calls[1][:6] == [

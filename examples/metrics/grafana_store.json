@@ -844,7 +844,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "- `queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；Load 任务从提交到调度线程取出的等待时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / 开始处理任务时。\n- `backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；分配 Cache buffer 并向下层 Store 提交 Load 的耗时。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::DispatchOneTask` / shard 分发完成后。\n- `backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；单个 Load shard 等待 Cache buffer 或下层 Load 任务就绪的时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `WaitShardReady` 返回后。\n- `H2D sync`：指标 `ucm:cache_h2d_sync_ms`；最后一组 shard 的 H2D stream 同步耗时。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::SynchronizeH2d` / stream 同步完成后。\n- `h2d submit & other`：计算方法 `Load 总耗时 - queue wait - backend submit - backend wait - H2D sync`；总耗时扣除其他分段平均耗时后的估算值。总耗时代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。",
+      "description": "本面板所有曲线均为**任务级**指标：每个 Cache Load 任务恰好一条采样（在任务完成回调中上报），因此各段平均值可以直接对比。\n- `H2D sync`：指标 `ucm:cache_h2d_sync_ms`；任务最后一个 shard 提交后等待 H2D stream 排空的耗时。代码位置：`ucm/store/cache/v2/load_queue.h` / `SynchronizeH2d`。\n- `waiting queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；任务从提交到被分发线程取出的等待。代码位置：`DispatchOneTask` 入口。\n- `backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；分配 Cache buffer 并向下层 Store 提交 Load 的耗时。代码位置：shard 分发完成后。\n- `backend wait`：指标 `ucm:cache_task_total_backend_wait_ms`；任务内所有 shard 等待下层 Load 完成的时间之和（`cache_shard_backend_wait_ms` 的任务级汇总）。代码位置：`WaitShardReady`累加，任务完成回调上报。\n- `cache ready wait`：指标 `ucm:cache_task_total_ready_wait_ms`；任务内所有 shard 轮询等待 Cache 槽位就绪的时间之和（`cache_shard_ready_wait_ms` 的任务级汇总；槽位被其它在飞任务占用时才产生）。\n- `H2D submit`：指标 `ucm:cache_task_total_h2d_submit_ms`；任务内所有 shard 提交异步 H2D/D2D 拷贝的 CPU 耗时之和（`cache_h2d_submit_ms` 的任务级汇总）。代码位置：`ScatterShard` 累加，任务完成回调上报。\n- `running queue wait`：计算方式 `ucm:cache_load_duration_ms` 减去上面六段的平均耗时（结果 clamp 到 0），表示任务总耗时中未被上述阶段覆盖的部分，主要为分片在 running 队列中的排队等待（以及极少量队列/锁/槽位释放与线程调度开销）。\n注意：`backend wait` / `cache ready wait` / `H2D submit` 都由唯一的传输线程串行执行，彼此不重叠；`waiting queue wait` 与 `backend submit` 都在分发线程上且首尾相接，也不重叠。但 `backend submit` 所在的分发线程可能与传输线程并行执行，因此 `running queue wait` 仍是估算值，可能被 clamp 到 0。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -927,8 +927,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
-          "legendFormat": "queue wait {{engine}} {{worker_rank}}",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
+          "legendFormat": "H2D sync {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
         },
@@ -938,8 +938,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
-          "legendFormat": "backend submit {{engine}} {{worker_rank}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\n(sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
+          "legendFormat": "waiting queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
         },
@@ -949,19 +949,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  /\n  sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)\nor\n(\n  0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)",
-          "legendFormat": "backend wait {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "E"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n      /\n      sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n    or\n    (\n      0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n      /\n      sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n    or\n    (\n      0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    )\n  ),\n  0\n)",
-          "legendFormat": "h2d submit & other {{engine}} {{worker_rank}}",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
+          "legendFormat": "backend submit {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "C"
         },
@@ -971,10 +960,43 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)\nor\n(\n  0 * sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n)",
-          "legendFormat": "H2D sync {{engine}} {{worker_rank}}",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_task_total_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
+          "legendFormat": "backend wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_task_total_ready_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_ready_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
+          "legendFormat": "cache ready wait {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_task_total_h2d_submit_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_h2d_submit_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
+          "legendFormat": "H2D submit {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n    /\n    (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_h2d_sync_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_load_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_task_total_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_task_total_ready_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_ready_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_task_total_h2d_submit_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_task_total_h2d_submit_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  ),\n  0\n)",
+          "legendFormat": "running queue wait {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "G"
         }
       ],
       "title": "Cache Load Avg Breakdown",
@@ -985,7 +1007,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标与代码位置：\n- `ucm:cache_dump_queue_wait_duration_ms`：Dump 任务从提交到调度线程取出的等待时间。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:cache_dump_mkbuf_duration_ms`：准备 Cache buffer 并提交 D2H 异步拷贝的耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / buffer 准备完成后。\n- `ucm:cache_d2h_duration_ms`：包含前置计算等待的 D2H stream 同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / stream 同步完成后。\n- `ucm:cache_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。\n- `ucm:cache_dump_duration_ms`：Dump 任务端到端耗时。位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。\n`other` 为总耗时减去前四项平均耗时后的估算值。",
+      "description": "指标与代码位置：\n- `ucm:cache_dump_queue_wait_duration_ms`：Dump 任务从提交到调度线程取出的等待时间。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:cache_dump_mkbuf_duration_ms`：准备 Cache buffer 并提交 D2H 异步拷贝的耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / buffer 准备完成后。\n- `ucm:cache_d2h_duration_ms`：包含前置计算等待的 D2H stream 同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / stream 同步完成后。\n- `ucm:cache_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的同步耗时。位置：`ucm/store/cache/v2/dump_queue.h` / `DumpQueue::DumpOneTask` / `backend_->Dump` 返回后。\n- `ucm:cache_dump_duration_ms`：Dump 任务端到端耗时。位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / waiter 完成回调。\n`other` 为总耗时减去前四项平均耗时后的估算值；cache-only 模式（无 backend）下 `backend submit` 按 0 处理，全去重任务（无实际 D2H）下 `D2H sync` 同理。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1068,7 +1090,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\n(sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
           "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
@@ -1079,7 +1101,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
           "legendFormat": "mkbuf {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
@@ -1090,7 +1112,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
           "legendFormat": "D2H sync (include wait compute) {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "D"
@@ -1101,7 +1123,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "(\n  sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  /\n  (sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)\nor\n(\n  0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n)",
           "legendFormat": "backend submit {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "E"
@@ -1112,7 +1134,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n    /\n    (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_dump_mkbuf_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_d2h_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_submit_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:cache_dump_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  ),\n  0\n)",
           "legendFormat": "other {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "F"
@@ -1126,7 +1148,277 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_load_bytes_total` 表示 Cache Load 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+      "description": "Cache Load 两级队列的进出速率。\n- `waiting enqueue` / `waiting dequeue`：`ucm:cache_load_waiting_enqueue_total` / `ucm:cache_load_waiting_dequeue_total`，**任务**粒度；入队 = `Submit` 成功，出队 = `DispatchOneTask` 入口。代码位置：`ucm/store/cache/v2/load_queue.h` / `Submit`、`DispatchOneTask`。\n- `running enqueue` / `running dequeue`：`ucm:cache_load_running_enqueue_total` / `ucm:cache_load_running_dequeue_total`，**分片**粒度；入队 = 分发线程 push shard，出队 = `TransferOneTask` 入口。代码位置：同上 / `DispatchShards`、`TransferOneTask`。\n- 两条队列粒度不同：`running enqueue ÷ waiting dequeue` ≈ 每个任务的平均分片数。\n- 入队持续高于出队说明下游线程跟不上：waiting 只进不出 = 分发线程停滞；running 只进不出 = 传输线程停滞。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: ops/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "id": 83,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_waiting_enqueue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "waiting enqueue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_waiting_dequeue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "waiting dequeue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_running_enqueue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "running enqueue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_running_dequeue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "running dequeue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Load Queue Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache Dump 两级队列的进出速率。\n- `waiting enqueue` / `waiting dequeue`：`ucm:cache_dump_waiting_enqueue_total` / `ucm:cache_dump_waiting_dequeue_total`，**任务**粒度；入队 = `Submit` 成功，出队 = `DispatchOneTask` 入口（D2H + backend submit）。代码位置：`ucm/store/cache/v2/dump_queue.h` / `Submit`、`DispatchOneTask`。\n- `backend wait enqueue` / `backend wait dequeue`：`ucm:cache_dump_backend_wait_enqueue_total` / `ucm:cache_dump_backend_wait_dequeue_total`；backend submit 成功后入队，被 backend 等待线程取出后开始 `backend_->Wait`。代码位置：同上 / `DumpOneTask`（入队）、`BackendDumpStage`（出队）。\n- 两条队列都是**任务**粒度，入队速率减出队速率即为积压变化。\n- cache-only 模式（无 backend）不会写入 backend wait 队列，该两条曲线为 0。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "suffix: ops/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "id": 84,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_waiting_enqueue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "waiting enqueue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_waiting_dequeue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "waiting dequeue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_enqueue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "backend wait enqueue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_backend_wait_dequeue_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "backend wait dequeue {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Cache Dump Queue Status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "本面板对比 Cache Load 的**入队待处理**与**已处理**数据速率（GB/s，按 worker 聚合，含空闲间隔）。\n- `submitted`：`ucm:cache_load_waiting_bytes_total` 的增速；任务被接收进 waiting 队列时按 `分片大小 × 分片数` 累加，代表进入 Cache 阶段的数据量。代码位置：`ucm/store/cache/v2/load_queue.h` / `Submit` 成功入队后。\n- `processed`：`ucm:cache_load_bytes_total` 的增速；任务在 waiter 完成回调里按同样的字节口径累加，代表实际处理完的数据量。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / 任务完成回调。\n- 两条线的差值 ≈ 队列中在飞数据的增长速率；持续 `submitted > processed` 说明 Cache 阶段处理不过来。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1183,7 +1475,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "id": 27,
       "options": {
@@ -1209,10 +1501,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{engine}} {{worker_rank}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_waiting_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "submitted {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "processed {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "Cache Load Bandwidth (aggregated)",
@@ -1223,7 +1526,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_dump_bytes_total` 表示 Cache Dump 任务累计传输字节数；本面板用字节增速计算每个 worker 的聚合 GB/s，包含空闲间隔。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+      "description": "本面板对比 Cache Dump 的**入队待处理**与**已处理**数据速率（GB/s，按 worker 聚合，含空闲间隔）。\n- `submitted`：`ucm:cache_dump_waiting_bytes_total` 的增速；任务被接收进 dump waiting 队列时按 `分片大小 × 分片数` 累加，代表交给 Cache 阶段写出的数据量。代码位置：`ucm/store/cache/v2/dump_queue.h` / `Submit` 成功入队后。\n- `processed`：`ucm:cache_dump_bytes_total` 的增速；任务在 waiter 完成回调里按同样的字节口径累加，代表实际处理完的数据量。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / 任务完成回调。\n- 两条线的差值 ≈ 队列中在飞数据的增长速率；持续 `submitted > processed` 说明 Dump 阶段处理不过来。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1280,7 +1583,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 25
+        "y": 33
       },
       "id": 28,
       "options": {
@@ -1306,10 +1609,21 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
-          "legendFormat": "{{engine}} {{worker_rank}}",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_waiting_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "submitted {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_dump_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+          "legendFormat": "processed {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "Cache Dump Bandwidth (aggregated)",
@@ -1454,7 +1768,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 49
       },
       "id": 35,
       "options": {
@@ -1661,7 +1975,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 49
       },
       "id": 45,
       "options": {
@@ -1727,6 +2041,341 @@
         }
       ],
       "title": "Cache Dump Queue Wait Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Cache Load 的**分片级**指标，每条曲线对应一个指标的 p50 / p90 / p99 / 平均值（单位 ms）。分片级表示一个任务内每个 shard 各产生一条采样。\n- `runq wait`：`ucm:cache_shard_running_queue_wait_ms`，分片在 running 队列中从入队到被传输线程取出的驻留时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `TransferOneTask` 入口。\n- `backend wait`：`ucm:cache_shard_backend_wait_ms`，持有槽位的分片等待下层 Store 完成读取的时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `WaitShardReady`。\n- `ready wait`：`ucm:cache_shard_ready_wait_ms`，槽位被其它在飞任务占用时，分片轮询等待槽位就绪的时间。代码位置：同上。\n- `h2d submit`：`ucm:cache_h2d_submit_ms`，分片提交异步 H2D 拷贝的 CPU 耗时，不含实际传输与 stream 同步。代码位置：`ScatterShard`。\n- 各指标的 avg 用 `_sum/_count` 计算；p50/p90/p99 用 `histogram_quantile` 在 `le` 桶上聚合，桶上限为最后一个有限桶。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": 60000,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ms"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p50"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p90"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    6
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p99"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    4,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "avg"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "solid"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "id": 85,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_running_queue_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "runq wait p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_running_queue_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "runq wait p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_running_queue_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "runq wait p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_running_queue_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_running_queue_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "runq wait avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "backend wait p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "backend wait p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "backend wait p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "backend wait avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "H"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_ready_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "ready wait p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "I"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_ready_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "ready wait p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "J"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_ready_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "ready wait p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "K"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_ready_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_ready_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "ready wait avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "L"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "h2d submit p50 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "M"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "h2d submit p90 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "N"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+          "legendFormat": "h2d submit p99 {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "O"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "h2d submit avg {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "P"
+        }
+      ],
+      "title": "Cache Load Shard Metrics",
       "type": "timeseries"
     },
     {
@@ -1868,7 +2517,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 49
+        "y": 57
       },
       "id": 54,
       "options": {
@@ -2075,7 +2724,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 57
+        "y": 65
       },
       "id": 53,
       "options": {
@@ -2140,7 +2789,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Load H2D Duration",
+      "title": "Cache Load H2D Sync Duration",
       "type": "timeseries"
     },
     {
@@ -2282,7 +2931,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 57
+        "y": 65
       },
       "id": 58,
       "options": {
@@ -2347,7 +2996,7 @@
           "refId": "D"
         }
       ],
-      "title": "Cache Dump D2H Duration (include wait compute)",
+      "title": "Cache Dump D2H Sync Duration",
       "type": "timeseries"
     },
     {
@@ -2489,7 +3138,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 73
       },
       "id": 43,
       "options": {
@@ -2696,7 +3345,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 73
       },
       "id": 9,
       "options": {
@@ -2762,213 +3411,6 @@
         }
       ],
       "title": "Cache Dump MkBuf Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "指标：`ucm:cache_h2d_submit_ms` 表示单个 shard 在下层数据就绪后提交 H2D 异步拷贝的 CPU 耗时，不包含实际传输和 stream 同步时间。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `HostToDeviceAsync` 返回后。",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 73
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_h2d_submit_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "legendFormat": "avg {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Cache Load H2D Submit Cost",
       "type": "timeseries"
     },
     {
@@ -3110,7 +3552,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 81
       },
       "id": 44,
       "options": {
@@ -3317,7 +3759,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 33
+        "y": 41
       },
       "id": 4,
       "options": {
@@ -3524,7 +3966,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 33
+        "y": 41
       },
       "id": 8,
       "options": {
@@ -3590,213 +4032,6 @@
         }
       ],
       "title": "Cache Dump Bandwidth (per task)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "指标：`ucm:cache_shard_backend_wait_ms` 表示单个 Cache Load shard 等待 buffer 或下层 Load 任务就绪的时间，本面板展示 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/v2/load_queue.h` / `LoadQueue::TransferOneTask` / `WaitShardReady` 返回后。",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "ms"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p50.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p90.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    10,
-                    6
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^p99.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "dash",
-                  "dash": [
-                    4,
-                    4
-                  ]
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "^avg.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "fill": "solid"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 5
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 49
-      },
-      "id": 48,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p90 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, ${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (${perWorker:raw}) (rate(ucm:cache_shard_backend_wait_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
-          "legendFormat": "avg {{engine}} {{worker_rank}}",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "Cache Load Backend Wait Duration",
       "type": "timeseries"
     },
     {
@@ -4352,7 +4587,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 81
+        "y": 89
       },
       "id": 56,
       "options": {
@@ -4444,7 +4679,7 @@
           },
           "id": 15,
           "title": "Cache / Load Duration",
-          "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+          "description": "指标：`ucm:cache_load_duration_ms` 表示 Cache Load 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4529,7 +4764,7 @@
           },
           "id": 16,
           "title": "Cache / Load Bandwidth (per task)",
-          "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
+          "description": "指标：`ucm:cache_load_bandwidth_gbps` 表示单个 Cache Load 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Load waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4614,7 +4849,7 @@
           },
           "id": 17,
           "title": "Cache / Dump Duration",
-          "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+          "description": "指标：`ucm:cache_dump_duration_ms` 表示 Cache Dump 任务端到端耗时；热力图使用 bucket 增速显示各耗时区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4699,7 +4934,7 @@
           },
           "id": 18,
           "title": "Cache / Dump Bandwidth (per task)",
-          "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/v2/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
+          "description": "指标：`ucm:cache_dump_bandwidth_gbps` 表示单个 Cache Dump 任务的任务级带宽；热力图使用 bucket 增速显示各带宽区间的任务速率。代码位置：`ucm/store/cache/cc/trans_manager.h` / `TransManager::Dispatch` / Dump waiter 完成回调。",
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -5374,7 +5609,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "description": "指标与代码位置：\n- `ucm:mooncake_dump_queue_wait_duration_ms`：Dump 任务排队时间。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:mooncake_exists_duration_ms`：调用 Mooncake `batchIsExist` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / 调用返回后。\n- `ucm:mooncake_dump_prereq_wait_ms`：等待前置计算事件的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::WaitPrerequisite` / 事件同步返回后。\n- `ucm:mooncake_d2h_duration_ms`：D2H stream 同步耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::RecordD2hMetrics` / stream 同步完成后。\n- `ucm:mooncake_put_duration_ms`：调用 Mooncake `batch_put` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::PutToMooncake` / 调用返回后。\n- `ucm:mooncake_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::SubmitBackendDump` / `backend_->Dump` 返回后。\n- `ucm:mooncake_dump_backend_wait_duration_ms`：等待下层 Dump 完成的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::BackendWaitStage` / `backend_->Wait` 返回后。",
+          "description": "指标与代码位置：\n- `ucm:mooncake_dump_queue_wait_duration_ms`：Dump 任务排队时间。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DispatchOneTask` / 开始处理任务时。\n- `ucm:mooncake_exists_duration_ms`：调用 Mooncake `batchIsExist` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::DumpOneTask` / 调用返回后。\n- `ucm:mooncake_dump_prereq_wait_ms`：等待前置计算事件的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::WaitPrerequisite` / 事件同步返回后。\n- `ucm:mooncake_d2h_duration_ms`：D2H stream 同步耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::RecordD2hMetrics` / stream 同步完成后。\n- `ucm:mooncake_put_duration_ms`：调用 Mooncake `batch_put` 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::PutToMooncake` / 调用返回后。\n- `ucm:mooncake_dump_backend_submit_duration_ms`：向下层 Store 提交 Dump 的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::SubmitBackendDump` / `backend_->Dump` 返回后。\n- `ucm:mooncake_dump_backend_wait_duration_ms`：等待下层 Dump 完成的耗时。位置：`ucm/store/mooncakestore/cc/dump_queue.cc` / `DumpQueue::BackendDumpStage` / `backend_->Wait` 返回后。",
           "fieldConfig": {
             "defaults": {
               "unit": "ms"
@@ -6190,7 +6425,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\n(sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
           "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
@@ -6201,7 +6436,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n    /\n    (sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:posix_load_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:posix_load_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  ),\n  0\n)",
           "legendFormat": "task after queue {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"
@@ -6298,7 +6533,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n/\nsum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\n(sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)",
           "legendFormat": "queue wait {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
@@ -6309,7 +6544,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  )\n  -\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n    /\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[40s]))\n  ),\n  0\n)",
+          "expr": "clamp_min(\n  (\n    sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n    /\n    (sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n  )\n  -\n  (\n    (\n      sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n      /\n      (sum by (${perWorker:raw}) (rate(ucm:posix_dump_queue_wait_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n    or\n    (\n      0 * (sum by (${perWorker:raw}) (rate(ucm:posix_dump_task_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) > 0)\n    )\n  ),\n  0\n)",
           "legendFormat": "task after queue {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "B"

@@ -4,11 +4,11 @@
  * DT (end-to-end): GSAPrefetchEngineC block-map lifecycle pipeline.
  *
  * Drives the engine through the public block-map lifecycle:
- *   SetBlocksMap -> SetTokensMap-skip -> DelBlocksMap -> GetReqUseBlockTable
+ *   SetBlocksMap -> SetTokensMap-skip -> DelBlocksMap
  * and verifies the observable outputs are consistent:
- *   - the block table stored by SetBlocksMap is retrievable
+ *   - the block table stored by SetBlocksMap is observable in per-request state
  *   - DelBlocksMap clears the per-request state
- *   - the Get* accessors return the stored values
+ *   - the remaining raw accessors (StoreV1 raw pointers) round-trip
  *
  * All ACL H2D / scatter ops and the UCM store are stubbed so the lifecycle
  * runs deterministically on a plain host without spawning worker threads or
@@ -93,12 +93,10 @@ TEST(PrefetchE2EDt, SetBlocksMapThenGetRoundTripsStoredTable)
     f.TearDown();
 }
 
-TEST(PrefetchE2EDt, DelBlocksMapClearsSparseSeqLenButNotHash_BugDocumented)
+TEST(PrefetchE2EDt, DelBlocksMapClearsAllPerRequestState)
 {
-    // BUG-FOCUS: DelReqIDRun (kvcache_pre_scatter.cpp) erases every per-request
-    // map EXCEPT mAllBlocksHash. This means stale block hashes leak across
-    // requests after DelBlocksMap. Documented here so a future fix updates the
-    // source AND this assertion.
+    // L-4 fixed: DelReqIDRun now erases mAllBlocksHash too, so stale block
+    // hashes no longer leak across requests after DelBlocksMap.
     E2EFixture f;
     f.Setup();
     std::vector<BlockId> hashes = {MakeBlock(1)};
@@ -109,8 +107,8 @@ TEST(PrefetchE2EDt, DelBlocksMapClearsSparseSeqLenButNotHash_BugDocumented)
     f.engine->DelBlocksMap("req1");
     // mSparseSeqLen IS cleared by DelReqIDRun:
     EXPECT_FALSE(f.engine->mSparseSeqLen.count("req1"));
-    // mAllBlocksHash is NOT cleared (bug). When fixed, flip to EXPECT_FALSE.
-    EXPECT_TRUE(f.engine->mAllBlocksHash.count("req1"));
+    // mAllBlocksHash is cleared as well (L-4 fixed).
+    EXPECT_FALSE(f.engine->mAllBlocksHash.count("req1"));
     // Idempotent: deleting again is a no-op (reqID already removed from set).
     f.engine->DelBlocksMap("req1");
     EXPECT_FALSE(f.engine->mSparseSeqLen.count("req1"));
@@ -155,11 +153,10 @@ TEST(PrefetchE2EDt, SetLastIndexerBlockNoopWhenOffloadDisabled)
     f.TearDown();
 }
 
-TEST(PrefetchE2EDt, MultipleRequestsCoexist_HashLeakBugDocumented)
+TEST(PrefetchE2EDt, MultipleRequestsCoexistAndDeletedRequestIsCleaned)
 {
-    // BUG-FOCUS: DelReqIDRun does not erase mAllBlocksHash, so after deleting
-    // one request the hash map still reports the deleted request. Documented
-    // here; when fixed, expect size 2 after the delete.
+    // L-4 fixed: DelReqIDRun erases mAllBlocksHash, so deleting one request
+    // fully removes its per-request state.
     E2EFixture f;
     f.Setup();
     for (int r = 0; r < 3; ++r) {
@@ -172,11 +169,10 @@ TEST(PrefetchE2EDt, MultipleRequestsCoexist_HashLeakBugDocumented)
     }
     EXPECT_EQ(f.engine->mAllBlocksHash.size(), 3u);
     EXPECT_EQ(f.engine->mSparseSeqLen.size(), 3u);
-    // Delete one; mSparseSeqLen drops (DelReqIDRun clears it) but
-    // mAllBlocksHash keeps the leaked entry (bug). When fixed: expect 2u.
+    // Delete one: both per-request maps drop the entry (L-4 fixed).
     f.engine->DelBlocksMap("req1");
     EXPECT_EQ(f.engine->mSparseSeqLen.size(), 2u);
-    EXPECT_EQ(f.engine->mAllBlocksHash.size(), 3u);  // leaked hash for "req1"
+    EXPECT_EQ(f.engine->mAllBlocksHash.size(), 2u);
     EXPECT_TRUE(f.engine->mSparseSeqLen.count("req2"));
     EXPECT_TRUE(f.engine->mSparseSeqLen.count("req0"));
     f.TearDown();

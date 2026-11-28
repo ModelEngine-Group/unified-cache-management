@@ -208,7 +208,6 @@ def __init__(
     from ucm.sparse.state import has_ucm_sparse
     from ucm.sparse.utils import (
         MAX_INDEXER_BLOCK_NUM,
-        PTOPK_PREFETCH_ENABLE,
         init_indexer_layer_map,
     )
 
@@ -364,7 +363,7 @@ def __init__(
     self.enable_dsa_cp = enable_dsa_cp()
     self.enable_sp = enable_sp()
 
-    if has_ucm_sparse() and PTOPK_PREFETCH_ENABLE:
+    if has_ucm_sparse():
         if self.has_indexer and (
             self.is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer
         ):
@@ -435,7 +434,7 @@ def indexer_select_post_process(
     actual_seq_lengths_key: torch.Tensor,
 ):
     from ucm.sparse.state import has_ucm_sparse
-    from ucm.sparse.utils import IS_INDEXER_OFFLOAD, PTOPK_PREFETCH_ENABLE
+    from ucm.sparse.utils import IS_INDEXER_OFFLOAD
 
     if not self.has_indexer:
         raise RuntimeError(
@@ -508,13 +507,12 @@ def indexer_select_post_process(
 
     if (
         has_ucm_sparse()
-        and PTOPK_PREFETCH_ENABLE
         and self.layer_id < self.layer_num
         and (self.is_pdmix or not self.vllm_config.kv_transfer_config.is_kv_producer)
     ):
         actual_seq_lengths_key = attn_metadata.dsa_seq_len
         if IS_INDEXER_OFFLOAD and self.has_indexer:
-            torch.ops._C_ascend.indexer_gather_qw(
+            torch.ops._C_gsa.indexer_gather_qw(
                 q_li.view(-1, self.n_head * self.head_dim),
                 weights.view(-1, self.n_head),
                 attn_metadata.indexer_last_query[self.layer_id][
@@ -593,7 +591,6 @@ def _patch(mod):
             IS_INDEXER_OFFLOAD,
             IS_OPEN_GSA,
             MAX_INDEXER_BLOCK_NUM,
-            PTOPK_PREFETCH_ENABLE,
             SPA_TOKENS_LEN,
             init_indexer_layer_map,
         )
@@ -604,7 +601,6 @@ def _patch(mod):
             "maybe_execute_sparse_attention_begin": maybe_execute_sparse_attention_begin,
             "maybe_execute_sparse_attention_finished": maybe_execute_sparse_attention_finished,
             "has_ucm_sparse": has_ucm_sparse,
-            "PTOPK_PREFETCH_ENABLE": PTOPK_PREFETCH_ENABLE,
             "SPA_TOKENS_LEN": SPA_TOKENS_LEN,
             "DEFAULT_TOPK_LEN": DEFAULT_TOPK_LEN,
             "MAX_INDEXER_BLOCK_NUM": MAX_INDEXER_BLOCK_NUM,

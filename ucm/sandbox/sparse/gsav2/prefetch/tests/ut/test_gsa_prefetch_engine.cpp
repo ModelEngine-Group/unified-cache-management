@@ -84,15 +84,6 @@ TEST_F(GSAEngineTest, ConstructWithIndexerOffloadCreatesIndexerTaskManager)
     EXPECT_NE(engine_, nullptr);
 }
 
-TEST_F(GSAEngineTest, SetModelRunningStatusTogglesFlag)
-{
-    engine_ = MakeEngine();
-    engine_->SetModelRunningStatus(true);
-    EXPECT_TRUE(engine_->mStopPrefetch);
-    engine_->SetModelRunningStatus(false);
-    EXPECT_FALSE(engine_->mStopPrefetch);
-}
-
 /* ---- StoreV1 raw pointer accessors ---- */
 
 TEST_F(GSAEngineTest, StoreV1RawAccessorsRoundTrip)
@@ -231,105 +222,69 @@ TEST_F(GSAEngineTest, DelReqIDRunSkipsUnknownReqID)
     SUCCEED();
 }
 
-TEST_F(GSAEngineTest, DelReqIDRunErasesMostMapsButNotHash_BugDocumented)
+TEST_F(GSAEngineTest, DelReqIDRunErasesAllPerRequestMaps)
 {
-    // BUG-FOCUS: DelReqIDRun erases mSparseSeqLen, mPromptLen, mReqUseBlockTable,
-    // ... but NOT mAllBlocksHash. The hash entry leaks after deletion.
-    // Documented: assert the cleared maps are gone while the hash survives.
+    // L-4 fixed: DelReqIDRun now also erases mAllBlocksHash and
+    // mLastKVBlockAddress (both populated by SetBlocksMap; previously leaked
+    // 16B x blockNum per finished request).
     engine_ = MakeEngine();
     engine_->mSparseSeqLen["req1"] = 128;
     engine_->mPromptLen["req1"] = 16;
     engine_->mReqUseBlockTable["req1"] = {0, 1};
     engine_->mAllBlocksHash["req1"] = {MakeBlock(1)};
+    (void)engine_->mLastKVBlockAddress["req1"][0];
     engine_->mDelSeqIds.insert("req1");
     engine_->DelReqIDRun();
     EXPECT_EQ(engine_->mSparseSeqLen.count("req1"), 0u);
     EXPECT_EQ(engine_->mPromptLen.count("req1"), 0u);
     EXPECT_EQ(engine_->mReqUseBlockTable.count("req1"), 0u);
-    // mAllBlocksHash is NOT cleared by DelReqIDRun (bug). When fixed, expect 0u.
-    EXPECT_EQ(engine_->mAllBlocksHash.count("req1"), 1u);
+    EXPECT_EQ(engine_->mAllBlocksHash.count("req1"), 0u);
+    EXPECT_EQ(engine_->mLastKVBlockAddress.count("req1"), 0u);
 }
 
-/* ---- UpdateIndexerMap / AddIndexerMap / DeleteIndexerMap ---- */
+/* ---- UpdateIndexerMap（L-3 整改后的判别式语义） ---- */
 
-TEST_F(GSAEngineTest, UpdateIndexerMapDoesNotGuardOnIndexerOffload_BugDocumented)
+TEST_F(GSAEngineTest, UpdateIndexerMapGuardsOnOffloadOff)
 {
-    // BUG-FOCUS: UpdateIndexerMap (kvcache_pre.cpp:883) is the ONLY indexer-map
-    // mutator that omits the `if (!mOpenIndexerOffload) return;` guard that
-    // AddIndexerMap (line 950) and DeleteIndexerMap (line 989) both have.
-    // It therefore mutates mUseBlockTableIdx even when indexer offload is off.
-    // It also indexes mUseBlockTableIdx[reqID][layerID] WITHOUT first ensuring
-    // the inner vector has mLayerNum slots, so calling it before SetBlocksMap
-    // for that reqID is out-of-bounds (UB / segfault).
-    //
-    // Here we pre-size the table (as SetBlocksMap would) and prove the call
-    // actually mutates state — i.e. it is NOT a no-op. When the missing guard
-    // is added, flip the assertion to EXPECT_TRUE(mUseBlockTableIdx[reqID][0].empty()).
+    // L-3 fixed: offload off -> no-op. Previously UpdateIndexerMap was the ONLY
+    // indexer-map mutator that omitted the `if (!mOpenIndexerOffload) return;`
+    // guard and mutated mUseBlockTableIdx anyway.
     engine_ = MakeEngine(/*indexerOffload=*/false);
+    engine_->mUseBlockTableIdx["req1"].resize(engine_->mLayerNum);
+    engine_->UpdateIndexerMap("req1", /*idx=*/1);
+    EXPECT_EQ(engine_->mUseBlockTableIdx["req1"][0].size(), 0u);
+}
+
+TEST_F(GSAEngineTest, UpdateIndexerMapSkipsUninitializedReqID)
+{
+    // L-3 fixed: unknown reqID -> judged + skipped. Previously operator[]
+    // inserted an empty outer vector and [layerID] indexed it OOB (UB).
+    engine_ = MakeEngine(/*indexerOffload=*/true);
+    engine_->UpdateIndexerMap("ghost", /*idx=*/1);
+    EXPECT_EQ(engine_->mUseBlockTableIdx.count("ghost"), 0u);
+}
+
+TEST_F(GSAEngineTest, UpdateIndexerMapAddAppendsAcrossLayers)
+{
+    engine_ = MakeEngine(/*indexerOffload=*/true);
     const std::string reqID = "req1";
-    // Pre-size mUseBlockTableIdx[reqID] to mLayerNum empty vectors (mirrors what
-    // SetBlocksMap / SetTokensMap do internally) so the [layerID] access is safe.
     engine_->mUseBlockTableIdx[reqID].resize(engine_->mLayerNum);
-    ASSERT_EQ(engine_->mUseBlockTableIdx[reqID][0].size(), 0u);
-    engine_->UpdateIndexerMap(reqID, /*idx=*/1, /*blockID=*/2, /*type=*/"add");
-    // Bug: the call ran despite offload being off, appending idx to the table.
+    engine_->UpdateIndexerMap(reqID, /*idx=*/7);
     EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][0].size(), 1u);
-    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][0][0], 1);
+    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][0][0], 7);
     EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][1].size(), 1u);
+    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][1][0], 7);
 }
 
-TEST_F(GSAEngineTest, UpdateIndexerMapLastdelPopsBackWhenPreSized)
+TEST_F(GSAEngineTest, UpdateIndexerMapSkipsUndersizedTable)
 {
-    engine_ = MakeEngine(/*indexerOffload=*/false);
+    // Layer dimension not ready (fewer than mLayerNum slots) -> skipped safely.
+    engine_ = MakeEngine(/*indexerOffload=*/true);
     const std::string reqID = "req1";
-    engine_->mUseBlockTableIdx[reqID].resize(engine_->mLayerNum);
-    engine_->mUseBlockTableIdx[reqID][0].push_back(10);
-    engine_->mUseBlockTableIdx[reqID][1].push_back(10);
-    engine_->UpdateIndexerMap(reqID, /*idx=*/0, /*blockID=*/2, /*type=*/"lastdel");
+    engine_->mUseBlockTableIdx[reqID].resize(1);
+    engine_->UpdateIndexerMap(reqID, /*idx=*/1);
+    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID].size(), 1u);
     EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][0].size(), 0u);
-    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][1].size(), 0u);
-}
-
-TEST_F(GSAEngineTest, UpdateIndexerMapDelBranchIsSafeWhenPreSized)
-{
-    engine_ = MakeEngine(/*indexerOffload=*/false);
-    const std::string reqID = "req1";
-    engine_->mUseBlockTableIdx[reqID].resize(engine_->mLayerNum);
-    engine_->mUseBlockTableIdx[reqID][0].push_back(10);
-    engine_->mUseBlockTableIdx[reqID][1].push_back(10);
-    // "del" branch only logs; does not modify the table. Must not crash.
-    engine_->UpdateIndexerMap(reqID, /*idx=*/0, /*blockID=*/2, /*type=*/"del");
-    EXPECT_EQ(engine_->mUseBlockTableIdx[reqID][0].size(), 1u);
-}
-
-TEST_F(GSAEngineTest, AddIndexerMapIsNoopWhenOff)
-{
-    engine_ = MakeEngine(/*indexerOffload=*/false);
-    engine_->AddIndexerMap();
-    SUCCEED();
-}
-
-TEST_F(GSAEngineTest, DeleteIndexerMapIsNoopWhenOff)
-{
-    engine_ = MakeEngine(/*indexerOffload=*/false);
-    engine_->DeleteIndexerMap();
-    SUCCEED();
-}
-
-TEST_F(GSAEngineTest, AddIndexerMapSkipsUnknownReqID)
-{
-    engine_ = MakeEngine(/*indexerOffload=*/true);
-    engine_->mIndexerAdd["ghost"] = {};
-    engine_->AddIndexerMap();
-    EXPECT_EQ(engine_->mBlocksMap.count("ghost"), 0u);
-}
-
-TEST_F(GSAEngineTest, DeleteIndexerMapSkipsUnknownReqID)
-{
-    engine_ = MakeEngine(/*indexerOffload=*/true);
-    engine_->mIndexerDel["ghost"] = {1};
-    engine_->DeleteIndexerMap();
-    SUCCEED();
 }
 
 /* ---- Prefetch status flags ---- */
@@ -350,21 +305,4 @@ TEST_F(GSAEngineTest, IndexerStatusFlagReflectsAtomic)
     EXPECT_TRUE(engine_->GetIndexerStatus());
     engine_->mIsIndexerLoadRunning.store(false);
     EXPECT_FALSE(engine_->GetIndexerStatus());
-}
-
-/* ---- Get* accessors on populated maps ---- */
-
-TEST_F(GSAEngineTest, GetReqUseBlockTableReturnsStoredTable)
-{
-    engine_ = MakeEngine();
-    engine_->mReqUseBlockTable["req1"] = {3, 4, 5};
-    auto out = engine_->GetReqUseBlockTable("req1");
-    EXPECT_EQ(out, (std::vector<int>{3, 4, 5}));
-}
-
-TEST_F(GSAEngineTest, GetSparseSeqLenReturnsStoredValue)
-{
-    engine_ = MakeEngine();
-    engine_->mSparseSeqLen["req1"] = 256;
-    EXPECT_EQ(engine_->GetSparseSeqLen("req1"), 256);
 }

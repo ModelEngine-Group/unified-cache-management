@@ -717,6 +717,20 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
         [filename, "release-manifest.json"]
     )
 
+    if release_type == "nightly":
+        tag = "nightly/develop-20261126-2"
+        version = "0.10.0.dev20261126002+develop"
+        state, document = json.loads(
+            json.dumps((final, release_document))
+            .replace(plan["git_tag"], tag)
+            .replace(plan["version"], version)
+        )
+        manifest = public_manifest.build_manifest(state, document)
+        assert manifest["python"]["version"] == version
+        assert cleanup_records.record_from_manifest(manifest, "example/ucm")[
+            "versions"
+        ] == [version]
+
 
 @pytest.fixture
 def published_release(tmp_path):
@@ -2000,3 +2014,22 @@ class TestCleanupRecords:
                 cleanup_records.CleanupRecordError, match="Release assets"
             ):
                 cleanup_records.record_from_manifest(manifest, self.REPOSITORY)
+
+
+def test_partial_release_notes_report_targets_and_missing_platform_per_registry():
+    hub_ref = "docker.io/example/vllm-openai:release-tag"
+    manifest = _single_family_release_notes_manifest(
+        expected_targets={
+            "ghcr": "ghcr.io/example/vllm-openai:release-tag",
+            "dockerhub": hub_ref,
+        },
+        targets=[{"channel": "dockerhub", "reference": hub_ref}],
+        release_status="images-failed",
+        family_status="failed",
+    )
+    notes = release.render_notes(
+        manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
+    )
+    assert f"Docker Hub `{hub_ref}`" in notes
+    assert "GHCR missing amd64" in notes
+    assert "ghcr.io/example/vllm-openai:release-tag" not in notes

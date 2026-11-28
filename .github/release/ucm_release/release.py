@@ -461,14 +461,6 @@ def _receipt_map(receipts_root: Path, kind: str) -> dict[str, dict[str, Any]]:
         receipt = _mapping(_load_json(path), f"publication receipt {path}")
         if receipt.get("kind") != kind:
             continue
-        if receipt.get("schema_version") != 1 or set(receipt) != {
-            "kind",
-            "schema_version",
-            "id",
-            "status",
-            "targets",
-        }:
-            raise ValueError(f"publication receipt {path} has an invalid contract")
         identity = str(receipt.get("id", ""))
         if not identity or identity in result:
             raise ValueError(
@@ -478,9 +470,18 @@ def _receipt_map(receipts_root: Path, kind: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _validated_receipt_targets(
+def validated_receipt_targets(
     receipt: dict[str, Any], expected: object, context: str
 ) -> list[dict[str, str]]:
+    """Return registry writes that match this item's planned channels and references."""
+    if receipt.get("schema_version") != 1 or set(receipt) != {
+        "kind",
+        "schema_version",
+        "id",
+        "status",
+        "targets",
+    }:
+        raise ValueError(f"{context} has an invalid contract")
     expected_targets = _mapping(expected, f"{context} expected targets")
     if receipt.get("status") not in {"published", "failed"}:
         raise ValueError(f"{context} has an invalid status")
@@ -538,7 +539,7 @@ def validate_member_receipts(
     if set(receipts) != set(expected):
         raise ValueError("member receipts do not exactly cover planned Images")
     for image_id, receipt in receipts.items():
-        _validated_receipt_targets(
+        validated_receipt_targets(
             receipt, expected[image_id], f"Image {image_id} receipt"
         )
         if receipt.get("status") != "published":
@@ -661,7 +662,7 @@ def finalize_release_state(
     for image in result["images"]:
         receipt = members.get(str(image["id"]))
         targets = (
-            _validated_receipt_targets(
+            validated_receipt_targets(
                 receipt, image.get("expected_targets"), f"Image {image['id']} receipt"
             )
             if receipt is not None
@@ -682,7 +683,7 @@ def finalize_release_state(
         if family["create_index"]:
             receipt = indexes.get(family_id)
             targets = (
-                _validated_receipt_targets(
+                validated_receipt_targets(
                     receipt,
                     family.get("expected_targets"),
                     f"family {family_id} receipt",
@@ -908,13 +909,14 @@ def _render_product_tables(
                 {
                     "tag": str(runtime["tag"]),
                     "architectures": {str(member["cpu_arch"]) for member in members},
-                    "target_tag": None,
+                    "targets": [],
+                    "missing": [],
                 }
             )
             for wheel in family_wheels:
                 row["wheels"][str(wheel["cpu_arch"])] = wheel
 
-            target_tag = None
+            family_row = row["families"][-1]
             for channel, label in (("ghcr", "GHCR"), ("dockerhub", "Docker Hub")):
                 actual_references = [
                     str(target["reference"])
@@ -927,21 +929,36 @@ def _render_product_tables(
                         f"release family {family_id!r} has multiple {label} targets"
                     )
                 reference = actual_references[0] if actual_references else None
-                if reference is None and channel == "ghcr":
-                    reference = family["expected_targets"].get("ghcr")
+                if reference is None and channel in family["expected_targets"]:
+                    missing = [
+                        member["cpu_arch"]
+                        for member in members
+                        if not any(
+                            t["channel"] == channel for t in member.get("targets", [])
+                        )
+                    ]
+                    reason = (
+                        "missing " + ", ".join(missing) if missing else "index pending"
+                    )
+                    family_row["missing"].append(f"{label} {reason}")
+                    if (
+                        channel == "ghcr"
+                        and manifest["release"]["status"] == "artifacts-ready"
+                    ):
+                        # Link the package while building, but only advertise a pull tag from a receipt.
+                        target_repositories[channel].add(
+                            _target_repository(
+                                family["expected_targets"][channel],
+                                "planned GHCR package",
+                            )
+                        )
                 if not isinstance(reference, str):
                     continue
                 target_repository = _target_repository(
                     reference, f"release family {label} target"
                 )
                 target_repositories[channel].add(target_repository)
-                reference_tag = reference.rpartition(":")[2]
-                if target_tag is not None and reference_tag != target_tag:
-                    raise ValueError(
-                        f"release family {family_id!r} target tags do not match"
-                    )
-                target_tag = reference_tag
-            row["families"][-1]["target_tag"] = target_tag
+                family_row["targets"].append((label, reference))
             if family.get("status") == "published" and family.get("targets"):
                 published_count += 1
 
@@ -1018,10 +1035,15 @@ def _render_product_tables(
                     )
                     arch_suffix = f" ({architectures} only)"
                 upstream_runtime_tags.append(f"`{tag}`{arch_suffix}")
-                if family["target_tag"] is not None:
-                    packaged_runtime_tags.append(
-                        f"`{family['target_tag']}`{arch_suffix}"
-                    )
+                if manifest["release"]["status"] == "complete" and family["targets"]:
+                    # Complete profiles have the same tag on every enabled registry.
+                    target_tag = family["targets"][0][1].rpartition(":")[2]
+                    packaged_runtime_tags.append(f"`{target_tag}`{arch_suffix}")
+                else:
+                    published = [f"{label} `{ref}`" for label, ref in family["targets"]]
+                    detail = "; ".join([*published, *family["missing"]])
+                    if detail:
+                        packaged_runtime_tags.append(f"`{tag}` — {detail}")
             if not packaged_runtime_tags:
                 packaged_runtime_tags.append("—")
             runtime_variant = key[1]

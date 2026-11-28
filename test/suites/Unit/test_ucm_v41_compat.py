@@ -10,7 +10,6 @@ import types
 import unittest
 from collections import namedtuple
 from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
@@ -90,7 +89,6 @@ def _load_hma_methods(names):
         "dataclass": dataclass,
         "field": field,
         "Task": object,
-        "Future": Future,
         "math": math,
         "torch": types.SimpleNamespace(Tensor=object),
         "np": __import__("numpy"),
@@ -1390,7 +1388,6 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             if request_meta is None:
                 request_meta = {}
             self_obj = types.SimpleNamespace(
-                use_request_async_load=False,
                 _pending_async_load_dispatches={},
                 _async_load_req_ids=set(),
                 hash_block_size=32,
@@ -1425,13 +1422,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             return matched, need_load, request_meta.get("req")
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 3)
-        self.assertFalse(need_load)
+        self.assertTrue(need_load)
         self.assertEqual(matched, 96)
         self.assertEqual(meta.total_hit_block_num, 3)
         self.assertEqual(meta.token_processed, 96)
 
         matched, need_load, meta = run(128, True, 0, 0, 3, 1)
-        self.assertFalse(need_load)
+        self.assertTrue(need_load)
         self.assertEqual(matched, 64)  # WA at 64 exists; WA at 96 misses.
         self.assertEqual(meta.total_hit_block_num, 2)
         self.assertEqual(meta.token_processed, 64)
@@ -1663,8 +1660,9 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     ).zeros((len(keys), 2), dtype="uint64"),
                     _get_event_handle=lambda: 1,
                     _submit_dump_task=submit,
-                    tp_size=tp_size,
-                    tp_rank=rank,
+                    dump_owner_size=tp_size,
+                    dump_owner_rank=rank,
+                    _async_dump_req_ids=set(),
                     tp_dump_tasks={},
                     file_size={"FA": 4096, "WA": 0},
                 )
@@ -1698,6 +1696,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             prefix_replay_tokens=128,
             _pending_async_load_dispatches={},
             _async_load_req_ids=set(),
+            _async_dump_req_ids=set(),
             hash_block_size=64,
             transient_group_ids={1},
             window_group_ids=[],
@@ -1763,10 +1762,10 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                     vllm_block_ids=(),
                 )
                 connector = types.SimpleNamespace(
-                    use_request_async_load=True,
                     prefix_replay_tokens=0,
                     _pending_async_load_dispatches={},
                     _async_load_req_ids=set(),
+                    _async_dump_req_ids=set(),
                     hash_block_size=64,
                     transient_group_ids=set(),
                     window_group_ids=[1],
@@ -1799,6 +1798,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 ]
                 self.assertTrue(load.load_async)
                 self.assertEqual(load.load_vllm_block_ids, ([10, 11], [21]))
+                self.assertEqual(connector._async_dump_req_ids, set())
                 # After remote completion, vLLM sends the entire block table.
                 output.scheduled_new_reqs = [
                     types.SimpleNamespace(
@@ -1812,6 +1812,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 self.assertEqual(request.vllm_block_ids, ([10, 11, 12], [20, 21, 22]))
                 self.assertEqual(resumed.load_keys, [])
                 self.assertEqual(resumed.dump_vllm_block_ids, ([12], [22]))
+                self.assertEqual(connector._async_dump_req_ids, {"req"})
                 output.scheduled_new_reqs = []
                 output.scheduled_cached_reqs = types.SimpleNamespace(
                     req_ids=["req"], new_block_ids=[([13], [23])], resumed_req_ids=set()

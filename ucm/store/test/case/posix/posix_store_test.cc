@@ -44,7 +44,7 @@ TEST(UCPosixConfigTest, KeepsPsyncAsDefaultWithOptionalAioSettings)
     const UC::PosixStore::Config config;
     EXPECT_EQ(config.ioEngine, "psync");
     EXPECT_EQ(config.aioQueueDepth, 1024);
-    EXPECT_EQ(config.loadHandleCacheSize, 8192);
+    EXPECT_EQ(config.loadHandleCacheSize, 0);
 }
 
 namespace {
@@ -222,6 +222,7 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
 {
     using namespace UC::PosixStore;
     UC::Detail::Dictionary config;
+    config.Set("io_direct", false);
     config.SetNumber("device_id", 0);
     config.Set("storage_backends", std::vector<std::string>{Path()});
     constexpr size_t dataSize = 32768;

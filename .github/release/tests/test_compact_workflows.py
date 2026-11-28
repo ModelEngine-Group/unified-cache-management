@@ -17,6 +17,111 @@ def _load(name: str) -> dict[str, object]:
     return value
 
 
+def test_management_callbacks_are_scoped_and_runtime_tests_run_in_pr_ci() -> None:
+    management = _load("release-operations.yml")
+    assert "actions" not in management["permissions"]
+    assert "workflow_run" not in management["on"]
+    assert management["on"]["issue_comment"]["types"] == ["created"]
+    condition = management["jobs"]["operate"]["if"]
+    assert "comment.user.type != 'Bot'" in condition
+    assert "issue.pull_request == null" in condition
+    assert all(
+        "unittest" not in step.get("run", "")
+        for step in management["jobs"]["operate"]["steps"]
+    )
+    finalizer = management["jobs"]["operate"]["steps"][-1]
+    assert "always()" in finalizer["if"]
+    assert "github.event_name == 'issue_comment'" in finalizer["if"]
+    assert "steps.command.outcome == 'failure'" in finalizer["if"]
+    assert "steps.command.outcome == 'cancelled'" in finalizer["if"]
+    assert "controller.py --finalize" in finalizer["run"]
+    assert not management["on"]["workflow_dispatch"]
+    contracts = _load("release-operations-check.yml")
+    paths = contracts["on"]["pull_request"]["paths"]
+    assert ".github/release-operations/**" in paths
+    assert ".github/ISSUE_TEMPLATE/900-release-checklist.yml" in paths
+    assert contracts["permissions"] == {"contents": "read"}
+    assert "unittest discover" in contracts["jobs"]["contracts"]["steps"][-1]["run"]
+
+
+def test_review_observer_is_removed() -> None:
+    assert not (WORKFLOWS / "release-review-observer.yml").exists()
+
+
+def test_version_gate_is_required_for_official_formal_tags_only() -> None:
+    workflow = _load("release-tag.yml")
+    assert workflow["on"]["push"]["tags"] == ["v*", "draft/v*", "nightly/*"]
+    jobs = workflow["jobs"]
+    gate = jobs["version-check"]
+    assert gate["if"] == (
+        "${{ needs.classify-tag.outputs.publication_scope == 'official' && "
+        "startsWith(github.ref, 'refs/tags/v') }}"
+    )
+    assert gate["needs"] == "classify-tag"
+    assert jobs["release"]["needs"] == ["classify-tag", "version-check"]
+    condition = jobs["release"]["if"]
+    assert "!cancelled()" in condition
+    assert "needs.classify-tag.outputs.publication_scope == 'fork' ||" in condition
+    assert "!startsWith(github.ref, 'refs/tags/v')" in condition
+    assert "needs.version-check.result == 'success'" in condition
+    step = next(
+        s for s in gate["steps"] if s.get("run", "").endswith("delivery.py gate")
+    )
+    assert step["env"]["SOURCE_SHA"] == "${{ github.sha }}"
+    assert step["env"]["UCM_PROJECT_TOKEN"] == "${{ secrets.UCM_PROJECT_TOKEN }}"
+    assert (
+        gate["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+
+
+def test_only_successful_version_delivery_can_close_the_milestone() -> None:
+    observer = _load("release-delivery-status.yml")
+    assert observer["on"]["workflow_run"]["types"] == ["in_progress", "completed"]
+    assert observer["on"]["workflow_run"]["workflows"] == [
+        _load("release-tag.yml")["name"]
+    ]
+    assert observer["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "issues": "write",
+    }
+    assert observer["concurrency"] == _load("release-operations.yml")["concurrency"]
+    report = observer["jobs"]["report"]
+    assert (
+        "github.repository == 'ModelEngine-Group/unified-cache-management'"
+        in report["if"]
+    )
+    assert "workflow_run.event == 'push'" in report["if"]
+    assert "workflow_run.head_repository.full_name == github.repository" in report["if"]
+    assert (
+        report["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+    assert report["steps"][-1]["run"].endswith("delivery.py observe")
+    result = _load("release-tag.yml")["jobs"]["delivery-result"]
+    assert "!cancelled()" in result["if"]
+    assert "needs.version-check.result == 'success'" in result["if"]
+    assert "needs.release.result == 'success'" in result["if"]
+    assert "refs/tags/v" in result["if"]
+    assert result["needs"] == ["classify-tag", "version-check", "release"]
+    env = result["steps"][-1]["env"]
+    assert env["RELEASE_RESULT"] == "${{ needs.release.result }}"
+    assert env["RELEASE_VERSION"] == "${{ needs.classify-tag.outputs.version }}"
+    assert result["concurrency"] == _load("release-operations.yml")["concurrency"]
+
+
+def test_delivery_acceptance_identifies_its_manual_rerun_attempt() -> None:
+    delivery = _load("release-ucm.yml")["jobs"]["verify-release-delivery"]
+    upload = delivery["steps"][-1]
+    assert (
+        upload["with"]["name"]
+        == "ucm-release-acceptance-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}"
+    )
+    record = next(s["run"] for s in delivery["steps"] if "run" in s)
+    assert "'run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT'])" in record
+
+
 def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
     dockerfile = (ROOT / ".github/release/docker/Dockerfile.runtime").read_text(
         encoding="utf-8"
@@ -67,7 +172,16 @@ def test_chart_filters_families_without_a_second_plan_artifact() -> None:
 
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
-    assert workflow["on"]["schedule"] == [{"cron": "0 18 * * *"}]
+    scheduler = _load("schedule-nightly.yml")
+    assert scheduler["on"]["schedule"] == [{"cron": "0 18 * * *"}]
+    assert "schedule" not in workflow["on"]
+    dispatch = scheduler["jobs"]["dispatch"]
+    assert dispatch["strategy"]["matrix"]["branch"] == [
+        "develop",
+        "${{ needs.branches.outputs.latest }}",
+    ]
+    assert "release-nightly.yml/dispatches" in dispatch["steps"][0]["run"]
+    assert "github.ref == 'refs/heads/develop'" in scheduler["jobs"]["branches"]["if"]
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
         "queue": "max",
@@ -75,12 +189,12 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     }
     jobs = workflow["jobs"]
     prepare = jobs["prepare-nightly"]
-    assert "github.ref == 'refs/heads/develop'" in prepare["if"]
+    assert "github.ref_type == 'branch'" in prepare["if"]
     assert (
         "github.repository == 'ModelEngine-Group/unified-cache-management'"
-        in prepare["if"]
+        in scheduler["jobs"]["branches"]["if"]
     )
-    assert prepare["permissions"] == {"contents": "write"}
+    assert prepare["permissions"] == {"contents": "write", "actions": "read"}
     checkout = next(
         step
         for step in prepare["steps"]
@@ -88,7 +202,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     )
     assert checkout["with"]["ref"] == "${{ github.sha }}"
     run = next(step["run"] for step in prepare["steps"] if step.get("id") == "prepare")
-    assert "TZ=Asia/Shanghai date +%Y%m%d" in run
+    assert "TZ=Asia/Shanghai date" in run
     assert "--next-nightly" in run
     assert "--version-config version.ini" in run
     assert "next_patch_version" not in run
@@ -118,7 +232,7 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     assert release["with"]["source_sha"] == (
         "${{ needs.prepare-nightly.outputs.source_sha }}"
     )
-    assert "github.event_name == 'workflow_dispatch'" in prepare["if"]
+    assert "workflow_dispatch" in workflow["on"]
     assert release["with"]["publication_scope"] == (
         "${{ github.repository == 'ModelEngine-Group/unified-cache-management' "
         "&& 'official' || 'fork' }}"
@@ -243,10 +357,27 @@ def test_artifact_upload_restores_tag_before_generating_asset_links() -> None:
     assert 'sub("\\\\n+$"; "")' in run
 
 
-def test_release_workflow_checks_member_receipts() -> None:
-    core = (WORKFLOWS / "release-ucm.yml").read_text(encoding="utf-8")
-
-    assert "release.py members" in core
+def test_indexes_can_run_after_a_partial_member_build() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    members = jobs["publish-image-members"]
+    assert "build-images" in members["needs"] and "!cancelled()" in members["if"]
+    assert "needs.build-images.result == 'success'" not in members["if"]
+    steps = members["steps"]
+    snapshot = next(
+        i
+        for i, s in enumerate(steps)
+        if s.get("uses", "").startswith("actions/upload-artifact")
+    )
+    complete = next(
+        i for i, s in enumerate(steps) if "release.py members" in s.get("run", "")
+    )
+    assert snapshot < complete
+    indexes = jobs["publish-image-indexes"]
+    assert (
+        "publish-image-members" in indexes["needs"] and "!cancelled()" in indexes["if"]
+    )
+    assert "needs.publish-image-members.result == 'success'" not in indexes["if"]
+    assert indexes["strategy"]["fail-fast"] is False
 
 
 def test_release_state_entrypoints_install_their_dependencies() -> None:
@@ -348,16 +479,13 @@ def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> 
     assert ".repository | ascii_downcase" in core
     assert 'test "${GH_REPO}" = "${GITHUB_REPOSITORY}"' in core
     assert "Chart OCI target is outside current owner namespace" in core
-    assert "GHCR index target is outside current owner namespace" in core
+    assert "ucm_release.image_delivery publish --kind index" in core
     assert '.publish.pypi.target == "pypi"' in core
     assert '.publish.pypi.target == "testpypi"' in core
-    assert "Docker Hub namespace is outside docker.io" in core
     assert core.count("modelengine-group/unified-cache-management") >= 2
 
     assert ".publication_scope == $scope" in child
-    assert "GHCR member target is outside current owner namespace" in child
-    assert "Docker Hub member is outside the planned namespace" in child
-    assert '"${namespace}/"*:*)' in child
+    assert "ucm_release.image_delivery publish --kind member" in child
 
     assert "[.builders[].target_repository] | all(startswith($prefix))" in builders
     assert "Builder target is outside current owner namespace" in builders
@@ -445,7 +573,14 @@ def test_cross_job_artifact_names_survive_failed_job_reruns() -> None:
                 artifact = step.get("with", {}).get("name", "")
                 if "github.run_attempt" in artifact:
                     # Evidence is scoped to an attempt; downstream build inputs stay run-scoped.
-                    assert artifact.startswith("ucm-release-cleanup-")
+                    assert artifact.startswith(
+                        (
+                            "ucm-release-cleanup-",
+                            "ucm-release-acceptance-",
+                            "ucm-image-member-receipt-",
+                            "ucm-image-index-receipt-",
+                        )
+                    )
     assert "GITHUB_RUN_ATTEMPT" in text  # candidate Builder tags remain retry-scoped.
 
 
@@ -531,7 +666,7 @@ def test_retention_runs_after_failed_planning_artifacts_or_finalization() -> Non
     # Only validated release inputs gate retention: failed or skipped downstream
     # jobs, and a missing cleanup manifest, do not suppress this job.
     assert " ".join(cleanup["if"].split()) == (
-        "${{ always() && inputs.release_type != 'nightly' && "
+        "${{ always() && (inputs.release_type == 'stable' || inputs.release_type == 'prerelease') && "
         "needs.release-preflight.result == 'success' && needs.release-preflight.outputs.enabled == 'true' }}"
     )
     retention_steps = [
@@ -894,17 +1029,9 @@ def test_release_image_retries_each_enabled_profile_member_after_verification() 
     )
     assert disk_cleanup["with"]["large-packages"] is True
     assert "docker buildx prune --all --force" in reclaim["run"]
-    assert "publish_member()" in publish["run"]
-    assert "publish_channel()" in publish["run"]
-    assert "for attempt in 1 2 3" in publish["run"]
-    assert 'publish_member "${channel}" "${reference}"' in publish["run"]
-    assert "docker login ghcr.io" in publish["run"]
-    assert "docker login docker.io" in publish["run"]
-    assert 'skopeo copy "oci-archive:out/image.oci.tar"' in publish["run"]
-    assert "retrying in ${sleep_seconds}s" in publish["run"]
-    assert ".publish.ghcr.enabled" in publish["run"]
-    assert ".publish.dockerhub.enabled" in publish["run"]
-    assert "targets:[{channel:" not in publish["run"]
+    assert disk_cleanup["timeout-minutes"] == 30
+    assert "ucm_release.image_delivery publish --kind member" in publish["run"]
+    assert "with-docker-disk-report.sh skopeo copy" in verify["run"]
     assert "for attempt in 1 2 3" not in build["run"]
     assert "retry-registry-command.sh" in build["run"]
     assert "--retry-quay-blob" in build["run"]
@@ -948,3 +1075,28 @@ def test_wheel_only_release_downloads_toolkit_without_requiring_chart() -> None:
         if step.get("name") == "Upload backend Wheels, Chart, and Config"
     )
     assert "artifacts=(input/wheels/*/*.whl input/toolkit/*.whl)" in upload
+
+
+def test_draft_retention_runs_separately_on_completed_trusted_tags():
+    workflow = _load("draft-cleanup.yml")
+    assert workflow["on"]["workflow_run"]["types"] == ["completed"]
+    assert workflow["on"]["workflow_dispatch"]["inputs"]["dry_run"]["default"] is True
+    job = workflow["jobs"]["cleanup"]
+    assert "workflow_run.conclusion" not in job["if"]
+    for required in (
+        "head_repository.full_name == github.repository",
+        "release-tag.yml",
+        "workflow_run.event == 'push'",
+        "workflow_run.head_branch, 'draft/v'",
+    ):
+        assert required in job["if"]
+    assert workflow["concurrency"]["group"].endswith("-draft")
+    assert workflow["concurrency"]["queue"] == "max"
+    assert (
+        job["steps"][0]["with"]["ref"]
+        == "${{ github.event.repository.default_branch }}"
+    )
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    for option in ("--current-tag", "--dry-run", "--report", "--inventory"):
+        assert option in commands
+    assert "continue-on-error" not in yaml.safe_dump(job)

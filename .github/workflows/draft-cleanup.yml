@@ -1,0 +1,100 @@
+name: UCM Draft Retention
+
+on:
+  workflow_run:
+    workflows: ["UCM Tag Release · Stable, Prerelease, Draft, and Nightly"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview without deleting
+        type: boolean
+        default: true
+      history_inventory:
+        description: Optional reviewed JSON under .github/release/history/
+        type: string
+
+concurrency:
+  # Also serializes with inline retention in older Tag workflows.
+  group: ucm-release-retention-${{ github.repository_id }}-draft
+  queue: max
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    if: >-
+      ${{ (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+          (github.event.workflow_run.head_repository.full_name == github.repository &&
+           github.event.workflow_run.event == 'push' &&
+           (github.event.workflow_run.path == '.github/workflows/release-tag.yml' ||
+            startsWith(github.event.workflow_run.path, '.github/workflows/release-tag.yml@')) &&
+           startsWith(github.event.workflow_run.head_branch, 'draft/v')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'release-production' || 'fork-preview' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CURRENT_TAG: ${{ github.event.workflow_run.head_branch }}
+      DRY_RUN: ${{ inputs.dry_run || false }}
+      HISTORY_INVENTORY: ${{ inputs.history_inventory }}
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check -r .github/release/requirements.txt
+      - uses: ./.github/actions/setup-crane
+      - name: Apply Draft retention
+        env:
+          FORK_TEST_PYPI: ${{ github.repository != 'ModelEngine-Group/unified-cache-management' && secrets.TEST_PYPI_API_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/cleanup
+          git rev-parse HEAD >out/cleanup/implementation-sha.txt
+          resolved="$(PYTHONPATH=.github/release python -c '
+          import json, os
+          from ucm_release import policy
+          print(json.dumps(policy.resolve(release_type="draft",
+              fork_test_pypi=os.environ["FORK_TEST_PYPI"] == "true",
+              dockerhub_namespace=os.environ["DOCKERHUB_NAMESPACE"] or None)))')"
+          if jq -e '.publish.dockerhub.enabled' <<<"$resolved" >/dev/null; then
+            printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+          args=(retention --repository "$GH_REPO" --release-type draft
+                --max-count "$(jq -er '.release_profile.max_count' <<<"$resolved")"
+                --pypi-enabled "$(jq -r '.publish.pypi.enabled' <<<"$resolved")"
+                --report out/cleanup/report.json)
+          if [[ -n "$CURRENT_TAG" ]]; then args+=(--current-tag "$CURRENT_TAG"); fi
+          if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          if [[ -n "$HISTORY_INVENTORY" ]]; then
+            [[ "$HISTORY_INVENTORY" =~ ^\.github/release/history/[A-Za-z0-9._-]+\.json$ ]]
+            test -f "$HISTORY_INVENTORY"
+            args+=(--inventory "$HISTORY_INVENTORY")
+          fi
+          python .github/release/ucm_release/cleanup.py "${args[@]}" 2>&1 | tee out/cleanup/cleanup.log
+      - name: Summarize blocked versions
+        if: ${{ always() && hashFiles('out/cleanup/report.json') != '' }}
+        run: |
+          jq -r '.results[] | select(.status == "blocked") | [.tag, (.reason // (.failures | map(.error) | join(", ")))] | @tsv' \
+            out/cleanup/report.json >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() }}
+        with:
+          name: ucm-draft-retention-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: out/cleanup/
+          if-no-files-found: warn
+          retention-days: 90

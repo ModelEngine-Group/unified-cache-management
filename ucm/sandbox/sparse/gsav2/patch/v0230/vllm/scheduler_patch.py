@@ -265,7 +265,6 @@ def __init__(
 def schedule(self) -> SchedulerOutput:
     from ucm.sparse.base import INVALID_SLOT
     from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     self.current_step += 1
     # NOTE(woosuk) on the scheduling algorithm:
@@ -291,7 +290,7 @@ def schedule(self) -> SchedulerOutput:
         # Do not schedule any requests when paused.
         token_budget = 0
 
-    if has_ucm_sparse() and PTOPK_PREFETCH_ENABLE:
+    if has_ucm_sparse():
         get_ucm_sparse().update_scheduler_free_slot(0)
 
     # Encoder-related.
@@ -919,12 +918,11 @@ def _preempt_request(self, request: Request, timestamp: float) -> None:
     method.
     """
     from ucm.sparse.state import get_ucm_sparse, has_ucm_sparse
-    from ucm.sparse.utils import PTOPK_PREFETCH_ENABLE
 
     assert (
         request.status == RequestStatus.RUNNING
     ), "Only running requests can be preempted"
-    if has_ucm_sparse() and PTOPK_PREFETCH_ENABLE:
+    if has_ucm_sparse():
         get_ucm_sparse().update_scheduler_free_slot(
             -1 * len(request._all_token_ids) // self.cache_config.block_size
         )

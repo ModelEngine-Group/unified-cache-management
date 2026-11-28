@@ -48,6 +48,10 @@ struct ResolvedKVBuffer {
 // remain unchanged. Implementations must be deterministic and thread-safe.
 class KeyResolver {
 public:
+    explicit KeyResolver(std::uint32_t configuredNamespaceId)
+        : configuredNamespaceId_(configuredNamespaceId)
+    {
+    }
     virtual ~KeyResolver() = default;
     Status Resolve(const CacheKey& input, std::string_view baseKvns,
                    ResolvedCacheKey& result) const;
@@ -60,8 +64,12 @@ protected:
     };
 
     virtual Status ParseEngineKey(std::string_view input, ParsedKey& result) const = 0;
+
+private:
+    const std::uint32_t configuredNamespaceId_;
 };
 
-std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config);
+std::unique_ptr<KeyResolver> CreateDefaultKeyResolver(const KeyResolutionConfig& config,
+                                                      std::uint32_t configuredNamespaceId);
 
 }  // namespace kv

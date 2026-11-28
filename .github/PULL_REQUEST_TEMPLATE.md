@@ -1,6 +1,10 @@
 ## Purpose
 
-## Modifications 
+Link requirement or bug Issues in the Development sidebar, or use GitHub closing
+keywords (`Fixes`, `Closes`) followed by the Issue reference. GitHub's native Development
+relationships supply release associations.
+
+## Modifications
 
 ## Test
 

@@ -19,7 +19,6 @@ from ucm.sparse.utils import (
     GSA_SPARSE_LEN,
     IS_INDEXER_OFFLOAD,
     PREFETCH_TYPE,
-    PTOPK_PREFETCH_ENABLE,
     SPA_TOKENS_LEN,
     STREAM_NUM,
     align_to_256bytes,
@@ -123,10 +122,6 @@ class GSAPrefetchBase:
         self.k_cache_ptr = [None] * self.layer_num
         self.v_cache_ptr = [None] * self.layer_num
 
-    def update_topk_index(self, layer_id, req_id) -> list:
-        topk_indices = self.prefetch_engine_c.get_topk_indices(layer_id, req_id)
-        return topk_indices
-
     def del_finish_meta(self, del_req, flag: bool = True) -> None:
-        if PTOPK_PREFETCH_ENABLE and flag:
+        if flag:
             self.prefetch_engine_c.del_blocks_map(del_req)

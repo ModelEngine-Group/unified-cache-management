@@ -4,7 +4,7 @@
     {
       "name": "Prefix Cache Query Breakdown: GPU/HBM Prefix Hit Tokens",
       "type": "promql",
-      "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
+      "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))\nor\nsum(increase(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
       "value": "value",
       "aggregate": "sum",
       "unit": "short"
@@ -20,7 +20,7 @@
     {
       "name": "Prefix Cache Query Breakdown: Misses",
       "type": "promql",
-      "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
+      "expr": "clamp_min((sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)\nor\nclamp_min((sum(increase(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))) - (sum(increase(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))), 0)",
       "value": "value",
       "aggregate": "sum",
       "unit": "short"

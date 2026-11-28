@@ -151,3 +151,81 @@ def test_mamba_split_patch_is_scoped_to_0300(
     )
     assert (target in imported) is expected
     assert "0.30.0" in module.get_supported_versions()
+
+
+@pytest.mark.parametrize(
+    "version,ascend_version,enabled,expected",
+    [
+        ("0.29.9", "0.30.0", True, False),
+        ("0.30.0rc1", "0.30.0rc1", True, True),
+        ("0.30.0", None, True, True),
+        ("0.30.0", "0.30.0", False, False),
+        ("0.31.0", "0.31.0", True, True),
+        ("0.34.0", None, True, True),
+    ],
+)
+def test_multi_connector_handshake_patch_routing(
+    version, ascend_version, enabled, expected
+):
+    module, _ = _load_apply_patch_module()
+    imported = []
+    original_import = __import__
+    prefix = "ucm.integration.vllm.patch."
+
+    def capture_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith(prefix):
+            imported.append(name)
+            return MagicMock()
+        return original_import(name, globals, locals, fromlist, level)
+
+    with (
+        patch.object(module, "ENABLE_UCM_PATCH", enabled),
+        patch.object(module, "_read_vllm_version_raw", return_value=version),
+        patch.object(
+            module, "_read_vllm_ascend_version_raw", return_value=ascend_version
+        ),
+        patch("builtins.__import__", side_effect=capture_import),
+    ):
+        module.apply_all_patches()
+
+    assert (prefix + "v0300.multi_connector_handshake_patch" in imported) is expected
+
+
+@pytest.mark.parametrize(
+    "version,ascend_version,enabled,expected",
+    [
+        ("0.30.0rc1", "0.30.0rc1", True, True),
+        ("0.32.0rc1", "0.32.0rc1", True, True),
+        ("0.32.0", "0.32.0", True, True),
+        ("0.32.0", "0.32.0", False, False),
+        ("0.32.0", None, True, False),
+        ("0.31.0", "0.31.0", True, False),
+        ("0.33.0", "0.33.0", True, False),
+    ],
+)
+def test_balance_sync_patch_is_scoped_to_0300_and_0320(
+    version, ascend_version, enabled, expected
+):
+    module, _ = _load_apply_patch_module()
+    imported = []
+    original_import = __import__
+
+    def capture_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("ucm.integration.vllm.patch."):
+            imported.append(name)
+            return MagicMock()
+        return original_import(name, globals, locals, fromlist, level)
+
+    with (
+        patch.object(module, "ENABLE_UCM_PATCH", enabled),
+        patch.object(module, "_read_vllm_version_raw", return_value=version),
+        patch.object(
+            module, "_read_vllm_ascend_version_raw", return_value=ascend_version
+        ),
+        patch("builtins.__import__", side_effect=capture_import),
+    ):
+        module.apply_all_patches()
+
+    target = "ucm.integration.vllm.patch.v0300.vllm_ascend.balance_sync_kv_load_patch"
+    assert (target in imported) is expected
+    assert "0.30.0" in module.get_supported_versions()
