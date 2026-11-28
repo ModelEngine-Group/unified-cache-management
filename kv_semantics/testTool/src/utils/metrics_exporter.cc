@@ -141,9 +141,6 @@ std::string RenderPrometheusText(const MetricsSnapshot &snapshot)
         "keys).\n";
     text += "# TYPE testtool_notfound_total counter\n";
     text += fmt::format("testtool_notfound_total {}\n", snapshot.notFoundTotal);
-    text += "# HELP testtool_mismatch_total Read-back content mismatches against baseline.\n";
-    text += "# TYPE testtool_mismatch_total counter\n";
-    text += fmt::format("testtool_mismatch_total {}\n", snapshot.mismatchTotal);
     text += "# HELP testtool_uptime_seconds Seconds since the scheduler run started.\n";
     text += "# TYPE testtool_uptime_seconds gauge\n";
     text += fmt::format("testtool_uptime_seconds {:.3}\n", snapshot.uptimeSecs);

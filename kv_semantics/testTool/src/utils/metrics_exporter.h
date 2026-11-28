@@ -59,8 +59,6 @@ struct MetricsSnapshot {
     std::uint64_t errorsTotal = 0;
     /** 全局 NOT_FOUND 观察计数 */
     std::uint64_t notFoundTotal = 0;
-    /** 全局回读比对不一致计数 */
-    std::uint64_t mismatchTotal = 0;
     /** 运行时长（秒，调度器启动起） */
     double uptimeSecs = 0.0;
 };
