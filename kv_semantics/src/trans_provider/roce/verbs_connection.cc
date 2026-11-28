@@ -37,10 +37,7 @@ constexpr std::size_t kPollBatch = 16;
 // a receive one, so both share the single completion queue of the pair.
 constexpr std::uint64_t kSendWrBit = 1U;
 
-std::uint64_t ReceiveWrId(std::uint32_t index)
-{
-    return static_cast<std::uint64_t>(index) << 1U;
-}
+std::uint64_t ReceiveWrId(std::uint32_t index) { return static_cast<std::uint64_t>(index) << 1U; }
 
 std::uint64_t SendWrId(std::uint64_t tag) { return (tag << 1U) | kSendWrBit; }
 
@@ -118,8 +115,7 @@ Status VerbsConnection::Open(VerbDevice& device, VerbQp& queuePair, std::uint32_
     opened->receiveSlots_.assign(receiveDepth, ReceiveSlot{});
     for (std::uint32_t index = 0; index < receiveDepth; ++index) {
         opened->receiveSlots_[index].buffer =
-            opened->receiveStorage_.data() +
-            static_cast<std::size_t>(index) * kResponseRecordBytes;
+            opened->receiveStorage_.data() + static_cast<std::size_t>(index) * kResponseRecordBytes;
     }
 
     Status posted = opened->PostReceiveRing(error);
@@ -138,8 +134,8 @@ std::unique_ptr<VerbsConnection> VerbsConnection::OpenForTest(
     connection->queuePairIo_ = std::move(queuePairIo);
     connection->receiveDepth_ = receiveDepth;
     connection->receiveLkey_ = lkey;
-    connection->receiveStorage_.assign(static_cast<std::size_t>(receiveDepth) * kResponseRecordBytes,
-                                       0U);
+    connection->receiveStorage_.assign(
+        static_cast<std::size_t>(receiveDepth) * kResponseRecordBytes, 0U);
     connection->receiveSlots_.assign(receiveDepth, ReceiveSlot{});
     for (std::uint32_t index = 0; index < receiveDepth; ++index) {
         connection->receiveSlots_[index].buffer =
@@ -181,8 +177,8 @@ Status VerbsConnection::PostReceiveRing(std::string& error)
 }
 
 Status VerbsConnection::PostRequest(const void* sqe, std::size_t length, std::uint32_t lkey,
-                                    void* flagBuffer, std::uint16_t cid,
-                                    std::size_t responseBytes, std::string& error)
+                                    void* flagBuffer, std::uint16_t cid, std::size_t responseBytes,
+                                    std::string& error)
 {
     error.clear();
     if (sqe == nullptr || length == 0U) {
@@ -262,17 +258,29 @@ void VerbsConnection::PollCompletion()
             }
 
             const auto* response = static_cast<const std::uint32_t*>(receiveSlots_[slot].buffer);
-            const std::uint16_t cid = static_cast<std::uint16_t>(
-                __atomic_load_n(response + 3, __ATOMIC_ACQUIRE) & kSqeCidMask);
+            const std::uint32_t statusDword = __atomic_load_n(response + 3, __ATOMIC_ACQUIRE);
+            const std::uint16_t cid = static_cast<std::uint16_t>(statusDword & kSqeCidMask);
+            const std::uint16_t cqeStatus =
+                static_cast<std::uint16_t>((statusDword >> kCqeStatusShift) & kCqeStatusMask);
             const auto found = inflight_.find(cid);
             if (found != inflight_.end()) {
                 // The answer is copied before the slot is reposted: the repost
                 // recycles the buffer the copy still reads from.
                 const std::size_t received =
                     std::min<std::size_t>(completion.byteLength, kResponseRecordBytes);
-                const Status published = PublishResponse(response, received,
-                                                         found->second.flagBuffer,
-                                                         found->second.responseBytes);
+                // Only the "check result buffer" status makes the caller read the
+                // result bytes; any other status is complete with the header.  A
+                // shorter answer must not publish the cid: the caller would read
+                // result bytes the store never wrote.
+                const std::size_t required = cqeStatus == kCqeStatusCheckResult
+                                                 ? found->second.responseBytes
+                                                 : kResponseHeaderBytes;
+                if (received < required) {
+                    Fail();
+                    return;
+                }
+                const Status published = PublishResponse(
+                    response, received, found->second.flagBuffer, found->second.responseBytes);
                 if (!published.ok()) {
                     Fail();
                     return;
@@ -310,9 +318,8 @@ Status VerbsConnection::PostReceiveSlot(std::uint32_t index)
     // expose bytes of the previous one.
     std::memset(slot.buffer, 0, kResponseRecordBytes);
     std::string error;
-    const Status posted =
-        queuePairIo_->PostReceive(slot.buffer, kResponseRecordBytes, receiveLkey_,
-                                  ReceiveWrId(index), error);
+    const Status posted = queuePairIo_->PostReceive(slot.buffer, kResponseRecordBytes, receiveLkey_,
+                                                    ReceiveWrId(index), error);
     if (!posted.ok()) {
         return Status::Error(StatusCodeOf(posted, StatusCode::IO_ERROR),
                              "posting a receive buffer failed: " + error);

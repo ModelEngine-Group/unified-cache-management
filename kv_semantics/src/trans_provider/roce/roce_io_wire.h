@@ -66,8 +66,7 @@ constexpr std::size_t kSqeBatchEntryDwords = 9;
 constexpr std::size_t kSqeKeyEntryDwords = 4;
 constexpr std::size_t kSqeDwordBytes = sizeof(std::uint32_t);
 // Largest SQE the protocol can pack: an exist of 256 keys (16 + 256 * 4 dwords).
-constexpr std::size_t kSqeMaxBytes =
-    (kSqeHeaderDwords + 256 * kSqeKeyEntryDwords) * kSqeDwordBytes;
+constexpr std::size_t kSqeMaxBytes = (kSqeHeaderDwords + 256 * kSqeKeyEntryDwords) * kSqeDwordBytes;
 
 // Header bits of an SQE.  The rflag asks the store to write the completion into
 // the response buffer the request names; the send/response mode clears it and
@@ -81,6 +80,10 @@ constexpr std::uint32_t kSqeCidMask = 0xFFFFU;
 // Where the completion record keeps the cid and the status.
 constexpr std::uint32_t kCqeStatusShift = 17U;
 constexpr std::uint32_t kCqeStatusMask = 0x7FFFU;
+
+// CQE status that tells the caller to read the result buffer behind the header.
+// Every other status carries no result, so the header alone completes it.
+constexpr std::uint16_t kCqeStatusCheckResult = 0x732U;
 
 // CQE status the provider itself reports when the verbs path failed before the
 // store could answer.  The low fifteen bits travel on the wire; the client adds
@@ -153,8 +156,7 @@ inline std::size_t ResponseBytesFor(std::uint8_t opcode, std::uint16_t batchNumb
 // Reads cid, opcode and batch size out of a packed SQE and checks that the
 // buffer actually holds one.  The caller packs with ProtocolManager, so a
 // mismatch here means the wrong buffer was handed to Send(), not a peer error.
-inline Status DescribeRequest(const void* sqe, std::size_t length,
-                              RequestDescription& description)
+inline Status DescribeRequest(const void* sqe, std::size_t length, RequestDescription& description)
 {
     description = RequestDescription{};
     if (sqe == nullptr) {
@@ -165,9 +167,9 @@ inline Status DescribeRequest(const void* sqe, std::size_t length,
                              "send buffer is not aligned to a 32 bit word");
     }
     if (length < kSqeHeaderDwords * sizeof(std::uint32_t)) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "send buffer of " + std::to_string(length) +
-                                 " bytes is shorter than an SQE header");
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "send buffer of " + std::to_string(length) + " bytes is shorter than an SQE header");
     }
     if (length > kSqeMaxBytes) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
@@ -185,11 +187,8 @@ inline Status DescribeRequest(const void* sqe, std::size_t length,
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "send buffer does not start with fixed SQE bits");
     }
-    const std::uint16_t cid =
-        static_cast<std::uint16_t>((header >> kSqeCidShift) & kSqeCidMask);
-    if (cid == 0U) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "SQE cid is zero");
-    }
+    const std::uint16_t cid = static_cast<std::uint16_t>((header >> kSqeCidShift) & kSqeCidMask);
+    if (cid == 0U) { return Status::Error(StatusCode::INVALID_ARGUMENT, "SQE cid is zero"); }
 
     RequestDescription decoded;
     decoded.cid = cid;
@@ -213,8 +212,7 @@ inline Status DescribeRequest(const void* sqe, std::size_t length,
         }
         decoded.batchNumber = batchNumber;
         decoded.sqeBytes = (kSqeHeaderDwords + batchNumber * entryDwords) * sizeof(std::uint32_t);
-    } else if (opcode == kOpcodeStore || opcode == kOpcodeRetrieve ||
-               opcode == kOpcodeKeepAlive) {
+    } else if (opcode == kOpcodeStore || opcode == kOpcodeRetrieve || opcode == kOpcodeKeepAlive) {
         decoded.batchNumber = 1;
         decoded.sqeBytes = kSqeHeaderDwords * sizeof(std::uint32_t);
     } else {
@@ -245,14 +243,14 @@ inline Status PublishResponse(const void* response, std::size_t receivedBytes, v
         return Status::Error(StatusCode::INVALID_ARGUMENT, "response or flag buffer is null");
     }
     if (receivedBytes < kResponseHeaderBytes) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "response of " + std::to_string(receivedBytes) +
-                                 " bytes carries no CQE header");
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "response of " + std::to_string(receivedBytes) + " bytes carries no CQE header");
     }
     if (capacity < kResponseHeaderBytes) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "flag buffer of " + std::to_string(capacity) +
-                                 " bytes cannot hold a CQE header");
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            "flag buffer of " + std::to_string(capacity) + " bytes cannot hold a CQE header");
     }
 
     const std::size_t room = capacity - kResponseHeaderBytes;
@@ -266,6 +264,9 @@ inline Status PublishResponse(const void* response, std::size_t receivedBytes, v
     targetDwords[0] = static_cast<const std::uint32_t*>(response)[0];
     targetDwords[1] = static_cast<const std::uint32_t*>(response)[1];
     targetDwords[2] = static_cast<const std::uint32_t*>(response)[2];
+    // The caller unpacks the result dwords for every status, so bytes the store
+    // did not send must read as zero instead of a previous answer's leftovers.
+    if (room > 0U) { std::memset(target + kResponseHeaderBytes, 0, room); }
     if (payloadBytes > 0U) {
         std::memcpy(target + kResponseHeaderBytes, source + kResponseHeaderBytes, payloadBytes);
     }
