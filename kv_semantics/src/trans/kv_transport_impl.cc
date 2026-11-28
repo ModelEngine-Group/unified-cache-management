@@ -306,7 +306,7 @@ void AsuTransportImpl::CompletionLoop()
         // A provider that owns a completion queue publishes its finished IO into
         // the flag buffers here, before the tasks are polled; doing it even while
         // no task is in flight keeps the receive ring drained.
-        if (transProvider_) { transProvider_->PollCompletion(); }
+        transProvider_->PollCompletion();
 
         const auto tasks = taskManager_.GetAll();
         if (tasks.empty()) {
