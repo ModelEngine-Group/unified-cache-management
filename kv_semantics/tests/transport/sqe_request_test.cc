@@ -449,9 +449,8 @@ TEST_F(SqeRequestTest, SendResponseModeAlsoCoversKeyOpcodeRequests)
         BatchView<ResolvedCacheKey>{keys.data(), keys.size()}
     };
     TransportSubBatchContext subBatchContext;
-    const auto status =
-        transport_->taskExecutor_->SubmitKeySubBatchRequest(AsuOpType::DELETE, subBatch,
-                                                            subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
+        AsuOpType::DELETE, subBatch, subBatchContext);
     ASSERT_TRUE(status.ok()) << status.message;
 
     const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);

@@ -310,9 +310,8 @@ KvExistRequest BuildExistRequest(const BatchView<ResolvedCacheKey>& keys,
     return request;
 }
 
-KvKeepAliveRequest BuildKeepAliveRequest(
-    std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
-    const std::unordered_map<std::string, std::string>& attrs)
+KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
+                                         const std::unordered_map<std::string, std::string>& attrs)
 {
     KvKeepAliveRequest request;
     request.cid = cid;
@@ -357,7 +356,8 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
             return std::make_unique<KvExistRequest>(std::move(request));
         }
         case KvOpcode::KeepAlive:
-            return std::make_unique<KvKeepAliveRequest>(BuildKeepAliveRequest(cid, flagBuffer, attrs));
+            return std::make_unique<KvKeepAliveRequest>(
+                BuildKeepAliveRequest(cid, flagBuffer, attrs));
         default:
             KV_ERROR("Build SQE request failed: unsupported opcode={} cid={}",
                      static_cast<int>(opcode), cid);

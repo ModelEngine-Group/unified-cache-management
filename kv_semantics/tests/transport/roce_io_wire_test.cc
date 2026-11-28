@@ -27,13 +27,13 @@
 // published into the caller's flag buffer.  Everything here is plain C++, so the
 // cases also run on a development host without rdma-core.
 
+#include "roce/roce_io_wire.h"
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
 #include "kv_types.h"
-#include "roce/roce_io_wire.h"
 
 namespace kv::test {
 namespace {
@@ -120,8 +120,8 @@ TEST(CpuKvOverRoceIoWireTest, DescribeRequestAcceptsTheKeepAliveFormat)
     sqe[5] = 0x33333333U;
 
     roce::RequestDescription description;
-    ASSERT_TRUE(roce::DescribeRequest(sqe.data(), sqe.size() * sizeof(std::uint32_t), description)
-                    .ok());
+    ASSERT_TRUE(
+        roce::DescribeRequest(sqe.data(), sqe.size() * sizeof(std::uint32_t), description).ok());
     EXPECT_EQ(0x33U, description.cid);
     EXPECT_EQ(roce::kOpcodeKeepAlive, description.opcode);
     EXPECT_EQ(roce::kResponseHeaderBytes + 1U, description.responseBytes);
@@ -151,10 +151,10 @@ TEST(CpuKvOverRoceIoWireTest, DescribeRequestRejectsMalformedRequests)
     // A zero cid can never be matched with an answer.
     std::vector<std::uint32_t> zeroCid = sqe;
     zeroCid[0] &= ~(roce::kSqeCidMask << roce::kSqeCidShift);
-    EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              roce::DescribeRequest(zeroCid.data(), zeroCid.size() * sizeof(std::uint32_t),
-                                    description)
-                  .code);
+    EXPECT_EQ(
+        StatusCode::INVALID_ARGUMENT,
+        roce::DescribeRequest(zeroCid.data(), zeroCid.size() * sizeof(std::uint32_t), description)
+            .code);
 
     // The opcode decides how the entries are laid out, so an unknown one is not
     // sent on the wire.
@@ -169,16 +169,16 @@ TEST(CpuKvOverRoceIoWireTest, DescribeRequestRejectsMalformedRequests)
     std::vector<std::uint32_t> zeroBatch = sqe;
     zeroBatch[10] = 0U;
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              roce::DescribeRequest(zeroBatch.data(),
-                                    zeroBatch.size() * sizeof(std::uint32_t), description)
+              roce::DescribeRequest(zeroBatch.data(), zeroBatch.size() * sizeof(std::uint32_t),
+                                    description)
                   .code);
 
     // Above the opcode limit the buffer size cannot be derived any more.
     const std::vector<std::uint32_t> tooManyKeys =
         MakeBatchSqe(roce::kOpcodeDelete, 7U, roce::kMaxDeleteKeys + 1U);
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              roce::DescribeRequest(tooManyKeys.data(),
-                                    tooManyKeys.size() * sizeof(std::uint32_t), description)
+              roce::DescribeRequest(tooManyKeys.data(), tooManyKeys.size() * sizeof(std::uint32_t),
+                                    description)
                   .code);
 
     // A buffer that does not match the announced batch size is not forwarded.
@@ -200,8 +200,8 @@ TEST(CpuKvOverRoceIoWireTest, PublishResponseCopiesTheCompletionIntoTheFlagBuffe
     const std::size_t capacity = roce::ResponseBytesFor(roce::kOpcodeBatchStore, 4U);
     ASSERT_GT(flag.size(), capacity);
 
-    const Status status = roce::PublishResponse(response.data(), response.size(), flag.data(),
-                                                capacity);
+    const Status status =
+        roce::PublishResponse(response.data(), response.size(), flag.data(), capacity);
     ASSERT_TRUE(status.ok()) << status.message;
 
     EXPECT_EQ(5U, LoadDword(flag, 0U));
@@ -220,9 +220,9 @@ TEST(CpuKvOverRoceIoWireTest, PublishResponseRejectsAShortCompletion)
 {
     std::vector<std::uint8_t> tooShort(roce::kResponseHeaderBytes - 1U, 0U);
     std::vector<std::uint8_t> flag(64U, 0U);
-    EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              roce::PublishResponse(tooShort.data(), tooShort.size(), flag.data(), flag.size())
-                  .code);
+    EXPECT_EQ(
+        StatusCode::INVALID_ARGUMENT,
+        roce::PublishResponse(tooShort.data(), tooShort.size(), flag.data(), flag.size()).code);
 
     std::vector<std::uint8_t> response(roce::kResponseMaxBytes, 0U);
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
@@ -240,8 +240,8 @@ TEST(CpuKvOverRoceIoWireTest, PublishResponseStaysInsideASmallerSlot)
 
     std::vector<std::uint8_t> flag(32U, 0U);
     const std::size_t capacity = roce::kResponseHeaderBytes + 4U;
-    ASSERT_TRUE(roce::PublishResponse(response.data(), response.size(), flag.data(), capacity)
-                    .ok());
+    ASSERT_TRUE(
+        roce::PublishResponse(response.data(), response.size(), flag.data(), capacity).ok());
     EXPECT_EQ(0x5AU, flag[roce::kResponseHeaderBytes]);
     EXPECT_EQ(0x5AU, flag[roce::kResponseHeaderBytes + 3U]);
     // The next four bytes belong to whatever lives behind the slot.

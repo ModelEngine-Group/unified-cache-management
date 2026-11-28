@@ -48,10 +48,6 @@ public:
         void* sendBuffer;
         void* flagBuffer;
         uint64_t len;
-        // KV opcode of the packed SQE.  The transport fills it from the sub-batch
-        // so that a provider does not have to unpack the SQE to know what it is
-        // sending; a zero means the caller did not fill it.
-        uint8_t opcode{0};
     };
 
     virtual std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches,

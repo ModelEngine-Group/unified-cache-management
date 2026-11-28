@@ -504,8 +504,7 @@ TEST(CpuKvOverRoceCreateConnectionTest, AcceptsTheShortConfigAliases)
     // Nothing listens on port 1: the failure has to be the connect attempt, not a
     // rejected configuration, which proves the aliases were understood.
     const Status status = provider.CreateConnection("127.0.0.1", "127.0.0.1", 1, 1, 200, handles);
-    EXPECT_NE(std::string::npos, status.message.find("out-of-band TCP connect"))
-        << status.message;
+    EXPECT_NE(std::string::npos, status.message.find("out-of-band TCP connect")) << status.message;
 }
 
 TEST(RoceTcpChannelTest, ReportsThatAPortIsAlreadyInUse)
