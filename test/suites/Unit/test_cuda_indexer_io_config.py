@@ -66,16 +66,14 @@ def cache_config(layout, name="model.layers.0.self_attn.indexer.k_cache"):
 
 @pytest.mark.parametrize("layout", ["new", "wrapped", "merged"])
 @pytest.mark.parametrize("layerwise", [None, False, True])
-@pytest.mark.parametrize("async_load", [False, True])
-def test_cuda_indexer_forces_whole_block_io(policy, layout, layerwise, async_load):
+def test_cuda_indexer_forces_whole_block_io(policy, layout, layerwise):
     apply, _ = policy
-    config = {"use_request_async_load": async_load, "ucm_connectors": []}
+    config = {"ucm_connectors": []}
     if layerwise is not None:
         config["use_layerwise"] = layerwise
     apply(config, cache_config(layout))
     assert config == {
         "use_layerwise": False,
-        "use_request_async_load": True,
         "ucm_connectors": [],
     }
 
@@ -90,9 +88,9 @@ def test_missing_cache_metadata_preserves_config(policy, cache):
 
 def test_already_direct_is_unchanged(policy):
     apply, _ = policy
-    config = {"use_layerwise": False, "use_request_async_load": True}
+    config = {"use_layerwise": False}
     apply(config, cache_config("new"))
-    assert config == {"use_layerwise": False, "use_request_async_load": True}
+    assert config == {"use_layerwise": False}
 
 
 @pytest.mark.parametrize("layout", ["new", "wrapped", "merged"])
@@ -112,11 +110,7 @@ def test_cache_names_across_layouts(policy, layout, cuda, name, expected):
     platform.is_cuda.return_value = cuda
     config = {"use_layerwise": True}
     apply(config, cache_config(layout, name))
-    assert config["use_layerwise"] == (not (cuda and expected))
-    if cuda and expected:
-        assert config["use_request_async_load"] is True
-    else:
-        assert config == {"use_layerwise": True}
+    assert config == {"use_layerwise": not (cuda and expected)}
 
 
 def test_layer_names_need_no_spec_metadata(policy):
@@ -131,7 +125,7 @@ def test_layer_names_need_no_spec_metadata(policy):
 @pytest.mark.parametrize("layerwise", [False, True])
 def test_cuda_indexer_pp_rejected_before_config_mutation(policy, layout, layerwise):
     apply, _ = policy
-    config = {"use_layerwise": layerwise, "use_request_async_load": False}
+    config = {"use_layerwise": layerwise}
     before = config.copy()
     with pytest.raises(RuntimeError, match="pipeline_parallel_size=1"):
         apply(config, cache_config(layout), pipeline_parallel_size=2)
@@ -221,7 +215,7 @@ def test_connector_initialization_selects_pp_path(
     connector_selection, role, layout, pp, indexer
 ):
     connector, direct, layerwise = connector_selection
-    config = {"use_layerwise": True, "use_request_async_load": False}
+    config = {"use_layerwise": True}
     vllm_config = SimpleNamespace(
         parallel_config=SimpleNamespace(pipeline_parallel_size=pp),
         scheduler_config=SimpleNamespace(),
@@ -247,10 +241,7 @@ def test_connector_initialization_selects_pp_path(
         selected.assert_called_once_with(vllm_config, role, cache)
         other.assert_not_called()
         assert instance.connector is selected.return_value
-        assert config == {
-            "use_layerwise": not indexer,
-            "use_request_async_load": indexer,
-        }
+        assert config == {"use_layerwise": not indexer}
 
 
 @pytest.mark.parametrize(

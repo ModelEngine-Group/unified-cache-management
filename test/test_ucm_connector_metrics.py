@@ -7,7 +7,6 @@ import re
 import sys
 import threading
 from collections import defaultdict
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -1659,9 +1658,10 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
     ]
 
 
-def test_request_async_alloc_dispatches_load_without_scheduled_forward():
+@pytest.mark.parametrize("layerwise", [False, True])
+def test_request_async_alloc_dispatches_load_without_scheduled_forward(layerwise):
     connector = object.__new__(UCMDirectConnector)
-    connector.use_request_async_load = True
+    connector.use_layerwise = layerwise
     connector.block_size = 16
     connector.cp_world_size = 1
     connector.requests_meta = {
@@ -1690,6 +1690,11 @@ def test_request_async_alloc_dispatches_load_without_scheduled_forward():
         preempted_req_ids=None,
     )
     metadata = connector.build_connector_meta(scheduler_output)
+
+    if layerwise:
+        assert metadata.request_meta == {}
+        assert connector._async_load_req_ids == set()
+        return
 
     assert metadata.request_meta == {
         "req-async": RequestDispatchMeta(
@@ -1752,39 +1757,70 @@ def test_request_async_reschedule_does_not_dispatch_duplicate_load():
     assert dispatch.load_async is False
 
 
-def test_request_async_poll_reports_only_completed_loads():
-    class RankConsistency:
-        def __init__(self):
-            self.ready = False
-            self.waited = []
-
-        def check_load(self, task):
-            return self.ready
-
-        def wait_load(self, task):
-            self.waited.append(task)
+@pytest.mark.parametrize("early_event", [0, 17])
+def test_request_async_poll_reports_only_completed_loads(early_event):
+    task = object()
+    request_id = "req-async"
+    previous_metrics = len(fake_ucmmetrics.updated)
 
     connector = object.__new__(UCMDirectConnector)
-    connector._rank_consistency = RankConsistency()
-    connector._pending_load_tasks = {
-        "req-async": PendingLoadTask(object(), "req-async", [40, 41])
-    }
+    connector.block_data_size = 64
+    connector._skip_null_vllm_blocks = False
+    connector.tp_rank = 0
+    connector.is_mla = False
+    connector.cp_world_size = 1
+    connector._kv_cache_config = SimpleNamespace(needs_kv_cache_zeroing=True)
+    connector._async_load_timeout_s = 30
+    connector.enable_event_sync = True
+    connector._get_event_handle = Mock(return_value=17)
+    connector.device = SimpleNamespace(
+        get_event_handle=Mock(return_value=early_event), destroy_event_handle=Mock()
+    )
+    connector.kv_cache_layout = SimpleNamespace(
+        extract_block_addrs=Mock(return_value=Mock(shape=(2, 1)))
+    )
+    connector.store = object()
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=Mock(return_value=task),
+        check_load=Mock(return_value=False),
+        wait_load=Mock(),
+    )
+    connector._pending_load_tasks = {}
+    connector._async_load_event_refs = {}
     connector._finished_async_load_req_ids = set()
+    metadata = ucm_connector_module.UCMConnectorMetadata(
+        {
+            request_id: RequestDispatchMeta(
+                load_block_ids=([b"u0", b"u1"], [40, 41]),
+                dump_block_ids=([], []),
+                load_async=True,
+            )
+        }
+    )
 
+    connector.bind_connector_metadata(metadata)
+    connector.device.get_event_handle.assert_called_once_with()
+    connector._get_event_handle.assert_not_called()
+    connector._rank_consistency.submit_load.assert_not_called()
+    connector.start_load_kv(None)
+    assert connector._get_event_handle.call_count == int(not early_event)
+    assert (
+        connector._rank_consistency.submit_load.call_args.kwargs["event_handle"] == 17
+    )
+    connector.clear_connector_metadata()
     assert connector._poll_pending_load_tasks() == set()
-    assert set(connector._pending_load_tasks) == {"req-async"}
+    connector._rank_consistency.wait_load.assert_not_called()
+    connector.device.destroy_event_handle.assert_not_called()
 
-    connector._rank_consistency.ready = True
-    assert connector._poll_pending_load_tasks() == {"req-async"}
+    connector._rank_consistency.check_load.return_value = True
+    assert connector._poll_pending_load_tasks() == {request_id}
     assert connector._pending_load_tasks == {}
-    assert len(connector._rank_consistency.waited) == 1
+    connector._rank_consistency.wait_load.assert_called_once_with(task)
+    connector.device.destroy_event_handle.assert_called_once_with(17)
+    assert fake_ucmmetrics.updated[previous_metrics:] == [{"load_bytes_total": 128}]
 
 
-def test_request_async_poll_failure_unblocks_and_invalidates_blocks():
-    class RankConsistency:
-        def check_load(self, task):
-            raise RuntimeError("load failed")
-
+def test_request_async_poll_timeout_unblocks_and_invalidates_blocks(monkeypatch):
     class WorkerMeta:
         def __init__(self):
             self.failed = set()
@@ -1793,15 +1829,24 @@ def test_request_async_poll_failure_unblocks_and_invalidates_blocks():
             self.failed.add(request_id)
 
     connector = object.__new__(UCMDirectConnector)
-    connector._rank_consistency = RankConsistency()
+    connector._async_load_timeout_s = 30
+    connector._rank_consistency = SimpleNamespace(
+        check_load=Mock(return_value=False),
+        wait_load=Mock(side_effect=TimeoutError("load timed out after draining")),
+    )
     connector._connector_worker_meta = WorkerMeta()
     connector._invalid_block_ids = set()
-    connector._pending_load_tasks = {
-        "req-async": PendingLoadTask(object(), "req-async", [40, 41])
-    }
+    now = 129.0
+    monkeypatch.setattr(ucm_connector_module.time, "monotonic", lambda: now)
+    pending = PendingLoadTask(object(), "req-async", [40, 41], submitted_at=100.0)
+    connector._pending_load_tasks = {"req-async": pending}
     connector._finished_async_load_req_ids = set()
 
+    assert connector._poll_pending_load_tasks() == set()
+    connector._rank_consistency.wait_load.assert_not_called()
+    now = 130.0
     assert connector._poll_pending_load_tasks() == {"req-async"}
+    connector._rank_consistency.wait_load.assert_called_once_with(pending.task)
     assert connector._pending_load_tasks == {}
     assert connector._connector_worker_meta.failed == {"req-async"}
     assert connector._invalid_block_ids == {40, 41}
@@ -2984,18 +3029,6 @@ def test_sparse_utils_annotations_resolve_with_torch_stub():
         assert get_type_hints(function)["return"] is int
 
 
-class DeferredLoadWaits:
-    """Control completion without racing real threads in protocol tests."""
-
-    def __init__(self):
-        self.futures = {}
-
-    def submit(self, wait, task):
-        future = Future()
-        self.futures[task] = future
-        return future
-
-
 class RecordingEventDevice:
     """NPU device stub tracking event create/destroy and synchronize calls."""
 
@@ -3031,19 +3064,26 @@ def _async_fawa_worker(has_window=True, load_async=True):
     connector.enable_event_sync = True
     connector.device = RecordingEventDevice()
     connector.fa_store = SimpleNamespace(
-        wait=Mock(), load_data=Mock(return_value=object())
+        check=Mock(return_value=False),
+        wait=Mock(),
+        load_data=Mock(return_value=object()),
     )
     connector.wa_store = (
-        SimpleNamespace(wait=Mock(), load_data=Mock(return_value=object()))
+        SimpleNamespace(
+            check=Mock(return_value=False),
+            wait=Mock(),
+            load_data=Mock(return_value=object()),
+        )
         if has_window
         else None
     )
     connector.window_group_ids = [1] if has_window else []
     connector.file_size = {"FA": 100, "WA": 40}
     connector._pending_fawa_loads = {}
+    connector._async_load_event_refs = {}
     connector._failed_fawa_loads = set()
-    connector._load_wait_executor = DeferredLoadWaits()
-    connector._load_wait_workers = 2
+    connector._async_dump_req_ids = set()
+    connector._async_load_timeout_s = 30
     connector._finished_async_load_req_ids = set()
     connector._invalid_block_ids = set()
     connector._connector_worker_meta = SimpleNamespace(mark_failed=Mock())
@@ -3065,9 +3105,6 @@ def _async_fawa_worker(has_window=True, load_async=True):
         is_scheduler=False, use_consistency_manager=True
     )
     connector._rank_consistency.finish_dump = Mock()
-    connector._rank_consistency.check_load = Mock(
-        side_effect=AssertionError("async loads must run Store.wait, not check")
-    )
     return connector
 
 
@@ -3080,7 +3117,11 @@ def test_fawa_async_load_drains_before_releasing_cancelled_request(has_window, f
     if failure == "submit":
         failing_store.load_data.side_effect = RuntimeError("submit failed")
     connector.start_load_kv(None)
-    submitted = list(connector._load_wait_executor.futures.items())
+    submitted = [
+        store
+        for store in (connector.fa_store, connector.wa_store)
+        if store is not None and store.load_data.side_effect is None
+    ]
     if submitted:
         calls = connector.fa_store.load_data.call_count
         connector.start_load_kv(None)
@@ -3088,13 +3129,10 @@ def test_fawa_async_load_drains_before_releasing_cancelled_request(has_window, f
         assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
         assert not connector._failed_fawa_loads
         connector._connector_worker_meta.mark_failed.assert_not_called()
-        for index, (task, future) in enumerate(submitted):
-            if failure == "both_wait" or (
-                failure == "wait" and task is failing_store.load_data.return_value
-            ):
-                future.set_exception(RuntimeError("wait failed"))
-            else:
-                future.set_result(None)
+        for index, store in enumerate(submitted):
+            store.check.return_value = True
+            if failure == "both_wait" or (failure == "wait" and store is failing_store):
+                store.wait.side_effect = RuntimeError("wait failed")
             if index < len(submitted) - 1:
                 assert (
                     connector.get_transfer_results(set())
@@ -3122,7 +3160,8 @@ def test_fawa_async_load_drains_before_releasing_cancelled_request(has_window, f
         ]
 
 
-def test_fawa_async_load_events_outlive_start_load_kv():
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_fawa_async_load_events_outlive_start_load_kv(shutdown):
     """Async task events must survive until each store wait drains."""
     connector = _async_fawa_worker(has_window=True)
     connector.start_load_kv(None)
@@ -3134,24 +3173,76 @@ def test_fawa_async_load_events_outlive_start_load_kv():
     assert pending.event_handle == connector.device.created[0]
 
     # One wait drains: the request's event stays for the other task.
-    futures = list(connector._load_wait_executor.futures.values())
-    futures[0].set_result(None)
+    connector.fa_store.check.return_value = True
     assert connector.get_finished(set()) == (None, None)
     assert connector.device.destroyed == []
 
     # The last wait drains: the request's event is released exactly once.
-    futures[1].set_result(None)
-    assert connector.get_finished(set()) == (None, {"req"})
+    if shutdown:
+        prior_checks = connector.wa_store.check.call_count
+        connector.shutdown()
+        assert connector.wa_store.check.call_count == prior_checks
+    else:
+        connector.wa_store.check.return_value = True
+        assert connector.get_finished(set()) == (None, {"req"})
+    connector.fa_store.wait.assert_called_once()
+    connector.wa_store.wait.assert_called_once()
     assert connector.device.destroyed == connector.device.created
     assert not connector._pending_fawa_loads
+
+
+def test_fawa_shares_pre_forward_event_until_last_request_drains():
+    connector = _async_fawa_worker()
+    metadata = connector._get_connector_metadata()
+    metadata.request_meta["second"] = copy.copy(metadata.request_meta["req"])
+    stores = (connector.fa_store, connector.wa_store)
+    done = set()
+    for store in stores:
+        store.load_data.side_effect = lambda *args, **kwargs: object()
+        store.check.side_effect = lambda task: task in done
+
+    connector.bind_connector_metadata(metadata)
+    assert len(connector.device.created) == 1
+    handle = connector.device.created[0]
+    for store in stores:
+        store.load_data.assert_not_called()
+
+    connector.start_load_kv(None)
+    connector.clear_connector_metadata()
+    for store in stores:
+        assert [
+            call.kwargs["prerequisite_handle"]
+            for call in store.load_data.call_args_list
+        ] == [handle, handle]
+    assert connector.device.created == [handle]
+    assert connector.device.destroyed == []
+
+    done.update(load.task for load in connector._pending_fawa_loads["req"].tasks)
+    assert connector.get_finished(set()) == (None, {"req"})
+    assert connector.device.destroyed == []
+
+    connector.shutdown()
+    assert connector.device.destroyed == [handle]
+    assert connector._async_load_event_refs == {}
+
+
+def test_fawa_releases_pre_forward_event_without_submitting():
+    connector = _async_fawa_worker()
+    connector.bind_connector_metadata(connector._get_connector_metadata())
+    assert len(connector.device.created) == 1
+
+    connector.clear_connector_metadata()
+    connector.shutdown()
+    assert connector.device.destroyed == connector.device.created
+    assert connector._async_load_event_refs == {}
 
 
 def test_fawa_async_load_event_released_when_wait_fails():
     connector = _async_fawa_worker(has_window=False)
     connector.start_load_kv(None)
     assert connector.device.destroyed == []
-    future = next(iter(connector._load_wait_executor.futures.values()))
-    future.set_exception(RuntimeError("DMA failed"))
+    connector.fa_store.check.return_value = True
+    connector.fa_store.wait.side_effect = RuntimeError("DMA failed")
     result = connector.get_transfer_results(set())
     assert result.failed_recving == {"req"}
     assert connector.device.destroyed == connector.device.created
@@ -3186,52 +3277,40 @@ def test_fawa_sync_load_event_released_after_wait():
     assert not connector._pending_fawa_loads
 
 
-def test_fawa_background_wait_times_out_but_keeps_hbm_until_both_tasks_drain():
-    """An always-incomplete Store.check must not bypass timeout/cancel/drain."""
+def test_fawa_waits_on_expired_tasks_and_keeps_hbm_until_both_tasks_drain(monkeypatch):
     connector = _async_fawa_worker()
-    connector._load_wait_executor = None
-    timed_out = {label: threading.Event() for label in ("FA", "WA")}
-    drain = {label: threading.Event() for label in ("FA", "WA")}
-    cancelled = []
+    now = 100.0
+    monkeypatch.setattr(ucm_connector_module.time, "monotonic", lambda: now)
 
-    def wait(label):
-        # Emulate the Store contract: deadline -> cancel -> drain -> exception.
-        assert not drain[label].wait(0.02)
-        cancelled.append(label)
-        timed_out[label].set()
-        assert drain[label].wait(5), "test did not release the simulated I/O"
+    def wait(task):
+        assert not connector.device.destroyed
+        connector._connector_worker_meta.mark_failed.assert_not_called()
         raise TimeoutError("Store timeout after draining")
 
-    for label, store in (("FA", connector.fa_store), ("WA", connector.wa_store)):
-        store.check = Mock(return_value=False)
-        store.wait = lambda task, label=label: wait(label)
-    try:
-        connector.start_load_kv(None)
-        futures = {
-            t.label: t.wait_future for t in connector._pending_fawa_loads["req"].tasks
-        }
-        assert all(event.wait(2) for event in timed_out.values())
-        assert set(cancelled) == {"FA", "WA"}
-        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
-        drain["FA"].set()
-        with pytest.raises(TimeoutError):
-            futures["FA"].result(timeout=2)
-        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
-        assert connector.get_block_ids_with_load_errors() == set()
-        drain["WA"].set()
-        with pytest.raises(TimeoutError):
-            futures["WA"].result(timeout=2)
-        assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults(
-            finished_recving={"req"}, failed_recving={"req"}
-        )
-        assert not connector._rank_consistency._load_task_contexts
-        connector.fa_store.check.assert_not_called()
-        connector.wa_store.check.assert_not_called()
-    finally:
-        for event in drain.values():
-            event.set()
-        connector.shutdown()
-    assert connector._load_wait_executor is None
+    connector.fa_store.wait.side_effect = wait
+    connector.wa_store.wait.side_effect = wait
+    connector.start_load_kv(None)
+    connector._pending_fawa_loads["req"].tasks[1].submitted_at = 101.0
+
+    now = 129.0
+    assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
+    connector.fa_store.wait.assert_not_called()
+    connector.wa_store.wait.assert_not_called()
+
+    now = 130.0
+    assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults()
+    connector.fa_store.wait.assert_called_once()
+    connector.wa_store.wait.assert_not_called()
+    assert not connector.device.destroyed
+    assert connector.get_block_ids_with_load_errors() == set()
+
+    now = 131.0
+    assert connector.get_transfer_results({"req"}) == KVConnectorTransferResults(
+        finished_recving={"req"}, failed_recving={"req"}
+    )
+    connector.wa_store.wait.assert_called_once()
+    assert connector.device.destroyed == connector.device.created
+    assert not connector._rank_consistency._load_task_contexts
 
 
 def test_fawa_legacy_protocol_fails_closed_only_after_io_drains(monkeypatch):
@@ -3240,10 +3319,10 @@ def test_fawa_legacy_protocol_fails_closed_only_after_io_drains(monkeypatch):
     monkeypatch.setattr(hma, "KVConnectorTransferResults", None)
     connector = _async_fawa_worker()
     connector.start_load_kv(None)
-    futures = list(connector._load_wait_executor.futures.values())
-    futures[0].set_exception(RuntimeError("FA failed"))
+    connector.fa_store.check.return_value = True
+    connector.fa_store.wait.side_effect = RuntimeError("FA failed")
     assert connector.get_finished({"req"}) == (None, None)
-    futures[1].set_result(None)
+    connector.wa_store.check.return_value = True
     with pytest.raises(
         RuntimeError, match="lacks KVConnectorTransferResults.failed_recving"
     ):
@@ -3259,22 +3338,21 @@ def test_fawa_legacy_protocol_still_reports_successful_async_completion(monkeypa
     connector = _async_fawa_worker()
     connector.start_load_kv(None)
     assert connector.get_finished({"req"}) == (None, None)
-    for future in connector._load_wait_executor.futures.values():
-        future.set_result(None)
+    connector.fa_store.check.return_value = True
+    connector.wa_store.check.return_value = True
     assert connector.get_finished({"req"}) == (None, {"req"})
     assert connector.get_finished(set()) == (None, None)
 
 
-def test_fawa_background_not_found_updates_rank_consistency_on_worker_thread():
+def test_fawa_wait_not_found_updates_rank_consistency():
     from ucm.store.pipeline.errors import StoreNotFoundError
 
     connector = _async_fawa_worker(False)
     connector.start_load_kv(None)
-    future = next(iter(connector._load_wait_executor.futures.values()))
-    # Completion in the background does not mutate the rank-consistency state.
     mark_missing = Mock()
     connector._rank_consistency._mark_load_context_missing = mark_missing
-    future.set_exception(StoreNotFoundError("missing"))
+    connector.fa_store.check.return_value = True
+    connector.fa_store.wait.side_effect = StoreNotFoundError("missing")
     mark_missing.assert_not_called()
     result = connector.get_transfer_results(set())
     assert result.failed_recving == {"req"}
@@ -3286,10 +3364,10 @@ def test_outer_connector_exposes_failed_recving_after_all_groups_drain():
     outer = object.__new__(UCMConnector)
     outer.connector = worker
     worker.start_load_kv(None)
-    futures = list(worker._load_wait_executor.futures.values())
-    futures[0].set_exception(RuntimeError("FA failed"))
+    worker.fa_store.check.return_value = True
+    worker.fa_store.wait.side_effect = RuntimeError("FA failed")
     assert outer.get_transfer_results(set()) == KVConnectorTransferResults()
-    futures[1].set_result(None)
+    worker.wa_store.check.return_value = True
     assert outer.get_transfer_results(set()) == KVConnectorTransferResults(
         finished_recving={"req"}, failed_recving={"req"}
     )
@@ -3313,9 +3391,9 @@ def test_fawa_records_only_successful_load_task_bytes():
     failed_requests = []
     connector._handle_load_err = failed_requests.append
     tasks = [
-        FAWALoadTask("req-1", "FA", None, "fa", 2),
-        FAWALoadTask("req-1", "WA", None, "wa", 1),
-        FAWALoadTask("req-2", "WA", None, "failed", 1),
+        FAWALoadTask("req-1", "FA", "fa", 2, submitted_at=0.0),
+        FAWALoadTask("req-1", "WA", "wa", 1, submitted_at=0.0),
+        FAWALoadTask("req-2", "WA", "failed", 1, submitted_at=0.0),
     ]
 
     connector._wait_all_load_task(tasks)
