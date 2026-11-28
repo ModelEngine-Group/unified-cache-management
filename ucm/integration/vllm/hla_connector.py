@@ -2911,8 +2911,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 continue
             pending = HLAPendingLoad(request_id)
-            if getattr(self._kv_cache_config, "needs_kv_cache_zeroing", False):
-                pending.event_handle = self._acquire_async_load_event()
             mla_count = (
                 getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
                 if self.is_mla
@@ -2927,6 +2925,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 if start == end:
                     continue
                 try:
+                    if not pending.tasks and getattr(
+                        self._kv_cache_config, "needs_kv_cache_zeroing", False
+                    ):
+                        pending.event_handle = self._acquire_async_load_event()
                     ptrs = layout.extract_block_addrs(
                         scoped_vllm[start:end], scoped_groups[start:end]
                     )
