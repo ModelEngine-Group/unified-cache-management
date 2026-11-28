@@ -1837,14 +1837,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         vllm_config: "VllmConfig",
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
-        *,
-        launch_config: Optional[dict] = None,
     ):
         super().__init__(
-            vllm_config=vllm_config,
-            role=role,
-            kv_cache_config=kv_cache_config,
-            launch_config=launch_config,
+            vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         self._skip_null_vllm_blocks = True
         self._setup_cp_scoping(vllm_config)

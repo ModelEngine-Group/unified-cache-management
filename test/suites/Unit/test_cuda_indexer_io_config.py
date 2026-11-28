@@ -72,11 +72,7 @@ def test_cuda_indexer_forces_whole_block_io(policy, layout, layerwise, async_loa
     config = {"use_request_async_load": async_load, "ucm_connectors": []}
     if layerwise is not None:
         config["use_layerwise"] = layerwise
-    original = config.copy()
     apply(config, cache_config(layout))
-    if layerwise is False:
-        assert config == original
-        return
     assert config == {
         "use_layerwise": False,
         "use_request_async_load": True,
@@ -137,14 +133,8 @@ def test_cuda_indexer_pp_rejected_before_config_mutation(policy, layout, layerwi
     apply, _ = policy
     config = {"use_layerwise": layerwise, "use_request_async_load": False}
     before = config.copy()
-    if layerwise:
-        with pytest.raises(RuntimeError, match="pipeline_parallel_size=1"):
-            apply(config, cache_config(layout), pipeline_parallel_size=2)
-    else:
-        assert apply(config, cache_config(layout), pipeline_parallel_size=2) == (
-            False,
-            False,
-        )
+    with pytest.raises(RuntimeError, match="pipeline_parallel_size=1"):
+        apply(config, cache_config(layout), pipeline_parallel_size=2)
     assert config == before
 
 
@@ -190,9 +180,6 @@ def connector_selection(policy, monkeypatch):
     hla.UCMHybridLinearAttentionConnector = Mock()
     hla.UCMHybridLinearAttentionConnector.supports_kv_cache_layout.return_value = False
     hla.UCMHybridLinearAttentionLayerWiseConnector = Mock()
-    hla.UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error.return_value = (
-        None
-    )
     hla.is_cuda_blnhc_layout = Mock(return_value=False)
     hma = ModuleType("ucm.integration.vllm.hma_connector")
     hma.UCMFAWAConnector = Mock()
@@ -257,8 +244,7 @@ def test_connector_initialization_selects_pp_path(
     else:
         instance = connector(vllm_config, role, cache)
         selected, other = (direct, layerwise) if indexer else (layerwise, direct)
-        kwargs = {"launch_config": config} if indexer else {}
-        selected.assert_called_once_with(vllm_config, role, cache, **kwargs)
+        selected.assert_called_once_with(vllm_config, role, cache)
         other.assert_not_called()
         assert instance.connector is selected.return_value
         assert config == {
@@ -297,93 +283,3 @@ def test_empty_layer_names_falls_back_to_specs(policy, name, expected):
     config = {"use_layerwise": True}
     apply(config, SimpleNamespace(kv_cache_groups=[group]))
     assert config["use_layerwise"] is (not expected)
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        SimpleNamespace(cache_role="indexer"),
-        type("MambaSpec", (), {})(),
-        type("DerivedWindowSpec", (type("SlidingWindowMLASpec", (), {}),), {})(),
-        SimpleNamespace(model_version="deepseek_v4"),
-    ],
-)
-def test_cuda_specialized_specs_force_request_async(policy, spec):
-    apply, _ = policy
-    config = {"use_layerwise": True}
-    cache = SimpleNamespace(
-        kv_cache_groups=[SimpleNamespace(kv_cache_specs={"layer": spec})]
-    )
-    assert apply(config, cache)[0]
-    assert config == {"use_layerwise": False, "use_request_async_load": True}
-
-
-@pytest.mark.parametrize("with_full_attention", [False, True])
-def test_standard_swa_keeps_layerwise(policy, with_full_attention):
-    apply, _ = policy
-    config = {"use_layerwise": True}
-    cache = SimpleNamespace(
-        kv_cache_groups=[
-            SimpleNamespace(
-                kv_cache_specs={"layer": SimpleNamespace(sliding_window=128)}
-            )
-        ]
-    )
-    if with_full_attention:
-        cache.kv_cache_groups.insert(
-            0, SimpleNamespace(kv_cache_specs={"full": SimpleNamespace()})
-        )
-    assert apply(config, cache) == (False, False)
-    assert config == {"use_layerwise": True}
-
-
-@pytest.mark.parametrize(
-    "specialized,overrides,fallback,force_async",
-    [
-        ("hla", {}, None, True),
-        ("hla", {"use_layerwise": False}, None, False),
-        ("hla", {"hybrid_linear_attention_layerwise": False}, None, False),
-        ("hla", {}, "unsupported compilation", False),
-        ("fawa", {}, None, False),
-        (None, {}, None, False),
-    ],
-)
-def test_cuda_hybrid_requires_compatible_connector(
-    connector_selection, specialized, overrides, fallback, force_async
-):
-    from ucm.integration.vllm.hla_connector import (
-        UCMHybridLinearAttentionConnector,
-        UCMHybridLinearAttentionLayerWiseConnector,
-    )
-    from ucm.integration.vllm.hma_connector import UCMFAWAConnector
-
-    connector, direct, layerwise = connector_selection
-    hla = UCMHybridLinearAttentionConnector
-    fawa = UCMFAWAConnector
-    hla.supports_kv_cache_layout.return_value = specialized == "hla"
-    fawa.can_handle_kv_cache_config.return_value = specialized == "fawa"
-    UCMHybridLinearAttentionLayerWiseConnector.layerwise_engine_config_error.return_value = (
-        fallback
-    )
-    config = {"use_layerwise": True, "use_request_async_load": False, **overrides}
-    expected_config = config.copy()
-    vllm_config = SimpleNamespace(
-        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
-        scheduler_config=SimpleNamespace(),
-        kv_transfer_config=SimpleNamespace(engine_id="test", config=config),
-    )
-    cache = cache_config("merged")
-    if specialized is None:
-        with pytest.raises(RuntimeError, match="no compatible request-async connector"):
-            connector(vllm_config, "scheduler", cache)
-    else:
-        instance = connector(vllm_config, "scheduler", cache)
-        selected = {"hla": hla, "fawa": fawa}[specialized]
-        kwargs = {"launch_config": config} if specialized == "hla" else {}
-        selected.assert_called_once_with(vllm_config, "scheduler", cache, **kwargs)
-        assert instance.connector is selected.return_value
-        if force_async:
-            expected_config.update(use_layerwise=False, use_request_async_load=True)
-        assert config == expected_config
-    direct.assert_not_called()
-    layerwise.assert_not_called()

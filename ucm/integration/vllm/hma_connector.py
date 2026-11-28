@@ -1431,9 +1431,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     @staticmethod
     def _specs_for_group(group) -> list[object]:
-        specs = getattr(group, "kv_cache_specs", None)
-        if specs is not None:
-            return list(specs.values())
         spec = group.kv_cache_spec
         nested = getattr(spec, "kv_cache_specs", None)
         if nested:
