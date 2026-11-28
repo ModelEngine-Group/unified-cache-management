@@ -2940,7 +2940,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._drain_best_effort_dump_tasks(finished_dumps)
         self._rank_consistency.finish_dump(finished_dumps)
         self._async_dump_req_ids.difference_update(finished_dumps)
-        finished_sending = finished_dumps - pending_async_loads - finished_recving
+        # The scheduler delays freeing HBM blocks for every FAWA request
+        # (request_finished_all_groups always returns delay_free=True) and
+        # relies on this hook to release them.  Requests that never had a dump
+        # plan (e.g. fully served from the external cache, dump blocks: 0) are
+        # not in _async_dump_req_ids, so they must still be reported here;
+        # otherwise their blocks are never returned and the KV pool leaks one
+        # request worth of blocks per finished request until it deadlocks.
+        # Requests whose dump is still in flight stay in _async_dump_req_ids
+        # (just difference-updated above) and are intentionally excluded.
+        finished_sending = (
+            finished_req_ids
+            - self._async_dump_req_ids
+            - pending_async_loads
+            - finished_recving
+        )
         return finished_sending or None, finished_recving or None
 
     def get_transfer_results(self, finished_req_ids: set[str]):
