@@ -366,6 +366,11 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
                 transportTask->nodeId = nodeId;
                 transportTask->transport = snapshot->transports.at(nodeId);
                 transportTask->namespaceId = GetTargetNamespaceId(nodeId, gnsid);
+                KV_DEBUG(
+                    "ASU client transport task built: client_task_id={} op={} node={} gnsid={} "
+                    "namespace_id={} routed_keys={}.",
+                    task->taskId, AsuOpTypeName(task->opType), nodeId, gnsid,
+                    transportTask->namespaceId, indices.size());
                 task->transportTasks.push_back(std::move(transportTask));
             }
             auto& transportTask = task->transportTasks[iter->second];

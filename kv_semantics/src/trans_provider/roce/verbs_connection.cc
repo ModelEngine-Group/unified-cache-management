@@ -234,6 +234,11 @@ Status VerbsConnection::PostRequest(const void* sqe, std::size_t length, std::ui
         return Status::Error(StatusCode::RESOURCE_BUSY, error);
     }
 
+    if (kv::logger::isEnabledFor(kv::logger::Level::DEBUG)) {
+        KV_DEBUG("VerbsConnection::PostRequest request cid={} sqe_bytes={} response_bytes={} "
+                 "sqe=[{}]",
+                 cid, length, responseBytes, HexDump(sqe, length));
+    }
     const Status posted =
         queuePairIo_->PostSend(sqe, length, lkey, SendWrId(nextSendTag_++), error);
     if (!posted.ok()) {
