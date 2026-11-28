@@ -275,6 +275,68 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         )
         return methods, connector
 
+    @staticmethod
+    def _use_ascend_v41_shared_pool(connector, num_blocks=3):
+        """Mirror vLLM-Ascend #21083's one-backing, per-layer descriptors."""
+        cfg = connector._kv_cache_config
+        cfg.num_blocks = num_blocks
+        legacy_tensors = cfg.kv_cache_tensors
+        full_names = set(cfg.kv_cache_groups[0].layer_names)
+        component_sizes = {
+            ".long_kv_cache": 65536,
+            ".indexer.k_cache": 8192,
+            ".indexer.k_cache_folded": 4096,
+        }
+        backing_size = num_blocks * sum(t.block_stride for t in legacy_tensors)
+        descriptors = []
+        slot_offset = 0
+        for legacy in legacy_tensors:
+            component_offset = 0
+            for name in legacy.layers:
+                is_mla = name in full_names
+                descriptors.append(
+                    types.SimpleNamespace(
+                        size=backing_size,
+                        layers=[name],
+                        offset=slot_offset + (component_offset if is_mla else 0),
+                        layer_stride=num_blocks * legacy.block_stride,
+                        block_stride=legacy.block_stride,
+                    )
+                )
+                if is_mla:
+                    suffix = next(
+                        suffix for suffix in component_sizes if name.endswith(suffix)
+                    )
+                    component_offset += component_sizes[suffix]
+            slot_offset += num_blocks * legacy.block_stride
+        cfg.kv_cache_tensors = descriptors
+        return {tensor.layers[0]: tensor for tensor in descriptors}
+
+    def test_ascend_v41_shared_pool_matches_legacy_metadata(self):
+        for replay in (False, True):
+            for flatten in (False, True):
+                with self.subTest(replay=replay, scheduler_flattened=flatten):
+                    methods, actual = self._ascend_v41_connector()
+                    _, expected = self._ascend_v41_connector()
+                    if replay:
+                        self._enable_ascend_bounded_replay(actual)
+                        self._enable_ascend_bounded_replay(expected)
+                    self._use_ascend_v41_shared_pool(actual)
+                    if flatten:
+                        actual._kv_cache_config.kv_cache_tensors.reverse()
+                        for group in actual._kv_cache_config.kv_cache_groups:
+                            nested = getattr(
+                                group.kv_cache_spec, "kv_cache_specs", None
+                            )
+                            if nested:
+                                group.kv_cache_spec = next(iter(nested.values()))
+                    methods["_init_group_metas"](actual)
+                    methods["_init_group_metas"](expected)
+                    self.assertEqual(actual.whole_page_sizes, expected.whole_page_sizes)
+                    self.assertEqual(
+                        actual.transient_group_ids, expected.transient_group_ids
+                    )
+
     def test_ascend_v41_page_metadata_survives_scheduler_spec_flattening(self):
         methods, worker = self._ascend_v41_connector()
         scheduler = copy.deepcopy(worker)
@@ -420,7 +482,10 @@ class UCMV41CompatibilityTest(unittest.TestCase):
     def test_ascend_v41_folded_page_roundtrips_all_members(self):
         self._assert_ascend_v41_page_roundtrip(folded=True)
 
-    def _assert_ascend_v41_page_roundtrip(self, folded=False):
+    def test_ascend_v41_shared_pool_folded_roundtrips_all_members(self):
+        self._assert_ascend_v41_page_roundtrip(folded=True, shared_pool=True)
+
+    def _assert_ascend_v41_page_roundtrip(self, folded=False, shared_pool=False):
         methods, connector = self._ascend_v41_connector()
         if folded:
             self._enable_ascend_bounded_replay(connector)
@@ -434,6 +499,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             )
             cfg.kv_cache_tensors[0].layers.append(folded_name)
             cfg.kv_cache_tensors[0].block_stride = 327680
+        placements = self._use_ascend_v41_shared_pool(connector) if shared_pool else {}
         methods["_init_group_metas"](connector)
         tree = ast.parse(HMA_PATH.read_text(encoding="utf-8"))
         layout_node = next(
@@ -443,8 +509,13 @@ class UCMV41CompatibilityTest(unittest.TestCase):
         class Tensor:
             dtype = "bfloat16"
 
-            def __init__(self, page_bytes):
-                self.storage = (ctypes.c_ubyte * (3 * page_bytes))()
+            def __init__(self, page_bytes, storage=None, offset=0):
+                self.storage = (
+                    storage
+                    if storage is not None
+                    else (ctypes.c_ubyte * (3 * page_bytes))()
+                )
+                self.offset = offset
                 self.shape = (3, 64, 1, 512)
                 self.page_bytes = page_bytes
 
@@ -455,7 +526,7 @@ class UCMV41CompatibilityTest(unittest.TestCase):
                 return self
 
             def data_ptr(self):
-                return ctypes.addressof(self.storage)
+                return ctypes.addressof(self.storage) + self.offset
 
             def element_size(self):
                 return 2
@@ -489,12 +560,32 @@ class UCMV41CompatibilityTest(unittest.TestCase):
             for group in connector._kv_cache_config.kv_cache_groups
             for name in group.layer_names
         }
+        backing = (
+            (ctypes.c_ubyte * connector._kv_cache_config.kv_cache_tensors[0].size)()
+            if shared_pool
+            else None
+        )
         for name, size in connector.whole_page_sizes.items():
-            caches[name] = Tensor(size)
+            caches[name] = (
+                Tensor(size, backing, placements[name].offset)
+                if shared_pool
+                else Tensor(size)
+            )
         register["register_kv_caches"](connector, caches)
         self.assertEqual(set(connector.group_layouts), {0} if folded else {0, 2})
         layout = connector.group_layouts[0]
         self.assertEqual(len(layout.base_ptrs), 2)
+        if shared_pool:
+            backing_ptr = ctypes.addressof(backing)
+            self.assertEqual(
+                layout.base_ptrs.tolist(),
+                [backing_ptr + placements[name].offset for name in layout.kvcaches],
+            )
+            if not folded:
+                self.assertEqual(
+                    connector.group_layouts[2].base_ptrs.tolist(),
+                    layout.base_ptrs.tolist(),
+                )
         page_sizes = [327680, 262144] if folded else [262144, 262144]
         self.assertEqual(layout.segment_tensor_size_list(128, 128), page_sizes)
         self.assertEqual(
