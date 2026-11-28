@@ -162,8 +162,19 @@ std::string LineErr(std::size_t lineNo, const std::string &what, const std::stri
 
 // ---- entry 组装与校验 ----
 
+/** 解析 key token 并填充 entry 的 key 分量与 rawKey；失败返回 false */
+bool FillKey(const std::string &keyToken, RequestOrc &out)
+{
+    unsigned __int128 key = 0;
+    if (!ParseKey128(keyToken, key)) { return false; }
+    out.keyLow64 = KeyLow(key);
+    out.keyHigh16 = KeyHigh16(key);
+    out.rawKey = keyToken;
+    return true;
+}
+
 /**
- * 解析 key offset length 三 token 并填充 entry 的 key 分量 / offset / length / rawKey 与
+ * 解析 key offset length 三 token 并填充 entry 的 key 分量 / offset / length 与
  * value：value 取 textAfter 跳过 fixedCount 个 token 后的剩余原文（允许含空格，不足时置空）；
  * 失败返回 false
  */
@@ -171,32 +182,34 @@ bool FillEntry(const std::string &keyToken, const std::string &offsetToken,
                const std::string &lengthToken, const std::string &textAfter, std::size_t fixedCount,
                RequestOrc &out)
 {
-    unsigned __int128 key = 0;
     std::uint32_t offset = 0;
     std::uint32_t length = 0;
-    if (!ParseKey128(keyToken, key) || !ParseUint32(offsetToken, offset) ||
+    if (!FillKey(keyToken, out) || !ParseUint32(offsetToken, offset) ||
         !ParseUint32(lengthToken, length)) {
         return false;
     }
-    out.keyLow64 = KeyLow(key);
-    out.keyHigh16 = KeyHigh16(key);
     out.offset = offset;
     out.length = length;
-    out.rawKey = keyToken;
     out.value = TextAfterTokens(textAfter, fixedCount);
     return true;
 }
 
 /**
  * 解析单 key 行（fields 为 op 之后 token，textAfterOp 为 op 之后原文）：
- * 四字段格式 ns key offset length [value...]，ns 为必填非空的 namespace 名字符串
- * （可为数字形式的名字），字段不足即非法（无三字段回退）
+ * get/put 四字段格式 ns key offset length [value...]，exist/delete 只到 key（两字段
+ * ns key）；ns 为必填非空的 namespace 名字符串（可为数字形式的名字），字段不足即
+ * 非法（无三字段回退）
  */
-bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
-                      RequestOrc &out)
+bool ParseSingleEntry(OrcOp op, const std::vector<std::string> &fields,
+                      const std::string &textAfterOp, RequestOrc &out)
 {
-    if (fields.size() < 4) { return false; }
-    if (!FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) { return false; }
+    if (IsKeyOnlyOp(op)) {
+        if (fields.size() != 2) { return false; }
+        if (!FillKey(fields[1], out)) { return false; }
+    } else {
+        if (fields.size() < 4) { return false; }
+        if (!FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) { return false; }
+    }
     out.ns = fields[0];
     return true;
 }
@@ -216,11 +229,12 @@ bool ParseBatchHeader(const std::vector<std::string> &fields, std::string &ns)
     return false;
 }
 
-/** 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]（ns 与
- * op 由批头继承） */
-bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
+/** 解析 batch 内行（fields 为行 token，line 为行原文）：get/put 为 key offset length
+ * [value...]，exist/delete 只到 key（单 token；ns 与 op 由批头继承） */
+bool ParseBatchEntry(OrcOp op, const std::vector<std::string> &fields, const std::string &line,
                      RequestOrc &out)
 {
+    if (IsKeyOnlyOp(op)) { return fields.size() == 1 && FillKey(fields[0], out); }
     if (fields.size() < 3) { return false; }
     return FillEntry(fields[0], fields[1], fields[2], line, 3, out);
 }
@@ -228,15 +242,16 @@ bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &
 /**
  * entry 级 kv 协议约束前置校验（对齐协议层 BatchStore/BatchRetrieve 的 INVALID_ARGUMENT
  * 校验，让非法输入在启动期报错而非运行期以任务失败暴露）：key 低 64 位非全 0（CacheKey
- * 全 0 协议拒绝）、offset 与 length 512 字节对齐、length 非 0 且不超 24 位上限；
- * 违规返回 false 并经 reason 带回具体原因
+ * 全 0 协议拒绝）；offset 与 length 512 字节对齐、length 非 0 且不超 24 位上限仅对
+ * get/put 校验（exist/delete 无数据面字段）；违规返回 false 并经 reason 带回具体原因
  */
-bool ValidateEntry(const RequestOrc &entry, std::string &reason)
+bool ValidateEntry(OrcOp op, const RequestOrc &entry, std::string &reason)
 {
     if (entry.keyLow64 == 0) {
         reason = "key low 64 bits are all zero (protocol rejects all-zero cache key)";
         return false;
     }
+    if (IsKeyOnlyOp(op)) { return true; }
     if (entry.offset % kv::kAlignmentBytes != 0) {
         reason = "offset " + std::to_string(entry.offset) + " not 512B aligned";
         return false;
@@ -305,13 +320,14 @@ bool RequestManager::HandleBatchBody(std::size_t lineNo, const std::string &line
         return true;
     }
     RequestOrc entry;
-    if (!ParseBatchEntry(tokens, line, entry)) {
+    if (!ParseBatchEntry(batchTask_.op, tokens, line, entry)) {
         err = LineErr(lineNo, "invalid batch entry", line);
         return false;
     }
-    if (!CheckEntry(entry, lineNo, line, err)) { return false; }
+    // op/ns 先继承再校验：exist/delete 的豁免校验依赖 op 已就位
     entry.op = batchTask_.op;
     entry.ns = batchTask_.ns;
+    if (!CheckEntry(entry, lineNo, line, err)) { return false; }
     batchTask_.entries.emplace_back(entry);
     return true;
 }
@@ -379,10 +395,13 @@ bool RequestManager::AppendSingleTask(OrcOp op, const std::vector<std::string> &
     // value 取 op 之后固定字段外的剩余原文（传入原文供含空格 value 解析）
     RequestOrc entry;
     entry.op = op;
-    if (!ParseSingleEntry(fields, TextAfterTokens(line, 1), entry)) {
+    if (!ParseSingleEntry(op, fields, TextAfterTokens(line, 1), entry)) {
         err = LineErr(lineNo,
-                      "invalid single entry (expect: op ns key offset length [value...], "
-                      "ns required and non-empty)",
+                      IsKeyOnlyOp(op)
+                          ? "invalid single entry (expect: op ns key, exist/delete takes no "
+                            "offset/length/value)"
+                          : "invalid single entry (expect: op ns key offset length [value...], "
+                            "ns required and non-empty)",
                       line);
         return false;
     }
@@ -399,7 +418,7 @@ bool RequestManager::CheckEntry(const RequestOrc &entry, std::size_t lineNo,
                                 const std::string &line, std::string &err)
 {
     std::string reason;
-    if (ValidateEntry(entry, reason)) { return true; }
+    if (ValidateEntry(entry.op, entry, reason)) { return true; }
     err = LineErr(lineNo, "violates kv protocol constraint (" + reason + ")", line);
     return false;
 }

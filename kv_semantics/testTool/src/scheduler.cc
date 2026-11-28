@@ -297,8 +297,10 @@ void Scheduler::WorkerLoop(int workerId, int testmode)
         }
 
         const OrcTask &task = std::get<OrcTask>(flow_->GetStep(idx));
-        // 条数超池：永远凑不齐独占块，直接失败
-        if (task.entries.size() > bufferAddrs_.size()) {
+        // exist/delete 只按 key 提交（无数据面），不占用 value 缓冲块
+        const std::size_t bufferNeed = IsKeyOnlyOp(task.op) ? 0 : task.entries.size();
+        // 条数超池：永远凑不齐独占块，直接失败（仅 get/put 领块）
+        if (bufferNeed > bufferAddrs_.size()) {
             RecordFail("task " + std::to_string(idx) + " entry count " +
                        std::to_string(task.entries.size()) + " exceeds value buffer count " +
                        std::to_string(bufferAddrs_.size()));
@@ -310,7 +312,7 @@ void Scheduler::WorkerLoop(int workerId, int testmode)
         for (const auto &orc : task.entries) { taskBytes += orc.length; }
         WaitForRateLimit(taskBytes);
         std::vector<std::size_t> owned;
-        AcquireBuffers(task.entries.size(), owned);
+        AcquireBuffers(bufferNeed, owned);
 
         Request request;
         std::string buildErr;
@@ -490,6 +492,14 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
         // （IoOptions.kvns）才能生效（binary key 不消费 kvns；generic 引擎下整串身份
         // XXH64 派生 8 字节路由 key，同 key 同哈希、读写删功能等价）
         kv::CacheKey key = kv::CacheKey::FromString(std::to_string(orc.keyLow64));
+
+        // exist/delete 走 keys-only 接口：只组装 key 三项，不占数据缓冲块、无基准与读回
+        if (IsKeyOnlyOp(task.op)) {
+            request.keys.emplace_back(key);
+            request.keyHighs.emplace_back(orc.keyHigh16);
+            request.rawKeys.emplace_back(orc.rawKey);
+            continue;
+        }
 
         // value 前缀（只写前缀不补齐）写入领用块起始（device 语义经分配器 H2D 拷贝）；
         // GET 例外——预填哨兵串（见下）

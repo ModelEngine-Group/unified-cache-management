@@ -1,12 +1,13 @@
 input的格式：
 
 单key格式:
-optype ns key offset length value
+get / put: optype ns key offset length value
+exist / delete: optype ns key（只按 key 提交，不带 offset/length/value，多写启动报错）
 
 batch格式:
 optype batch ns=x 或者是 ns x （ns 必填，不可省略，不能为空）
-key offset length value
-key offset length value
+get / put 批内行: key offset length value
+exist / delete 批内行: key
 /batch
 
 其中value可省略：
@@ -24,13 +25,13 @@ ns 是请求级 namespace 名（字符串，可与数字形式的名字）：经
 命令与命令之间可插入sleep x 模拟脉冲。所有线程同步暂停X秒。
 
 其他规则：
-单key格式必须四字段（ns key offset length），缺 ns（仅三字段 key offset length）启动报错退出
-字段须满足 kv 协议约束（协议层 BatchStore/BatchRetrieve 的校验规则）：key 低 64 位不能为全 0（key=0 非法）、offset 与 length 均须 512 字节对齐、length 不能为 0、length 上限 0xFFFFFF（24 位）。违反任一约束在程序启动时报错退出（fail-fast），不会等到运行期以任务失败暴露
+get/put 单 key 行必须四字段（ns key offset length），缺 ns（仅三字段 key offset length）启动报错退出；exist/delete 单 key 行必须两字段（ns key），多写 offset/length/value 启动报错退出（exist/delete 无数据面，这些字段没有语义）
+字段须满足 kv 协议约束（协议层 BatchStore/BatchRetrieve 的校验规则）：key 低 64 位不能为全 0（key=0 非法，对全部操作生效）、offset 与 length 均须 512 字节对齐、length 不能为 0、length 上限 0xFFFFFF（24 位）——后三条仅对 get/put 校验（exist/delete 无这些字段）。违反任一约束在程序启动时报错退出（fail-fast），不会等到运行期以任务失败暴露
 对文件逐行读取，去掉尾部\n，如果最后一个字符是\r去掉，行首尾trim，trim字符集是空格和\t
 trim后为空，跳过该行。trim后以sleep开头，按sleep处理
 提取行首操作符，提取失败则启动报错退出
 如果以batch开头，开始batch。如果完全等于/batch batch结束。 文件结束时batch未闭合（无/batch）：启动报错退出，提示管理员补全
-否则按照单行请求解析：必须四字段（ns key offset length，ns 非空）。失败则启动报错退出
+否则按照单行请求解析：get/put 必须四字段（ns key offset length，ns 非空），exist/delete 必须两字段（ns key）。失败则启动报错退出
 任何非法输入数据都不会跳过或静默继续，直接返回启动错误，由管理员修正后重新启动
 不支持注释
 
