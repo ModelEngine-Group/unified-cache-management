@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "kv_client.h"
@@ -46,6 +47,9 @@ enum class OpType {
 /** 分桶的操作类型总数（OpType 枚举值范围） */
 constexpr std::size_t kOpTypeCount = 4;
 
+/** 单接口时延样本环形容量（任务级样本滚动保留最近 N 个，超容量覆盖最老样本；分位统计用） */
+constexpr std::size_t kLatencySampleCapacityPerOp = 8192;
+
 /** 执行器埋点指标（自创建起的累计值，单调递增；Scheduler 周期采样求窗口速率） */
 struct ExecutorMetrics {
     /** key 级操作总数（查询/写入/读取/删除的每个 entry 计 1；全量口径，含未命中与失败） */
@@ -62,6 +66,10 @@ struct ExecutorMetrics {
     std::uint64_t taskCount = 0;
     /** 任务提交→完成时延累计（纳秒） */
     std::uint64_t latencyNsTotal = 0;
+    /** 分接口任务时延累计（纳秒；下标为 OpType 枚举值） */
+    std::uint64_t latencyNsTotalByOp[kOpTypeCount] = {0};
+    /** 分接口完成任务数（时延样本总数） */
+    std::uint64_t taskCountByOp[kOpTypeCount] = {0};
     /** 分接口操作数（下标为 OpType 枚举值；全量口径） */
     std::uint64_t opCountByOp[kOpTypeCount] = {0};
     /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径） */
@@ -98,6 +106,10 @@ public:
 
     /** 获取当前指标快照（线程安全，供 Scheduler 周期采样） */
     ExecutorMetrics GetMetrics() const;
+
+    /** 聚集本执行器任务级时延样本（微秒）追加到 out 对应 op 桶（多次调用累计，跨执行器聚合用）；
+     * 滚动环形只含最近样本，线程安全 */
+    void AppendLatencySamplesUs(std::vector<std::uint32_t> (&out)[kOpTypeCount]) const;
 
 private:
     /** 提交查询并等待，found/not found 逐项记录进埋点；返回 false 仅当提交/等待失败 */
@@ -173,4 +185,13 @@ private:
     // 分接口桶（下标为 OpType 枚举值；数组 of atomic 不可拷贝，用逐成员数组）
     std::atomic<std::uint64_t> opCountByOp_[kOpTypeCount];
     std::atomic<std::uint64_t> ioBytesByOp_[kOpTypeCount];
+    std::atomic<std::uint64_t> latencyNsTotalByOp_[kOpTypeCount];
+    std::atomic<std::uint64_t> taskCountByOp_[kOpTypeCount];
+    // 分接口任务时延样本环形（微秒；写侧为绑定 worker 线程，读侧快照经 samplesMutex_）
+    std::vector<std::uint32_t> latencySamples_[kOpTypeCount];
+    /** 各接口环形写游标与有效样本数 */
+    std::size_t latencySamplePos_[kOpTypeCount] = {0};
+    std::size_t latencySampleCount_[kOpTypeCount] = {0};
+    /** 样本读写保护（写侧 worker 线程与读侧指标/抓取线程互斥） */
+    mutable std::mutex samplesMutex_;
 };

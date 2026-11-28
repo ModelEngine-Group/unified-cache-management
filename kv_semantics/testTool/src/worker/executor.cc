@@ -89,10 +89,13 @@ void BuildAggKeyFields(const Request &request, std::string &rawKeys, std::string
 
 Executor::Executor()
 {
-    // 分接口原子桶清零（atomic 数组不能就地默认初始化）
+    // 分接口原子桶清零（atomic 数组不能就地默认初始化）；样本环形按容量展开
     for (std::size_t i = 0; i < kOpTypeCount; ++i) {
         opCountByOp_[i].store(0, std::memory_order_relaxed);
         ioBytesByOp_[i].store(0, std::memory_order_relaxed);
+        latencyNsTotalByOp_[i].store(0, std::memory_order_relaxed);
+        taskCountByOp_[i].store(0, std::memory_order_relaxed);
+        latencySamples_[i].resize(kLatencySampleCapacityPerOp);
     }
 }
 
@@ -131,8 +134,32 @@ ExecutorMetrics Executor::GetMetrics() const
     for (std::size_t i = 0; i < kOpTypeCount; ++i) {
         metrics.opCountByOp[i] = opCountByOp_[i].load(std::memory_order_relaxed);
         metrics.ioBytesByOp[i] = ioBytesByOp_[i].load(std::memory_order_relaxed);
+        metrics.latencyNsTotalByOp[i] = latencyNsTotalByOp_[i].load(std::memory_order_relaxed);
+        metrics.taskCountByOp[i] = taskCountByOp_[i].load(std::memory_order_relaxed);
     }
     return metrics;
+}
+
+void Executor::AppendLatencySamplesUs(std::vector<std::uint32_t> (&out)[kOpTypeCount]) const
+{
+    const std::lock_guard<std::mutex> lock(samplesMutex_);
+    for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+        const std::vector<std::uint32_t> &buf = latencySamples_[op];
+        const std::size_t count = latencySampleCount_[op];
+        if (count == 0) { continue; }
+        // 未回绕：有效段 [0, count)（写游标恰在 count）；回绕后：[pos, cap) + [0, pos)（pos
+        // 为最老样本）
+        if (count < buf.size()) {
+            out[op].insert(out[op].end(), buf.begin(),
+                           buf.begin() + static_cast<std::ptrdiff_t>(count));
+        } else {
+            const std::size_t pos = latencySamplePos_[op];
+            out[op].insert(out[op].end(), buf.begin() + static_cast<std::ptrdiff_t>(pos),
+                           buf.end());
+            out[op].insert(out[op].end(), buf.begin(),
+                           buf.begin() + static_cast<std::ptrdiff_t>(pos));
+        }
+    }
 }
 
 bool Executor::QueryAndRecord(const Request &request, std::string &err)
@@ -498,6 +525,17 @@ void Executor::RecordTask(OpType op, std::size_t entryCount, std::uint64_t bytes
     if (taskCompleted) {
         taskCount_.fetch_add(1, std::memory_order_relaxed);
         latencyNsTotal_.fetch_add(static_cast<std::uint64_t>(latencyNs), std::memory_order_relaxed);
+        latencyNsTotalByOp_[bucket].fetch_add(static_cast<std::uint64_t>(latencyNs),
+                                              std::memory_order_relaxed);
+        taskCountByOp_[bucket].fetch_add(1, std::memory_order_relaxed);
+        // 完成样本入环形（微秒），分位统计用；零时延样本跳过
+        if (latencyNs > 0) {
+            const std::lock_guard<std::mutex> lock(samplesMutex_);
+            std::vector<std::uint32_t> &buf = latencySamples_[bucket];
+            buf[latencySamplePos_[bucket]] = static_cast<std::uint32_t>(latencyNs / 1000);
+            latencySamplePos_[bucket] = (latencySamplePos_[bucket] + 1) % buf.size();
+            if (latencySampleCount_[bucket] < buf.size()) { ++latencySampleCount_[bucket]; }
+        }
     }
 }
 

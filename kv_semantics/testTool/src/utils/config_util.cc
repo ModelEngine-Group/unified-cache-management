@@ -137,6 +137,30 @@ bool ConfigUtil::Check(std::string &err)
               " (expected seconds >= 0, 0 means disabled)";
         return false;
     }
+
+    // ratelimit_mb 负值拦截（0 不限速）
+    const int rateLimitMb = GetRateLimitMb();
+    if (rateLimitMb < 0) {
+        err = "invalid ratelimit_mb: " + std::to_string(rateLimitMb) +
+              " (expected MB/s >= 0, 0 means unlimited)";
+        return false;
+    }
+
+    // p99_interval_s 负值拦截（0 禁用打印）
+    const int p99Interval = GetP99IntervalSecs();
+    if (p99Interval < 0) {
+        err = "invalid p99_interval_s: " + std::to_string(p99Interval) +
+              " (expected seconds >= 0, 0 means disabled)";
+        return false;
+    }
+
+    // metrics_exporter_port 合法性拦截（1-65535；exporter 开启与否都先校验值域）
+    const int exporterPort = GetMetricsExporterPort();
+    if (exporterPort <= 0 || exporterPort > 65535) {
+        err = "invalid metrics_exporter_port: " + std::to_string(exporterPort) +
+              " (expected 1-65535)";
+        return false;
+    }
     return true;
 }
 
@@ -148,6 +172,10 @@ void ConfigUtil::Print() const
     LOG_INFO("perf={}", GetPerf());
     LOG_INFO("onlyconnect={}", GetOnlyConnect());
     LOG_INFO("autodisconnect={}", GetAutoDisconnect());
+    LOG_INFO("ratelimit_mb={}", GetRateLimitMb());
+    LOG_INFO("p99_interval_s={}", GetP99IntervalSecs());
+    LOG_INFO("metrics_exporter={}", GetMetricsExporter() ? "on" : "off");
+    LOG_INFO("metrics_exporter_port={}", GetMetricsExporterPort());
     LOG_INFO("startcoreid={}", GetStartCoreId());
     LOG_INFO("numjobs={}", GetNumJobs());
     LOG_INFO("buffersize={}", GetBufferSize());

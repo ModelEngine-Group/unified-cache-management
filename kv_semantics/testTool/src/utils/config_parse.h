@@ -51,6 +51,14 @@ std::size_t ParseSize(const std::string &key, const std::string &value);
 /** 取 key 对应 int 值；缺失或坏值抛异常 */
 int RequireInt(const std::unordered_map<std::string, std::string> &values, const std::string &key);
 
+/** 取 key 对应 int 值；key 缺失返回 fallback（新增可选键兼容存量配置），坏值抛异常 */
+int OptionalInt(const std::unordered_map<std::string, std::string> &values, const std::string &key,
+                int fallback);
+
+/** 取 key 对应字符串值；key 缺失返回 fallback（新增可选键兼容存量配置） */
+std::string OptionalValue(const std::unordered_map<std::string, std::string> &values,
+                          const std::string &key, const std::string &fallback);
+
 /** 取 key 对应 int64 值；缺失或坏值抛异常 */
 std::int64_t RequireInt64(const std::unordered_map<std::string, std::string> &values,
                           const std::string &key);
