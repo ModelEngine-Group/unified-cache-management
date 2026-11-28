@@ -584,6 +584,39 @@ def test_async_direct_load_submit_failure_does_not_use_flat_block_ids(
     connector._connector_worker_meta.mark_failed.assert_called_with("req")
 
 
+def test_async_direct_load_event_failure_does_not_stop_batch(direct_load_connector):
+    connector = direct_load_connector
+    connector._kv_cache_config = SimpleNamespace(needs_kv_cache_zeroing=True)
+    connector._get_event_handle = MagicMock(
+        side_effect=[RuntimeError("device synchronization failed"), 17]
+    )
+    connector.device.destroy_event_handle = MagicMock()
+    metadata = connector._get_connector_metadata()
+    dispatch = metadata.request_meta["req"]
+    dispatch.load_async = True
+    metadata.request_meta["next"] = dispatch
+    connector.request_data.append(("next", *connector.request_data[0][1:]))
+
+    connector._rank_consistency = SimpleNamespace(
+        submit_load=MagicMock(side_effect=lambda *args, **kwargs: object()),
+        check_load=MagicMock(return_value=True),
+        wait_load=MagicMock(),
+    )
+    connector.start_load_kv(SimpleNamespace())
+
+    assert connector._get_event_handle.call_count == 2
+    assert set(connector._pending_hla_loads) == {"next"}
+    submissions = connector._rank_consistency.submit_load.call_args_list
+    assert [set(call.args[1]) for call in submissions] == [{"next"}, {"next"}]
+    assert [call.kwargs["event_handle"] for call in submissions] == [17, 17]
+
+    results = connector.get_transfer_results(set())
+    assert results.finished_recving == {"req", "next"}
+    assert results.failed_recving == {"req"}
+    connector._connector_worker_meta.mark_failed.assert_called_once_with("req")
+    connector.device.destroy_event_handle.assert_called_once_with(17)
+
+
 @pytest.mark.parametrize(
     "is_mla,group_id,expected", [(True, 0, True), (True, 1, False), (False, 0, False)]
 )
