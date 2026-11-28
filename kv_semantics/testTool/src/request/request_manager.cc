@@ -34,6 +34,8 @@
 
 namespace {
 
+// ---- token 级原子解析 ----
+
 /** 十进制字符串解析为无符号 64 位整数；含非数字字符或溢出时返回 false */
 bool ParseUint64(const std::string &text, std::uint64_t &value)
 {
@@ -95,6 +97,8 @@ bool ParseOrcOp(const std::string &text, OrcOp &op)
     return true;
 }
 
+// ---- 行工具 ----
+
 /** 行首尾 trim（字符集为空格与 \t，readme 规则） */
 std::string TrimLine(const std::string &line)
 {
@@ -150,18 +154,104 @@ std::uint16_t KeyHigh16(const unsigned __int128 key)
     return static_cast<std::uint16_t>(key >> 64);
 }
 
+/** 组装行级错误信息：input line <N> <what>: <line> */
+std::string LineErr(std::size_t lineNo, const std::string &what, const std::string &line)
+{
+    return "input line " + std::to_string(lineNo) + " " + what + ": " + line;
+}
+
+// ---- entry 组装与校验 ----
+
+/** 解析 key token 并填充 entry 的 key 分量与 rawKey；失败返回 false */
+bool FillKey(const std::string &keyToken, RequestOrc &out)
+{
+    unsigned __int128 key = 0;
+    if (!ParseKey128(keyToken, key)) { return false; }
+    out.keyLow64 = KeyLow(key);
+    out.keyHigh16 = KeyHigh16(key);
+    out.rawKey = keyToken;
+    return true;
+}
+
+/**
+ * 解析 key offset length 三 token 并填充 entry 的 key 分量 / offset / length 与
+ * value：value 取 textAfter 跳过 fixedCount 个 token 后的剩余原文（允许含空格，不足时置空）；
+ * 失败返回 false
+ */
+bool FillEntry(const std::string &keyToken, const std::string &offsetToken,
+               const std::string &lengthToken, const std::string &textAfter, std::size_t fixedCount,
+               RequestOrc &out)
+{
+    std::uint32_t offset = 0;
+    std::uint32_t length = 0;
+    if (!FillKey(keyToken, out) || !ParseUint32(offsetToken, offset) ||
+        !ParseUint32(lengthToken, length)) {
+        return false;
+    }
+    out.offset = offset;
+    out.length = length;
+    out.value = TextAfterTokens(textAfter, fixedCount);
+    return true;
+}
+
+/**
+ * 解析单 key 行（fields 为 op 之后 token，textAfterOp 为 op 之后原文）：
+ * get/put 四字段格式 ns key offset length [value...]，exist/delete 只到 key（两字段
+ * ns key）；ns 为必填非空的 namespace 名字符串（可为数字形式的名字），字段不足即
+ * 非法（无三字段回退）
+ */
+bool ParseSingleEntry(OrcOp op, const std::vector<std::string> &fields,
+                      const std::string &textAfterOp, RequestOrc &out)
+{
+    if (IsKeyOnlyOp(op)) {
+        if (fields.size() != 2) { return false; }
+        if (!FillKey(fields[1], out)) { return false; }
+    } else {
+        if (fields.size() < 4) { return false; }
+        if (!FillEntry(fields[1], fields[2], fields[3], textAfterOp, 4, out)) { return false; }
+    }
+    out.ns = fields[0];
+    return true;
+}
+
+/** 解析 batch 头字段（fields[0] 为 "batch"）：batch ns=x 或 batch ns x 两种形态，ns 为
+ * 必填非空的 namespace 名字符串（裸 batch 即非法） */
+bool ParseBatchHeader(const std::vector<std::string> &fields, std::string &ns)
+{
+    if (fields.size() == 2 && fields[1].rfind("ns=", 0) == 0 && fields[1].size() > 3) {
+        ns = fields[1].substr(3);
+        return true;
+    }
+    if (fields.size() == 3 && fields[1] == "ns" && !fields[2].empty()) {
+        ns = fields[2];
+        return true;
+    }
+    return false;
+}
+
+/** 解析 batch 内行（fields 为行 token，line 为行原文）：get/put 为 key offset length
+ * [value...]，exist/delete 只到 key（单 token；ns 与 op 由批头继承） */
+bool ParseBatchEntry(OrcOp op, const std::vector<std::string> &fields, const std::string &line,
+                     RequestOrc &out)
+{
+    if (IsKeyOnlyOp(op)) { return fields.size() == 1 && FillKey(fields[0], out); }
+    if (fields.size() < 3) { return false; }
+    return FillEntry(fields[0], fields[1], fields[2], line, 3, out);
+}
+
 /**
  * entry 级 kv 协议约束前置校验（对齐协议层 BatchStore/BatchRetrieve 的 INVALID_ARGUMENT
  * 校验，让非法输入在启动期报错而非运行期以任务失败暴露）：key 低 64 位非全 0（CacheKey
- * 全 0 协议拒绝）、offset 与 length 512 字节对齐、length 非 0 且不超 24 位上限；
- * 违规返回 false 并经 reason 带回具体原因
+ * 全 0 协议拒绝）；offset 与 length 512 字节对齐、length 非 0 且不超 24 位上限仅对
+ * get/put 校验（exist/delete 无数据面字段）；违规返回 false 并经 reason 带回具体原因
  */
-bool ValidateEntry(const RequestOrc &entry, std::string &reason)
+bool ValidateEntry(OrcOp op, const RequestOrc &entry, std::string &reason)
 {
     if (entry.keyLow64 == 0) {
         reason = "key low 64 bits are all zero (protocol rejects all-zero cache key)";
         return false;
     }
+    if (IsKeyOnlyOp(op)) { return true; }
     if (entry.offset % kv::kAlignmentBytes != 0) {
         reason = "offset " + std::to_string(entry.offset) + " not 512B aligned";
         return false;
@@ -181,93 +271,6 @@ bool ValidateEntry(const RequestOrc &entry, std::string &reason)
     return true;
 }
 
-/**
- * 解析单 key 行（op 已识别，fields 为 op 之后的全部 token，textAfterOp 为 op 之后的原文）：
- * 先试四整数（nsid key offset length [value...]），再试三整数（key offset length [value...]，
- * nsid 缺省 0）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
- * 协议约束（length 非 0、512 对齐等）由 ValidateEntry 统一校验；失败返回 false
- */
-bool ParseSingleEntry(const std::vector<std::string> &fields, const std::string &textAfterOp,
-                      RequestOrc &out)
-{
-    if (fields.size() >= 4) {
-        std::uint64_t nsid = 0;
-        std::uint32_t offset = 0;
-        std::uint32_t length = 0;
-        unsigned __int128 key = 0;
-        if (ParseUint64(fields[0], nsid) && ParseKey128(fields[1], key) &&
-            ParseUint32(fields[2], offset) && ParseUint32(fields[3], length)) {
-            out.nsid = nsid;
-            out.keyLow64 = KeyLow(key);
-            out.keyHigh16 = KeyHigh16(key);
-            out.offset = offset;
-            out.length = length;
-            out.rawKey = fields[1];
-            if (fields.size() > 4) { out.value = TextAfterTokens(textAfterOp, 4); }
-            return true;
-        }
-    }
-    if (fields.size() >= 3) {
-        std::uint32_t offset = 0;
-        std::uint32_t length = 0;
-        unsigned __int128 key = 0;
-        if (ParseKey128(fields[0], key) && ParseUint32(fields[1], offset) &&
-            ParseUint32(fields[2], length)) {
-            out.nsid = 0;
-            out.keyLow64 = KeyLow(key);
-            out.keyHigh16 = KeyHigh16(key);
-            out.offset = offset;
-            out.length = length;
-            out.rawKey = fields[0];
-            if (fields.size() > 3) { out.value = TextAfterTokens(textAfterOp, 3); }
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
- * 解析 batch 头字段（op 已识别，fields[0] 为 "batch"）：batch、batch nsid=x、batch nsid x
- * 三种形态；nsid 可省略，缺省 0；失败返回 false
- */
-bool ParseBatchHeader(const std::vector<std::string> &fields, std::uint64_t &nsid)
-{
-    if (fields.size() == 1) {
-        nsid = 0;
-        return true;
-    }
-    if (fields.size() == 2 && fields[1].rfind("nsid=", 0) == 0) {
-        return ParseUint64(fields[1].substr(5), nsid);
-    }
-    if (fields.size() == 3 && fields[1] == "nsid") { return ParseUint64(fields[2], nsid); }
-    return false;
-}
-
-/**
- * 解析 batch 内行（fields 为行 token，line 为行原文）：key offset length [value...]
- * （nsid 与 op 由批头继承）；value 为固定字段后的剩余全部原文（允许含空格，无则不赋值）；
- * 协议约束（length 非 0、512 对齐等）由 ValidateEntry 统一校验；失败返回 false
- */
-bool ParseBatchEntry(const std::vector<std::string> &fields, const std::string &line,
-                     RequestOrc &out)
-{
-    if (fields.size() < 3) { return false; }
-    std::uint32_t offset = 0;
-    std::uint32_t length = 0;
-    unsigned __int128 key = 0;
-    if (!ParseKey128(fields[0], key) || !ParseUint32(fields[1], offset) ||
-        !ParseUint32(fields[2], length)) {
-        return false;
-    }
-    out.keyLow64 = KeyLow(key);
-    out.keyHigh16 = KeyHigh16(key);
-    out.offset = offset;
-    out.length = length;
-    out.rawKey = fields[0];
-    if (fields.size() > 3) { out.value = TextAfterTokens(line, 3); }
-    return true;
-}
-
 }  // namespace
 
 bool RequestManager::Load(const std::string &inputPath, std::string &err)
@@ -279,117 +282,145 @@ bool RequestManager::Load(const std::string &inputPath, std::string &err)
     }
 
     steps_.clear();
-    bool inBatch = false;
-    OrcTask batchTask;
+    inBatch_ = false;
+    batchTask_ = OrcTask{};
 
     for (std::size_t lineNo = 1; lineNo <= lines.size(); ++lineNo) {
         const std::string line = TrimLine(lines[lineNo - 1]);
         if (line.empty()) { continue; }
-        const std::vector<std::string> tokens = Tokenize(line);
-
-        // batch 内：/batch 闭合，其余为批内行
-        if (inBatch) {
-            if (line == "/batch") {
-                // 空批：显式闭合但无内容，警告忽略（无数据可执行，不属数据错误）
-                if (!batchTask.entries.empty()) {
-                    steps_.emplace_back(std::move(batchTask));
-                } else {
-                    LOG_WARN("RequestManager: empty batch closed at line {} ignored", lineNo);
-                }
-                batchTask = OrcTask{};
-                inBatch = false;
-                continue;
-            }
-            RequestOrc entry;
-            if (!ParseBatchEntry(tokens, line, entry)) {
-                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
-                err = "input line " + std::to_string(lineNo) + " invalid batch entry: " + line;
-                return false;
-            }
-            // 协议约束前置校验（fail-fast）：违规启动即报错，不等到运行期任务失败
-            std::string validateReason;
-            if (!ValidateEntry(entry, validateReason)) {
-                err = "input line " + std::to_string(lineNo) +
-                      " violates kv protocol constraint (" + validateReason + "): " + line;
-                return false;
-            }
-            entry.op = batchTask.op;
-            entry.nsid = batchTask.nsid;
-            batchTask.entries.emplace_back(entry);
-            continue;
-        }
-
-        // sleep 行：独立暂停步骤（非 kv 任务，不带任务包装）
-        if (tokens[0] == "sleep") {
-            std::uint32_t seconds = 0;
-            if (tokens.size() != 2 || !ParseUint32(tokens[1], seconds)) {
-                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
-                err = "input line " + std::to_string(lineNo) + " invalid sleep: " + line;
-                return false;
-            }
-            steps_.emplace_back(SleepStep{seconds});
-            continue;
-        }
-
-        // 行首操作符识别
-        OrcOp op;
-        if (!ParseOrcOp(tokens[0], op)) {
-            // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
-            err = "input line " + std::to_string(lineNo) + " unknown op: " + line;
-            return false;
-        }
-
-        // batch 头（op 后接 batch）：开始聚合
-        std::vector<std::string> fields(tokens.begin() + 1, tokens.end());
-        if (!fields.empty() && fields[0] == "batch") {
-            std::uint64_t nsid = 0;
-            if (!ParseBatchHeader(fields, nsid)) {
-                // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
-                err = "input line " + std::to_string(lineNo) + " invalid batch header: " + line;
-                return false;
-            }
-            batchTask = OrcTask{};
-            batchTask.op = op;
-            batchTask.nsid = nsid;
-            inBatch = true;
-            continue;
-        }
-
-        // 单 key 行：一个独立任务（op 之后的原文传入供 value 取固定字段后的剩余内容）
-        RequestOrc entry;
-        entry.op = op;
-        if (!ParseSingleEntry(fields, TextAfterTokens(line, 1), entry)) {
-            // 非法输入数据：启动即报错退出，提示管理员修正（不跳过、不静默继续）
-            err = "input line " + std::to_string(lineNo) + " invalid single entry: " + line;
-            return false;
-        }
-        // 协议约束前置校验（fail-fast）：违规启动即报错，不等到运行期任务失败
-        std::string validateReason;
-        if (!ValidateEntry(entry, validateReason)) {
-            err = "input line " + std::to_string(lineNo) + " violates kv protocol constraint (" +
-                  validateReason + "): " + line;
-            return false;
-        }
-        OrcTask task;
-        task.op = op;
-        task.nsid = entry.nsid;
-        task.entries.emplace_back(entry);
-        steps_.emplace_back(task);
+        if (!ProcessLine(lineNo, line, err)) { return false; }
     }
 
     // 文件结束批未闭合（缺 /batch）：批结构不完整属非法输入，报错退出提示管理员补全
-    if (inBatch) {
+    if (inBatch_) {
         err = "input batch not closed: missing /batch before end of file, " +
-              std::to_string(batchTask.entries.size()) + " entries pending";
+              std::to_string(batchTask_.entries.size()) + " entries pending";
         return false;
     }
-
     if (steps_.empty()) {
         err = "no valid step in input file: " + inputPath;
         return false;
     }
     LOG_INFO("RequestManager: {} steps parsed from {}", steps_.size(), inputPath);
     return true;
+}
+
+bool RequestManager::ProcessLine(std::size_t lineNo, const std::string &line, std::string &err)
+{
+    const std::vector<std::string> tokens = Tokenize(line);
+    if (inBatch_) { return HandleBatchBody(lineNo, line, tokens, err); }
+    return HandleTopLevel(lineNo, line, tokens, err);
+}
+
+bool RequestManager::HandleBatchBody(std::size_t lineNo, const std::string &line,
+                                     const std::vector<std::string> &tokens, std::string &err)
+{
+    if (line == "/batch") {
+        CloseBatch(lineNo);
+        return true;
+    }
+    RequestOrc entry;
+    if (!ParseBatchEntry(batchTask_.op, tokens, line, entry)) {
+        err = LineErr(lineNo, "invalid batch entry", line);
+        return false;
+    }
+    // op/ns 先继承再校验：exist/delete 的豁免校验依赖 op 已就位
+    entry.op = batchTask_.op;
+    entry.ns = batchTask_.ns;
+    if (!CheckEntry(entry, lineNo, line, err)) { return false; }
+    batchTask_.entries.emplace_back(entry);
+    return true;
+}
+
+void RequestManager::CloseBatch(std::size_t lineNo)
+{
+    if (batchTask_.entries.empty()) {
+        LOG_WARN("RequestManager: empty batch closed at line {} ignored", lineNo);
+    } else {
+        steps_.emplace_back(std::move(batchTask_));
+    }
+    batchTask_ = OrcTask{};
+    inBatch_ = false;
+}
+
+bool RequestManager::HandleTopLevel(std::size_t lineNo, const std::string &line,
+                                    const std::vector<std::string> &tokens, std::string &err)
+{
+    // sleep 行：独立暂停步骤（非 kv 任务）
+    if (tokens[0] == "sleep") {
+        std::uint32_t seconds = 0;
+        if (tokens.size() != 2 || !ParseUint32(tokens[1], seconds)) {
+            err = LineErr(lineNo, "invalid sleep", line);
+            return false;
+        }
+        steps_.emplace_back(SleepStep{seconds});
+        return true;
+    }
+
+    OrcOp op;
+    if (!ParseOrcOp(tokens[0], op)) {
+        err = LineErr(lineNo, "unknown op", line);
+        return false;
+    }
+
+    // op 之后 token（batch 头判断与单 key 行解析共用）
+    std::vector<std::string> fields(tokens.begin() + 1, tokens.end());
+    if (!fields.empty() && fields[0] == "batch") {
+        return BeginBatch(op, fields, lineNo, line, err);
+    }
+    return AppendSingleTask(op, fields, line, lineNo, err);
+}
+
+bool RequestManager::BeginBatch(OrcOp op, const std::vector<std::string> &fields,
+                                std::size_t lineNo, const std::string &line, std::string &err)
+{
+    std::string ns;
+    if (!ParseBatchHeader(fields, ns)) {
+        err = LineErr(lineNo,
+                      "invalid batch header (expect: op batch ns=<name> or op batch ns <name>, "
+                      "ns required and non-empty)",
+                      line);
+        return false;
+    }
+    batchTask_ = OrcTask{};
+    batchTask_.op = op;
+    batchTask_.ns = ns;
+    inBatch_ = true;
+    return true;
+}
+
+bool RequestManager::AppendSingleTask(OrcOp op, const std::vector<std::string> &fields,
+                                      const std::string &line, std::size_t lineNo, std::string &err)
+{
+    // value 取 op 之后固定字段外的剩余原文（传入原文供含空格 value 解析）
+    RequestOrc entry;
+    entry.op = op;
+    if (!ParseSingleEntry(op, fields, TextAfterTokens(line, 1), entry)) {
+        err = LineErr(lineNo,
+                      IsKeyOnlyOp(op)
+                          ? "invalid single entry (expect: op ns key, exist/delete takes no "
+                            "offset/length/value)"
+                          : "invalid single entry (expect: op ns key offset length [value...], "
+                            "ns required and non-empty)",
+                      line);
+        return false;
+    }
+    if (!CheckEntry(entry, lineNo, line, err)) { return false; }
+    OrcTask task;
+    task.op = op;
+    task.ns = entry.ns;
+    task.entries.emplace_back(entry);
+    steps_.emplace_back(task);
+    return true;
+}
+
+bool RequestManager::CheckEntry(const RequestOrc &entry, std::size_t lineNo,
+                                const std::string &line, std::string &err)
+{
+    std::string reason;
+    if (ValidateEntry(entry.op, entry, reason)) { return true; }
+    err = LineErr(lineNo, "violates kv protocol constraint (" + reason + ")", line);
+    return false;
 }
 
 std::size_t RequestManager::StepCount() const { return steps_.size(); }

@@ -441,6 +441,22 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                     continue;
                 }
 
+                if (subBatchContext.opType == AsuOpType::QUERY &&
+                    kv::logger::isEnabledFor(kv::logger::Level::DEBUG)) {
+                    std::string resultBuffer;
+                    for (const auto raw : response.result_buffer) {
+                        if (!resultBuffer.empty()) { resultBuffer.push_back(','); }
+                        resultBuffer += std::to_string(static_cast<unsigned>(raw));
+                    }
+                    KV_DEBUG(
+                        "TransportTaskExecutor::Poll query response cid={} entries={} "
+                        "cqe_status=0x{:x} existing_key_number={} seek_control={} result_buffer={}",
+                        subBatchContext.cid, static_cast<unsigned>(batchNumber),
+                        static_cast<unsigned>(response.status),
+                        static_cast<unsigned>(response.existing_key_number),
+                        subBatchContext.useSeekControl ? 1 : 0, resultBuffer);
+                }
+
                 subBatchContext.status = KvResponseStatusToSubBatchStatus(response.status);
                 FillEntryStatusFromCqeResult(response, subBatchContext);
 

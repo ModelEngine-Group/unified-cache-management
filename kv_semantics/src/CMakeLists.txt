@@ -48,10 +48,11 @@ target_link_libraries(kv_transport
 # <infiniband/verbs.h>.
 target_sources(kv_transport PRIVATE
     trans_provider/roce/cpu_kv_over_roce_trans_provider.cc
+    trans_provider/roce/verbs_connection.cc
     trans_provider/roce/roce_process_state.cc
     trans_provider/roce/roce_tcp_channel.cc
 )
-if(BUILD_KV_CLIENT_PROVIDER_ROCE)
+if(BUILD_KV_CLIENT_PROVIDER_ROCE OR BUILD_KV_CLIENT_PROVIDER_CPU_ROCE)
     target_sources(kv_transport PRIVATE trans_provider/roce/roce_verb_qp.cc)
 
     find_path(ASU_ROCE_VERBS_INCLUDE_DIR infiniband/verbs.h)

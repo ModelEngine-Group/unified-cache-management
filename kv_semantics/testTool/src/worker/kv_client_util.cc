@@ -86,13 +86,13 @@ bool KvClientUtil::UnregisterRegions(const std::vector<kv::MRHandle> &handles, s
 }
 
 bool KvClientUtil::StoreAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId,
-                              std::string &err)
+                              const kv::IoOptions &options, std::string &err)
 {
     if (!initialized_) {
         err = "kv client not initialized";
         return false;
     }
-    kv::Status status = client_->StoreAsync(entries, taskId);
+    kv::Status status = client_->StoreAsync(entries, taskId, options);
     if (!status.ok()) {
         err = "store task submit failed: " + status.message;
         return false;
@@ -101,13 +101,13 @@ bool KvClientUtil::StoreAsync(const std::vector<kv::KVBuffer> &entries, kv::Task
 }
 
 bool KvClientUtil::LoadAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId,
-                             std::string &err)
+                             const kv::IoOptions &options, std::string &err)
 {
     if (!initialized_) {
         err = "kv client not initialized";
         return false;
     }
-    kv::Status status = client_->LoadAsync(entries, taskId);
+    kv::Status status = client_->LoadAsync(entries, taskId, options);
     if (!status.ok()) {
         err = "load task submit failed: " + status.message;
         return false;
@@ -116,13 +116,13 @@ bool KvClientUtil::LoadAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskI
 }
 
 bool KvClientUtil::QueryAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId,
-                              std::string &err)
+                              const kv::IoOptions &options, std::string &err)
 {
     if (!initialized_) {
         err = "kv client not initialized";
         return false;
     }
-    kv::Status status = client_->QueryAsync(keys, taskId);
+    kv::Status status = client_->QueryAsync(keys, taskId, options);
     if (!status.ok()) {
         err = "query task submit failed: " + status.message;
         return false;
@@ -131,13 +131,13 @@ bool KvClientUtil::QueryAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId 
 }
 
 bool KvClientUtil::DeleteAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId,
-                               std::string &err)
+                               const kv::IoOptions &options, std::string &err)
 {
     if (!initialized_) {
         err = "kv client not initialized";
         return false;
     }
-    kv::Status status = client_->DeleteAsync(keys, taskId);
+    kv::Status status = client_->DeleteAsync(keys, taskId, options);
     if (!status.ok()) {
         err = "delete task submit failed: " + status.message;
         return false;

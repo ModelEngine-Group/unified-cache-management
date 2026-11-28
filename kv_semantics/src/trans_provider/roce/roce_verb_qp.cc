@@ -36,6 +36,7 @@ static_assert(static_cast<int>(kv::roce::kMemoryAccessRemoteRead) ==
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -449,6 +450,111 @@ Status VerbDevice::UnregisterMemory(void* region, std::string& error) const
         return Status::Error(StatusCode::IO_ERROR, error);
     }
     return Status::OK();
+}
+
+std::uint32_t VerbDevice::Lkey(void* region) const noexcept
+{
+    if (region == nullptr) { return 0; }
+    return static_cast<ibv_mr*>(region)->lkey;
+}
+
+Status VerbQp::PostSend(std::uint64_t wrId, const void* buffer, std::size_t length,
+                        std::uint32_t lkey, std::string& error)
+{
+    error.clear();
+    if (qp_ == nullptr) {
+        error = "queue pair is not created";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (buffer == nullptr || length == 0U) {
+        error = "send buffer is empty";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (length > std::numeric_limits<std::uint32_t>::max()) {
+        error = "send buffer of " + std::to_string(length) + " bytes does not fit an SGE";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<std::uintptr_t>(buffer);
+    sge.length = static_cast<std::uint32_t>(length);
+    sge.lkey = lkey;
+
+    ibv_send_wr work{};
+    work.wr_id = wrId;
+    work.sg_list = &sge;
+    work.num_sge = 1;
+    work.opcode = IBV_WR_SEND;
+    work.send_flags = IBV_SEND_SIGNALED;
+
+    ibv_send_wr* badWork = nullptr;
+    const int result = ibv_post_send(qp_, &work, &badWork);
+    if (result != 0) {
+        error = VerbsError("ibv_post_send");
+        // ENOMEM means the send queue is momentarily full, which the caller
+        // retries once completions come back; anything else is a device error.
+        return Fail(result == ENOMEM ? StatusCode::RESOURCE_BUSY : StatusCode::IO_ERROR, error);
+    }
+    return Status::OK();
+}
+
+Status VerbQp::PostReceive(std::uint64_t wrId, void* buffer, std::size_t length, std::uint32_t lkey,
+                           std::string& error)
+{
+    error.clear();
+    if (qp_ == nullptr) {
+        error = "queue pair is not created";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (buffer == nullptr || length == 0U) {
+        error = "receive buffer is empty";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+    if (length > std::numeric_limits<std::uint32_t>::max()) {
+        error = "receive buffer of " + std::to_string(length) + " bytes does not fit an SGE";
+        return Fail(StatusCode::INVALID_ARGUMENT, error);
+    }
+
+    ibv_sge sge{};
+    sge.addr = reinterpret_cast<std::uintptr_t>(buffer);
+    sge.length = static_cast<std::uint32_t>(length);
+    sge.lkey = lkey;
+
+    ibv_recv_wr work{};
+    work.wr_id = wrId;
+    work.sg_list = &sge;
+    work.num_sge = 1;
+
+    ibv_recv_wr* badWork = nullptr;
+    const int result = ibv_post_recv(qp_, &work, &badWork);
+    if (result != 0) {
+        error = VerbsError("ibv_post_recv");
+        return Fail(result == ENOMEM ? StatusCode::RESOURCE_BUSY : StatusCode::IO_ERROR, error);
+    }
+    return Status::OK();
+}
+
+std::size_t VerbQp::Poll(Completion* completions, std::size_t maxCompletions) noexcept
+{
+    if (cq_ == nullptr || completions == nullptr || maxCompletions == 0U) { return 0U; }
+
+    constexpr std::size_t kPollBatch = 16;
+    ibv_wc workCompletions[kPollBatch];
+    const std::size_t batch = maxCompletions < kPollBatch ? maxCompletions : kPollBatch;
+    const int count = ibv_poll_cq(cq_, static_cast<int>(batch), workCompletions);
+    if (count <= 0) { return 0U; }
+
+    for (int index = 0; index < count; ++index) {
+        const ibv_wc& workCompletion = workCompletions[index];
+        Completion& completion = completions[index];
+        completion.wrId = workCompletion.wr_id;
+        completion.type =
+            workCompletion.opcode == IBV_WC_RECV ? CompletionType::Receive : CompletionType::Send;
+        completion.result = workCompletion.status == IBV_WC_SUCCESS ? CompletionResult::Success
+                                                                    : CompletionResult::Failed;
+        completion.byteLength = workCompletion.byte_len;
+    }
+    return static_cast<std::size_t>(count);
 }
 
 }  // namespace roce

@@ -51,14 +51,22 @@ public:
     /** 注销内存区域；被在途任务引用的区域须等任务完成后再注销；句柄为空时安全跳过 */
     bool UnregisterRegions(const std::vector<kv::MRHandle> &handles, std::string &err);
 
-    /** 异步写入：把 entries 中各 buffer 数据写入对应 key；提交成功后 taskId 用于等待结果 */
-    bool StoreAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId, std::string &err);
-    /** 异步读取：把各 key 的数据读回 entries 中对应 buffer；提交成功后 taskId 用于等待结果 */
-    bool LoadAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId, std::string &err);
-    /** 异步存在性查询；提交成功后 taskId 用于等待结果 */
-    bool QueryAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId, std::string &err);
-    /** 异步删除；提交成功后 taskId 用于等待结果 */
-    bool DeleteAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId, std::string &err);
+    /** 异步写入：把 entries 中各 buffer 数据写入对应 key；options 携带请求级 namespace 名
+     *  （IoOptions.kvns，kv client 哈希派生协议帧 namespace id）；提交成功后 taskId 用于等待结果 */
+    bool StoreAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId,
+                    const kv::IoOptions &options, std::string &err);
+    /** 异步读取：把各 key 的数据读回 entries 中对应 buffer；options 携带请求级 namespace 名
+     *  （IoOptions.kvns，kv client 哈希派生协议帧 namespace id）；提交成功后 taskId 用于等待结果 */
+    bool LoadAsync(const std::vector<kv::KVBuffer> &entries, kv::TaskId &taskId,
+                   const kv::IoOptions &options, std::string &err);
+    /** 异步存在性查询；options 携带请求级 namespace 名（IoOptions.kvns，kv client 哈希派生
+     *  协议帧 namespace id）；提交成功后 taskId 用于等待结果 */
+    bool QueryAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId,
+                    const kv::IoOptions &options, std::string &err);
+    /** 异步删除；options 携带请求级 namespace 名（IoOptions.kvns，kv client 哈希派生
+     *  协议帧 namespace id）；提交成功后 taskId 用于等待结果 */
+    bool DeleteAsync(const std::vector<kv::CacheKey> &keys, kv::TaskId &taskId,
+                     const kv::IoOptions &options, std::string &err);
 
     /**
      * 阻塞等待任务完成（全链路唯一阻塞点），超时也会消费任务

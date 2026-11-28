@@ -298,6 +298,34 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 2), std::uint32_t{0xABCD0002});
 }
 
+TEST_F(SqeRequestTest, SendResponseModePacksTheRequestWithoutTheWriteback)
+{
+    // The CPU data path asks the store for an RDMA send answer: the SQE must not
+    // name the flag buffer, while the buffer is still allocated for the provider
+    // to publish the answer into.
+    transport_->config_.attrs["send_response"] = "true";
+    auto entries = MakeEntries(2);
+    entries[0].offset = kAlignmentBytes;
+    entries[1].offset = kAlignmentBytes * 2;
+    SetMrKeys(entries, 0xABCD0000);
+    IoScheduler::ScheduledIoBatch subBatch{
+        BatchView<ResolvedKVBuffer>{entries.data(), entries.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
+        AsuOpType::BATCH_STORE, subBatch, subBatchContext);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    EXPECT_EQ(0U, (sqe[0] >> 13U) & 0x1U);
+    EXPECT_EQ(0U, sqe[3]);
+    EXPECT_EQ(0U, sqe[4]);
+    EXPECT_EQ(0U, sqe[5]);
+    EXPECT_NE(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    EXPECT_EQ(static_cast<std::uint32_t>(subBatchContext.cid),
+              (sqe[0] >> static_cast<std::uint32_t>(16)) & 0xFFFFU);
+}
+
 TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
 {
     auto entries = MakeEntries(1);
@@ -411,6 +439,27 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
     EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     ASSERT_EQ(subBatchContext.entryStatus.size(), keys.size());
     for (const auto& entryStatus : subBatchContext.entryStatus) { EXPECT_TRUE(entryStatus.ok()); }
+}
+
+TEST_F(SqeRequestTest, SendResponseModeAlsoCoversKeyOpcodeRequests)
+{
+    transport_->config_.attrs["send_response"] = "true";
+    std::vector<ResolvedCacheKey> keys = {MakeCacheKey("k0"), MakeCacheKey("k1")};
+    IoScheduler::ScheduledKeyBatch subBatch{
+        BatchView<ResolvedCacheKey>{keys.data(), keys.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+    const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
+        AsuOpType::DELETE, subBatch, subBatchContext);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    EXPECT_EQ(0U, (sqe[0] >> 13U) & 0x1U);
+    EXPECT_EQ(0U, sqe[3]);
+    EXPECT_EQ(0U, sqe[4]);
+    EXPECT_EQ(0U, sqe[5]);
+    EXPECT_EQ(static_cast<std::uint32_t>(subBatchContext.cid),
+              (sqe[0] >> static_cast<std::uint32_t>(16)) & 0xFFFFU);
 }
 
 TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)

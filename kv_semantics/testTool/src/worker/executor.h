@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "kv_client.h"
@@ -46,6 +47,9 @@ enum class OpType {
 /** 分桶的操作类型总数（OpType 枚举值范围） */
 constexpr std::size_t kOpTypeCount = 4;
 
+/** 单接口时延样本环形容量（任务级样本滚动保留最近 N 个，超容量覆盖最老样本；分位统计用） */
+constexpr std::size_t kLatencySampleCapacityPerOp = 8192;
+
 /** 执行器埋点指标（自创建起的累计值，单调递增；Scheduler 周期采样求窗口速率） */
 struct ExecutorMetrics {
     /** key 级操作总数（查询/写入/读取/删除的每个 entry 计 1；全量口径，含未命中与失败） */
@@ -54,19 +58,19 @@ struct ExecutorMetrics {
     std::uint64_t errorCount = 0;
     /** NOT_FOUND 观察计数（get/delete 打不存在的 key；流量注入的正常观察结果，非工具失败） */
     std::uint64_t notFoundCount = 0;
-    /** 回读比对不一致计数（get 读回数据与基准不符） */
-    std::uint64_t mismatchCount = 0;
-    /** 写入 + 读取的 value 流量字节数（成功 entry 的口径：失败/未命中 entry 计
-     * 0；查询/删除无载荷不计） */
+    /** 写入 + 读取的 value 流量字节数（成功 entry 口径；查询/删除无载荷不计） */
     std::uint64_t ioBytes = 0;
     /** 完成等待的任务数（TTFT 样本数，每任务一个样本） */
     std::uint64_t taskCount = 0;
     /** 任务提交→完成时延累计（纳秒） */
     std::uint64_t latencyNsTotal = 0;
-    /** 分接口操作数（下标为 OpType 枚举值；全量口径），支持 get/put/delete/exist 各自的 iops 统计
-     */
+    /** 分接口任务时延累计（纳秒；下标为 OpType 枚举值） */
+    std::uint64_t latencyNsTotalByOp[kOpTypeCount] = {0};
+    /** 分接口完成任务数（时延样本总数） */
+    std::uint64_t taskCountByOp[kOpTypeCount] = {0};
+    /** 分接口操作数（下标为 OpType 枚举值；全量口径） */
     std::uint64_t opCountByOp[kOpTypeCount] = {0};
-    /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径），exist/delete 恒为 0 */
+    /** 分接口流量字节数（下标为 OpType 枚举值；成功 entry 口径） */
     std::uint64_t ioBytesByOp[kOpTypeCount] = {0};
 };
 
@@ -83,13 +87,20 @@ public:
     /** 绑定已初始化的 kv client 工具封装（不拥有，生命周期由调用方保证） */
     void SetClient(KvClientUtil *client);
 
-    /** 绑定值缓冲内存分配器（不拥有；load 回读比对经其 D2H 读回，生命周期由调用方保证） */
+    /** 绑定值缓冲内存分配器（不拥有；get/put 明细日志读回缓冲经其 D2H 拷回，生命周期由调用方保证）
+     */
     void SetAllocator(DeviceAllocator *allocator);
+
+    /** 设置 perf 压测模式（on 时全部操作仅记失败请求明细，成功不记） */
+    void SetPerfMode(bool perf);
+
+    /** 设置请求明细 value 字段显示上限（字节；0 不截断全量显示） */
+    void SetDetailValueLimit(std::size_t bytes);
 
     /**
      * 执行单个测试任务（op 决定操作，request 为任务数据包）
      * @param op 执行操作类型
-     * @param request 任务数据包（GET 时 expected 提供逐项比对基准，空 vector 不比对）
+     * @param request 任务数据包
      * @param err 工具链失败时的错误描述
      * @return false 仅当提交/等待失败（工具链失败）；观察结果只进埋点
      */
@@ -98,6 +109,10 @@ public:
     /** 获取当前指标快照（线程安全，供 Scheduler 周期采样） */
     ExecutorMetrics GetMetrics() const;
 
+    /** 聚集本执行器任务级时延样本（微秒）追加到 out 对应 op 桶（多次调用累计，跨执行器聚合用）；
+     * 滚动环形只含最近样本，线程安全 */
+    void AppendLatencySamplesUs(std::vector<std::uint32_t> (&out)[kOpTypeCount]) const;
+
 private:
     /** 提交查询并等待，found/not found 逐项记录进埋点；返回 false 仅当提交/等待失败 */
     bool QueryAndRecord(const Request &request, std::string &err);
@@ -105,23 +120,30 @@ private:
     /** 提交写入并等待，entry 失败计 errorCount；返回 false 仅当提交/等待失败 */
     bool StoreAndRecord(const Request &request, std::string &err);
 
-    /** 提交读取并等待：NOT_FOUND 计 notFoundCount、有基准逐项 memcmp 不一致计
-     * mismatchCount、其他失败计 errorCount */
+    /** 提交读取并等待：NOT_FOUND 计 notFoundCount、其他失败计 errorCount；
+     * 读回内容由明细日志人工核对（不做自动比对） */
     bool LoadAndRecord(const Request &request, std::string &err);
 
-    /** 把 put / get 任务响应明细写入请求明细日志（每 entry 一行：batchCode + entryCode + 原文 key +
-     * key_low/key_high 分开 + offset + len + 读回 value/tail，opcode
-     * 区分；读回失败视为工具链失败；perf=on 压测模式下请求明细日志整体关闭，不输出） */
+    /**
+     * 把 put / get 任务响应明细写入请求明细日志（每 entry 一行，字段名(值) 形式：
+     * (opcode), ns, return batch code(整批全部 entry 状态码逗号拼接，逐行重复),
+     * key code(本 entry 返回码), inputkey, key+offset(低64位 高16位 offset), offset,
+     * value(读回缓冲实际内容), len(低64位位数+offset位数), tail(尾 8 字节)；
+     * get 无论 entry 状态总是读回缓冲（预填哨兵串即“没读到数据”标记），put 仅成功
+     * entry 读回、失败以 "-" 占位；读回失败视为工具链失败）
+     */
     bool WritePutGetLog(const Request &request, const kv::TaskResult &result, const char *opcode,
                         std::string &err);
 
-    /** 把 exist 任务响应明细写入请求明细日志（每 key 一行：batchCode + 原文 key + key_low/key_high
-     * + exists + prefix_hit_len，无 entryCode）；调用侧已保证 queryResult 有值且尺寸匹配 */
+    /** 把 exist 任务响应明细写入其余操作明细日志（每任务一行聚合格式：(exist)
+     *  all_block_ids[input 原文 key 逗号拼接] key_low_high[逐 key“低64位 高16位”拼接]
+     *  prefix_hit_len(前缀命中 key 数)）；调用侧已保证 queryResult 有值且尺寸匹配 */
     void WriteExistLog(const Request &request, const kv::TaskResult &result);
 
-    /** 把 delete 任务响应明细写入请求明细日志（每 key 一行：batchCode + entryCode + 原文 key +
-     * key_low/key_high；delete 无 value 载荷） */
-    void WriteDeleteLog(const Request &request, const kv::TaskResult &result);
+    /** 把 delete 任务响应明细写入其余操作明细日志（每任务一行聚合格式，字段同 exist；
+     *  delete 无前缀命中信息，prefix_hit_len 以 "-" 占位；delete 无 value 载荷；
+     *  notFound/failed 为调用侧算好的未命中与失败计数，供 perf 模式失败判定） */
+    void WriteDeleteLog(const Request &request, std::uint64_t notFound, std::uint64_t failed);
 
     /** 提交删除并等待：NOT_FOUND 计 notFoundCount、其他失败计 errorCount */
     bool DeleteAndRecord(const Request &request, std::string &err);
@@ -141,26 +163,39 @@ private:
     /** 汇总请求项的 value 流量字节数（各 entry 的 region 大小求和） */
     static std::uint64_t SumBytes(const std::vector<kv::KVBuffer> &entries);
 
-    /** 成功 entry 的流量字节和（entryStatus[i].ok() 口径；entryStatus 缺失时按任务级状态归类全部）
-     */
+    /** 成功 entry 的流量字节和；entryStatus 缺失时按任务级状态归类全部 */
     static std::uint64_t SumOkBytes(const kv::TaskResult &result,
                                     const std::vector<kv::KVBuffer> &entries);
 
     /** 绑定的 kv client 工具封装（不拥有） */
     KvClientUtil *client_{nullptr};
 
-    /** 绑定的值缓冲内存分配器（不拥有；回读比对用） */
+    /** 绑定的值缓冲内存分配器（不拥有；明细日志读回缓冲用） */
     DeviceAllocator *allocator_{nullptr};
+
+    /** perf 压测模式（on 时仅记失败请求明细） */
+    bool perf_{false};
+
+    /** 请求明细 value 字段显示上限（字节；0 不截断） */
+    std::size_t detailValueLimit_{1024};
 
     // ---- 埋点计数器（原子变量：执行与采样线程并发安全） ----
     std::atomic<std::uint64_t> opCount_{0};
     std::atomic<std::uint64_t> errorCount_{0};
     std::atomic<std::uint64_t> notFoundCount_{0};
-    std::atomic<std::uint64_t> mismatchCount_{0};
     std::atomic<std::uint64_t> ioBytes_{0};
     std::atomic<std::uint64_t> taskCount_{0};
     std::atomic<std::uint64_t> latencyNsTotal_{0};
     // 分接口桶（下标为 OpType 枚举值；数组 of atomic 不可拷贝，用逐成员数组）
     std::atomic<std::uint64_t> opCountByOp_[kOpTypeCount];
     std::atomic<std::uint64_t> ioBytesByOp_[kOpTypeCount];
+    std::atomic<std::uint64_t> latencyNsTotalByOp_[kOpTypeCount];
+    std::atomic<std::uint64_t> taskCountByOp_[kOpTypeCount];
+    // 分接口任务时延样本环形（微秒；写侧为绑定 worker 线程，读侧快照经 samplesMutex_）
+    std::vector<std::uint32_t> latencySamples_[kOpTypeCount];
+    /** 各接口环形写游标与有效样本数 */
+    std::size_t latencySamplePos_[kOpTypeCount] = {0};
+    std::size_t latencySampleCount_[kOpTypeCount] = {0};
+    /** 样本读写保护（写侧 worker 线程与读侧指标/抓取线程互斥） */
+    mutable std::mutex samplesMutex_;
 };

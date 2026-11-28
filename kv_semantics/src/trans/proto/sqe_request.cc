@@ -177,10 +177,14 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     request.kv_ns_id = namespaceId;
     request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
-    request.response_buffer_addr = flagBuffer.device_addr;
-    request.response_mr_key = flagBuffer.tokenId;
+    // The send/response data path asks the store to answer with a send, so the
+    // SQE carries neither the flag buffer nor a writeback request; the provider
+    // publishes the answer into the flag buffer when it reaps the completion.
+    const bool sendResponse = GetTransportConfigAttr<bool>(attrs, "send_response");
+    request.response_buffer_addr = sendResponse ? 0 : flagBuffer.device_addr;
+    request.response_mr_key = sendResponse ? 0 : flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
-    request.rflag = true;
+    request.rflag = !sendResponse;
     request.batch_number = static_cast<std::uint16_t>(entries.size);
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
@@ -239,10 +243,14 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     KvBatchRetrieveRequest request;
     request.cid = cid;
     request.kv_ns_id = namespaceId;
-    request.response_buffer_addr = flagBuffer.device_addr;
-    request.response_mr_key = flagBuffer.tokenId;
+    // The send/response data path asks the store to answer with a send, so the
+    // SQE carries neither the flag buffer nor a writeback request; the provider
+    // publishes the answer into the flag buffer when it reaps the completion.
+    const bool sendResponse = GetTransportConfigAttr<bool>(attrs, "send_response");
+    request.response_buffer_addr = sendResponse ? 0 : flagBuffer.device_addr;
+    request.response_mr_key = sendResponse ? 0 : flagBuffer.tokenId;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
-    request.rflag = true;
+    request.rflag = !sendResponse;
     request.batch_number = static_cast<std::uint16_t>(entries.size);
     request.entries.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
@@ -267,15 +275,18 @@ std::vector<BinaryKey> CopyKeys(const BatchView<ResolvedCacheKey>& keys)
     return requestKeys;
 }
 
-KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys, std::uint16_t cid,
-                                   const ScatterGatherEntry& flagBuffer, std::uint32_t namespaceId)
+KvDeleteRequest BuildDeleteRequest(const BatchView<ResolvedCacheKey>& keys,
+                                   const std::unordered_map<std::string, std::string>& attrs,
+                                   std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
+                                   std::uint32_t namespaceId)
 {
     KvDeleteRequest request;
     request.cid = cid;
     request.kv_ns_id = namespaceId;
-    request.response_buffer_addr = flagBuffer.device_addr;
-    request.response_mr_key = flagBuffer.tokenId;
-    request.rflag = true;
+    const bool sendResponse = GetTransportConfigAttr<bool>(attrs, "send_response");
+    request.response_buffer_addr = sendResponse ? 0 : flagBuffer.device_addr;
+    request.response_mr_key = sendResponse ? 0 : flagBuffer.tokenId;
+    request.rflag = !sendResponse;
     request.keys = CopyKeys(keys);
     request.batch_number = static_cast<std::uint16_t>(request.keys.size());
     return request;
@@ -289,22 +300,25 @@ KvExistRequest BuildExistRequest(const BatchView<ResolvedCacheKey>& keys,
     KvExistRequest request;
     request.cid = cid;
     request.kv_ns_id = namespaceId;
-    request.response_buffer_addr = flagBuffer.device_addr;
-    request.response_mr_key = flagBuffer.tokenId;
-    request.rflag = true;
+    const bool sendResponse = GetTransportConfigAttr<bool>(attrs, "send_response");
+    request.response_buffer_addr = sendResponse ? 0 : flagBuffer.device_addr;
+    request.response_mr_key = sendResponse ? 0 : flagBuffer.tokenId;
+    request.rflag = !sendResponse;
     request.sc = GetTransportConfigAttr<bool>(attrs, "sc", true);
     request.keys = CopyKeys(keys);
     request.batch_number = static_cast<std::uint16_t>(request.keys.size());
     return request;
 }
 
-KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
+KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
+                                         const std::unordered_map<std::string, std::string>& attrs)
 {
     KvKeepAliveRequest request;
     request.cid = cid;
-    request.response_buffer_addr = flagBuffer.device_addr;
-    request.response_mr_key = flagBuffer.tokenId;
-    request.rflag = true;
+    const bool sendResponse = GetTransportConfigAttr<bool>(attrs, "send_response");
+    request.response_buffer_addr = sendResponse ? 0 : flagBuffer.device_addr;
+    request.response_mr_key = sendResponse ? 0 : flagBuffer.tokenId;
+    request.rflag = !sendResponse;
     return request;
 }
 
@@ -334,7 +348,7 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
         case KvOpcode::Delete:
             if (source.keys == nullptr) { return nullptr; }
             return std::make_unique<KvDeleteRequest>(
-                BuildDeleteRequest(*source.keys, cid, flagBuffer, namespaceId));
+                BuildDeleteRequest(*source.keys, attrs, cid, flagBuffer, namespaceId));
         case KvOpcode::Exist: {
             if (source.keys == nullptr) { return nullptr; }
             auto request = BuildExistRequest(*source.keys, attrs, cid, flagBuffer, namespaceId);
@@ -342,7 +356,8 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
             return std::make_unique<KvExistRequest>(std::move(request));
         }
         case KvOpcode::KeepAlive:
-            return std::make_unique<KvKeepAliveRequest>(BuildKeepAliveRequest(cid, flagBuffer));
+            return std::make_unique<KvKeepAliveRequest>(
+                BuildKeepAliveRequest(cid, flagBuffer, attrs));
         default:
             KV_ERROR("Build SQE request failed: unsupported opcode={} cid={}",
                      static_cast<int>(opcode), cid);

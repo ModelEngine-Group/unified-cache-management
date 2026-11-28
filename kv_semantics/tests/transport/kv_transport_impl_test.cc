@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <thread>
 #include <vector>
 #define private public
 #include "kv_transport_impl.h"
@@ -59,6 +60,8 @@ public:
     {
         return {};
     }
+    void PollCompletion() override { pollCompletionCalls.fetch_add(1); }
+    std::atomic<int> pollCompletionCalls{0};
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>&,
                           std::vector<MRHandle>& handles) override
     {
@@ -112,6 +115,26 @@ protected:
 
     std::unique_ptr<AsuTransportImpl> transport_;
 };
+
+// The transport completion loop is what reaps a provider owned completion queue:
+// every round first asks the provider to publish its finished IO, then polls the
+// tasks whose flag buffers may have been filled by that call.
+TEST(TransportCompletionLoopTest, PollsTheProviderEveryRound)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    AsuTransportImpl transport;
+    transport.SetTransProvider(provider);
+
+    transport.stopCompletionWorker_.store(false, std::memory_order_release);
+    std::thread completionLoop([&transport]() { transport.CompletionLoop(); });
+    for (int attempt = 0; attempt < 1000 && provider->pollCompletionCalls.load() == 0; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    transport.stopCompletionWorker_.store(true, std::memory_order_release);
+    completionLoop.join();
+
+    EXPECT_GT(provider->pollCompletionCalls.load(), 0);
+}
 
 TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
 {

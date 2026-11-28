@@ -631,6 +631,16 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
         resolvedKVBuffer.offset = entry.offset;
         ctx->entries.push_back(std::move(resolvedKVBuffer));
     }
+    if (kv::logger::isEnabledFor(kv::logger::Level::DEBUG)) {
+        std::string resolvedKeys;
+        for (std::size_t index = 0; index < entries.size(); ++index) {
+            resolvedKeys += "<" + std::string(CacheKeyView(entries[index].key)) + " -> " +
+                            CacheKeyToHex(ctx->entries[index].key) +
+                            " gnsid=" + std::to_string(ctx->entries[index].key.gnsid) + "> ";
+        }
+        KV_DEBUG("KV client submit entries: ns=\"{}\" entries={} resolved=[{}]", options.kvns,
+                 entries.size(), resolvedKeys);
+    }
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
         for (auto& entry : ctx->entries) {
@@ -703,6 +713,16 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
             return status;
         }
         ctx->keys.push_back(std::move(resolvedKey));
+    }
+    if (kv::logger::isEnabledFor(kv::logger::Level::DEBUG)) {
+        std::string resolvedKeys;
+        for (std::size_t index = 0; index < keys.size(); ++index) {
+            resolvedKeys += "<" + std::string(CacheKeyView(keys[index])) + " -> " +
+                            CacheKeyToHex(ctx->keys[index]) +
+                            " gnsid=" + std::to_string(ctx->keys[index].gnsid) + "> ";
+        }
+        KV_DEBUG("KV client submit keys: ns=\"{}\" keys={} resolved=[{}]", options.kvns,
+                 keys.size(), resolvedKeys);
     }
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
