@@ -59,7 +59,9 @@ public:
 
     ~CudaAllocator() override
     {
-        // 兜底释放（正常路径 Scheduler 已逐块 Deallocate）
+        // 兜底释放（正常路径 Scheduler 已逐块 Deallocate）；释放前同样校验线程绑定
+        std::string bindErr;
+        (void)EnsureThreadDevice(bindErr);
         for (const auto &item : rawPtrs_) { ::cudaFree(item.second); }
     }
 
@@ -69,14 +71,7 @@ public:
             err = "cuda memory allocate size must be positive";
             return false;
         }
-        if (rawPtrs_.empty()) {
-            const cudaError_t set = ::cudaSetDevice(deviceId_);
-            if (set != cudaSuccess) {
-                err = std::string("cudaSetDevice(") + std::to_string(deviceId_) +
-                      ") failed: " + ::cudaGetErrorString(set);
-                return false;
-            }
-        }
+        if (!EnsureThreadDevice(err)) { return false; }
         // 超额分配：对齐粒度额外加一截，保证 [raw, raw+size) 内有 512 对齐的起点
         const std::size_t allocSize = AlignUp(size, kv::kAlignmentBytes) + kv::kAlignmentBytes;
         void *raw = nullptr;
@@ -97,6 +92,8 @@ public:
     {
         const auto it = rawPtrs_.find(addr);
         if (it == rawPtrs_.end()) { return; }
+        std::string bindErr;  // 释放路径尽力绑定，失败交由 cudaFree 自行报错
+        (void)EnsureThreadDevice(bindErr);
         ::cudaFree(it->second);
         rawPtrs_.erase(it);
     }
@@ -109,6 +106,7 @@ public:
             return false;
         }
         if (size == 0) { return true; }
+        if (!EnsureThreadDevice(err)) { return false; }
         const cudaError_t copy =
             ::cudaMemcpy(reinterpret_cast<void *>(static_cast<std::uintptr_t>(addr)), hostData,
                          size, cudaMemcpyHostToDevice);
@@ -126,6 +124,7 @@ public:
             return false;
         }
         if (size == 0) { return true; }
+        if (!EnsureThreadDevice(err)) { return false; }
         const cudaError_t copy = ::cudaMemcpy(
             hostData, reinterpret_cast<const void *>(static_cast<std::uintptr_t>(addr)), size,
             cudaMemcpyDeviceToHost);
@@ -138,8 +137,30 @@ public:
 
     bool IsDeviceMemory() const override { return true; }
 
+    /**
+     * @brief 确保当前线程绑定的 CUDA device 指向本分配器的设备
+     * @param err 绑定失败时填充错误信息
+     * @return 绑定成功返回 true；cudaSetDevice 失败返回 false
+     */
+    bool EnsureThreadDevice(std::string &err)
+    {
+        // cudaSetDevice 为线程级绑定：首次 Allocate 的绑定只作用于调用线程，worker 线程
+        // 执行 H2D/D2H 前须自行绑定（未绑线程默认 device 0，deviceId 非 0 时会静默拷错
+        // 卡）；同进程其他组件（kv client NPU 通路）可能切换过 current device，故每次
+        // 调用前校验、不一致才重绑
+        int current = -1;
+        if (::cudaGetDevice(&current) == cudaSuccess && current == deviceId_) { return true; }
+        const cudaError_t set = ::cudaSetDevice(deviceId_);
+        if (set != cudaSuccess) {
+            err = std::string("cudaSetDevice(") + std::to_string(deviceId_) +
+                  ") failed: " + ::cudaGetErrorString(set);
+            return false;
+        }
+        return true;
+    }
+
 private:
-    /** CUDA device 编号（首次 Allocate 时 cudaSetDevice，之后本进程固定该卡） */
+    /** CUDA device 编号（各线程使用前经 EnsureThreadDevice 校验绑定；本进程固定该卡） */
     const std::int32_t deviceId_;
     /** 对齐地址 → cudaMalloc 原始指针（Deallocate 需按原始指针 cudaFree） */
     std::unordered_map<std::uint64_t, void *> rawPtrs_;
@@ -159,7 +180,9 @@ public:
 
     ~AclAllocator() override
     {
-        // 兜底释放（正常路径 Scheduler 已逐块 Deallocate）
+        // 兜底释放（正常路径 Scheduler 已逐块 Deallocate）；释放前同样校验线程绑定
+        std::string bindErr;
+        (void)EnsureThreadDevice(bindErr);
         for (const auto &item : rawPtrs_) { (void)::aclrtFree(item.second); }
     }
 
@@ -169,14 +192,7 @@ public:
             err = "acl npu memory allocate size must be positive";
             return false;
         }
-        if (rawPtrs_.empty()) {
-            const aclError set = ::aclrtSetDevice(deviceId_);
-            if (set != ACL_SUCCESS) {
-                err = "aclrtSetDevice(" + std::to_string(deviceId_) +
-                      ") failed: " + std::to_string(set);
-                return false;
-            }
-        }
+        if (!EnsureThreadDevice(err)) { return false; }
         const std::size_t allocSize = AlignUp(size, kv::kAlignmentBytes) + kv::kAlignmentBytes;
         void *raw = nullptr;
         const aclError malloc = ::aclrtMalloc(&raw, allocSize, ACL_MEM_MALLOC_HUGE_FIRST);
@@ -196,6 +212,8 @@ public:
     {
         const auto it = rawPtrs_.find(addr);
         if (it == rawPtrs_.end()) { return; }
+        std::string bindErr;  // 释放路径尽力绑定，失败交由 aclrtFree 自行报错
+        (void)EnsureThreadDevice(bindErr);
         (void)::aclrtFree(it->second);
         rawPtrs_.erase(it);
     }
@@ -208,6 +226,7 @@ public:
             return false;
         }
         if (size == 0) { return true; }
+        if (!EnsureThreadDevice(err)) { return false; }
         const aclError copy =
             ::aclrtMemcpy(reinterpret_cast<void *>(static_cast<std::uintptr_t>(addr)), size,
                           hostData, size, ACL_MEMCPY_HOST_TO_DEVICE);
@@ -225,6 +244,7 @@ public:
             return false;
         }
         if (size == 0) { return true; }
+        if (!EnsureThreadDevice(err)) { return false; }
         const aclError copy = ::aclrtMemcpy(
             hostData, size, reinterpret_cast<const void *>(static_cast<std::uintptr_t>(addr)), size,
             ACL_MEMCPY_DEVICE_TO_HOST);
@@ -237,8 +257,30 @@ public:
 
     bool IsDeviceMemory() const override { return true; }
 
+    /**
+     * @brief 确保当前线程绑定的 ACL 设备上下文指向本分配器的设备
+     * @param err 绑定失败时填充错误信息
+     * @return 绑定成功返回 true；aclrtSetDevice 失败返回 false
+     */
+    bool EnsureThreadDevice(std::string &err)
+    {
+        // ACL 设备上下文为线程级绑定：首次 Allocate 的 aclrtSetDevice 只作用于调用线程
+        // （Scheduler::Init 的主线程），worker 线程执行 H2D/D2H 前须自行绑定，否则报
+        // 107002（ACL_ERROR_RT_CONTEXT_NULL）；同进程 kv client（AICPU 通路）可能切换过
+        // current device，故每次调用前校验、不一致才重绑
+        std::int32_t current = -1;
+        if (::aclrtGetDevice(&current) == ACL_SUCCESS && current == deviceId_) { return true; }
+        const aclError set = ::aclrtSetDevice(deviceId_);
+        if (set != ACL_SUCCESS) {
+            err =
+                "aclrtSetDevice(" + std::to_string(deviceId_) + ") failed: " + std::to_string(set);
+            return false;
+        }
+        return true;
+    }
+
 private:
-    /** ACL device 编号（首次 Allocate 时 aclrtSetDevice，之后本进程固定该卡） */
+    /** ACL device 编号（各线程使用前经 EnsureThreadDevice 校验绑定；本进程固定该卡） */
     const std::int32_t deviceId_;
     /** 对齐地址 → aclrtMalloc 原始指针（Deallocate 需按原始指针 aclrtFree） */
     std::unordered_map<std::uint64_t, void *> rawPtrs_;

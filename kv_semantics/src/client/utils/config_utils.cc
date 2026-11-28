@@ -277,9 +277,10 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
 
         auto iter = asuInfos.find(transportConfig.nodeId);
         if (iter == asuInfos.end()) {
-            KV_WARN("asu_info.{} not configured for asu_id {} (from asu_ids); "
-                    "transport for this node will have no endpoints",
-                    transportConfig.nodeId, transportConfig.nodeId);
+            KV_WARN(
+                "asu_info.{} not configured for asu_id {} (from asu_ids); "
+                "transport for this node will have no endpoints",
+                transportConfig.nodeId, transportConfig.nodeId);
             continue;
         }
         ApplyAsuInfoToTransportConfig(iter->second, transportConfig);

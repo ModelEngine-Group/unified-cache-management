@@ -55,7 +55,7 @@ cmake --build build -j                        # 增量编译
    * */
   ```
 
-- **clang-format 风格（硬性）**：全部 C/C++ 代码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、IndentWidth 4、ColumnLimit 100）保持一致，改动的源文件交付前必须过 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。环境未预置该工具时先 `apt-get install clang-format`，以 `clang-format --style=file:<仓库根>/.clang-format -i <文件>` 执行。
+- **clang-format 风格（硬性）**：全部 C/C++ 代码必须与 git 仓库一级根目录（`unified-cache-management/`）下的 `.clang-format`（Google base、IndentWidth 4、ColumnLimit 100）保持一致，改动的源文件交付前必须过 `clang-format -i`（CI 对 PR 改动行做 clang-format 检查，任何 diff 均导致 PR 失败）。环境未预置该工具时先 `apt-get install clang-format`，以 `clang-format --style=file:<仓库根>/.clang-format -i <文件>` 执行。格式判定基线以远端 CI 为准（clang-format-20）：18 与 20 版对长参数断行等场景的判定存在差异（本地 18 过检、CI 20 仍可能报 diff），容器默认 `clang-format` 已 pip 安装 20.1.7 于 `/usr/local/bin`（优先于 apt 的 18 版；容器重建后需重装 `pip install clang-format==20.1.7`）。
 - 头文件统一使用 `#pragma once` 防止重复包含，不使用传统 include 守卫。
 
 - 模块化设计：`src/` 根放置顶层编排（`main`、`scheduler`），功能按 `src/` 下模块目录（`log` / `request` / `utils` / `worker`）划分，职责单一；模块间通过头文件公开接口交互，不直接依赖其他模块内部实现细节。

@@ -39,6 +39,7 @@
 #include "request/request_manager.h"
 #include "request/request_orc.h"
 #include "utils/config_util.h"
+#include "utils/metrics_exporter.h"
 #include "worker/device_allocator.h"
 #include "worker/executor.h"
 #include "worker/kv_client_util.h"
@@ -91,12 +92,16 @@ public:
      * @param testmode 值生成模式（1 系统生成，2 行尾 value 字段）
      * @param runtime 运行时长秒；>0 限时模式，跑满即停；=0 圈数模式（以 loop 为准）
      * @param loop 循环执行圈数，仅 runtime=0 时生效（Check 已保证 >0）
+     * @param rateLimitMb 带宽限速（MB/s）；>0 时秒级时间窗控制任务提交速率，=0 不限速
      */
     bool Run(const RequestManager &requestManager, int testmode, int runtime, int loop,
-             std::string &err);
+             int rateLimitMb, std::string &err);
 
     /** 停止指标线程、注销请求内存、释放值缓冲池、关闭 kv client 并释放执行器；可重复调用 */
     void Shutdown();
+
+    /** 聚合全部执行器指标快照（累计值 + 时延样本合并），Prometheus 渲染输入；线程安全 */
+    MetricsSnapshot CollectMetricsSnapshot() const;
 
 private:
     /**
@@ -105,6 +110,13 @@ private:
      */
     bool buildTaskRequest(const OrcTask &task, int testmode, const std::vector<std::size_t> &owned,
                           Request &request, std::string &err);
+
+    /**
+     * 按任务 IO 字节量申请秒级限速配额（多 worker 共享窗口预算）：窗口内提交字节达
+     * 上限后等待到下一秒窗口再发；单任务字节量超整秒预算时直接放行（否则永远凑不齐）
+     * @param bytes 本任务 IO 字节量（entry length 总和）
+     */
+    void WaitForRateLimit(std::uint64_t bytes);
 
     /**
      * worker 线程主循环：绑核并命名后进入领任务循环——锁内查退出标志与当前段末，
@@ -143,6 +155,9 @@ private:
     /** 输出一个汇总窗口的指标（窗口增量速率：IOPS / 流量 / TTFT / 错误率 / 未命中 / 比对不一致） */
     void OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
                              const std::vector<ExecutorMetrics> &current) const;
+
+    /** 输出时延分位行：总 P99 与分接口 P99（滚动最近样本口径，p99_interval_s 秒打印一次） */
+    void OutputLatencyP99() const;
 
     /** 输出运行结束时的指标总计（全部执行器累计值汇总） */
     void OutputMetricsTotal() const;
@@ -186,6 +201,14 @@ private:
     int runtimeSecs_{0};
     int loopLimit_{0};
     std::chrono::steady_clock::time_point startTime_{};
+    /** P99 打印间隔与累计计时（秒；0 禁用，PrepareExecutors 读 conf p99_interval_s） */
+    int p99IntervalSecs_{0};
+    int p99ElapsedSecs_{0};
+    /** 秒级带宽限速窗口（ratelimit_mb>0 时生效）：每秒预算字节与窗口状态（rateMutex_ 保护） */
+    std::uint64_t rateLimitBytesPerSec_{0};
+    std::mutex rateMutex_;
+    std::chrono::steady_clock::time_point rateWindowStart_{};
+    std::uint64_t rateWindowUsed_{0};
     /** 共享值缓冲池空闲块下标（在飞任务独占领用，不足阻塞等待；bufferMutex_ 保护） */
     std::vector<std::size_t> freeBuffers_;
     std::mutex bufferMutex_;

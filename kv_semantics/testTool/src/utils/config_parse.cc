@@ -69,6 +69,24 @@ int RequireInt(const std::unordered_map<std::string, std::string> &values, const
     return ParseInt(key, RequireValue(values, key));
 }
 
+/** 取 key 对应 int 值；key 缺失返回 fallback（新增可选键兼容存量配置），坏值抛异常 */
+int OptionalInt(const std::unordered_map<std::string, std::string> &values, const std::string &key,
+                int fallback)
+{
+    const auto it = values.find(key);
+    if (it == values.end()) { return fallback; }
+    return ParseInt(key, it->second);
+}
+
+/** 取 key 对应字符串值；key 缺失返回 fallback（新增可选键兼容存量配置） */
+std::string OptionalValue(const std::unordered_map<std::string, std::string> &values,
+                          const std::string &key, const std::string &fallback)
+{
+    const auto it = values.find(key);
+    if (it == values.end()) { return fallback; }
+    return it->second;
+}
+
 std::int64_t RequireInt64(const std::unordered_map<std::string, std::string> &values,
                           const std::string &key)
 {

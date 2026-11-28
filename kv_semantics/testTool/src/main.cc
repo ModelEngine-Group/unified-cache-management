@@ -36,12 +36,16 @@
 #include "request/request_manager.h"
 #include "scheduler.h"
 #include "utils/config_util.h"
+#include "utils/metrics_exporter.h"
 
 /** SIGINT 到达标志（信号处理器与主线程共享；lock-free 原子 store 为 async-signal-safe） */
 static std::atomic<bool> gInterrupted{false};
 
 /** SIGINT 处理器：仅置标志位，不做任何非 async-signal-safe 操作 */
 static void OnSigint(int) { gInterrupted.store(true); }
+
+/** Prometheus 抓取端点（metrics_exporter=on 时启动；CloseAll 幂等停止） */
+static MetricsExporter gMetricsExporter;
 
 /**
  * 统一收尾：按初始化逆序回收各组件，main 的全部退出路径统一经此出口；未初始化的
@@ -53,6 +57,7 @@ static void OnSigint(int) { gInterrupted.store(true); }
  */
 static void CloseAll(Scheduler &scheduler, int exitCode)
 {
+    gMetricsExporter.Stop();
     scheduler.Shutdown();
     LoggerManager::ShutdownForExit();
     // _Exit 不执行 C 流 flush，先把 stdout/stderr 缓冲刷净
@@ -182,9 +187,19 @@ int main(int argc, char *argv[])
             return 1;
         }
 
+        // Prometheus 抓取端点（metrics_exporter=on）：渲染回调现拉调度器聚合快照（线程安全）
+        if (config.GetMetricsExporter() &&
+            !gMetricsExporter.Start(
+                [&scheduler]() { return RenderPrometheusText(scheduler.CollectMetricsSnapshot()); },
+                config.GetMetricsExporterPort(), err)) {
+            LOG_ERROR("metrics exporter start failed: {}", err);
+            CloseAll(scheduler, 1);
+            return 1;
+        }
+
         // 按任务流执行（false 仅当工具链失败）
-        const bool runOk =
-            scheduler.Run(requestManager, testmode, config.GetRuntime(), config.GetLoop(), err);
+        const bool runOk = scheduler.Run(requestManager, testmode, config.GetRuntime(),
+                                         config.GetLoop(), config.GetRateLimitMb(), err);
         if (!runOk) { LOG_ERROR("test flow failed: {}", err); }
 
         // 完成标记行（仅成功时输出，与启动标记对称）
