@@ -1403,7 +1403,9 @@ def test_dump_writes_state_only_when_step_ends_on_lcm_boundary(
 
 
 @pytest.mark.parametrize("scheduled_tokens", [4, 5])
-def test_dump_uses_exact_engine_checkpoint_block(hla, state_connector, scheduled_tokens):
+def test_dump_uses_exact_engine_checkpoint_block(
+    hla, state_connector, scheduled_tokens
+):
     req_meta = _restore_request_meta(hla)
     req_meta.token_processed = 0
     state_connector.requests_meta = {"req": req_meta}
@@ -1433,7 +1435,10 @@ def test_cuda_blhnc_store_aligns_io_without_padding_copy_lengths(hla):
     connector.connector_configs = [
         {
             "ucm_connector_name": "UcmPipelineStore",
-            "ucm_connector_config": {"store_pipeline": "Cache|Posix", "io_direct": True},
+            "ucm_connector_config": {
+                "store_pipeline": "Cache|Posix",
+                "io_direct": True,
+            },
         }
     ]
     connector._role = hla.KVConnectorRole.WORKER

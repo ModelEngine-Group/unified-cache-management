@@ -61,9 +61,10 @@ def _get_compress_ratios(config) -> tuple[int, ...]:
     if rates is None or not layer_types:
         return ()
     num_mtp_layers = getattr(config, "num_nextn_predict_layers", 0) or 0
-    return tuple(int(rates.get(layer_type, 0)) for layer_type in layer_types) + (
-        0,
-    ) * num_mtp_layers
+    return (
+        tuple(int(rates.get(layer_type, 0)) for layer_type in layer_types)
+        + (0,) * num_mtp_layers
+    )
 
 
 def _ascend_fawa_hash_suffix(
