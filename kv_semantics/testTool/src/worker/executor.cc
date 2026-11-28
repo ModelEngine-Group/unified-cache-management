@@ -171,8 +171,13 @@ bool Executor::QueryAndRecord(const Request &request, std::string &err)
 
     // 输出 exist 任务明细日志（每任务一行聚合）
     WriteExistLog(request, result);
-    LOG_INFO("Executor: query {} keys, {} found, {} not found", keys.size(), found,
-             keys.size() - found);
+    const std::uint64_t notFound = keys.size() - found;
+    // 未命中打 ERROR 仅为醒目提示（notfound 是观察指标，不算工具链失败）
+    if (notFound != 0) {
+        LOG_ERROR("Executor: query {} keys, {} found, {} not found", keys.size(), found, notFound);
+    } else {
+        LOG_INFO("Executor: query {} keys, {} found, {} not found", keys.size(), found, notFound);
+    }
     return true;
 }
 
@@ -288,8 +293,14 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
     // 输出 get 任务明细日志（读回缓冲实际内容）；读回失败视为工具链失败
     if (!WritePutGetLog(request, result, "get", err)) { return false; }
 
-    LOG_INFO("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
-             notFound, mismatch, failed);
+    // 未命中打 ERROR 仅为醒目提示（notfound 是观察指标，不算工具链失败）
+    if (notFound != 0) {
+        LOG_ERROR("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
+                  notFound, mismatch, failed);
+    } else {
+        LOG_INFO("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
+                 notFound, mismatch, failed);
+    }
     return true;
 }
 
