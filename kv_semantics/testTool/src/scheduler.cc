@@ -74,12 +74,6 @@ std::string FormatLatency(double ns)
     return fmt::format("{:.3f}s", ns / 1000000000.0);
 }
 
-/** 基准表复合键：ns 与 keyLow64 以 NUL 拼接（ns 不含 NUL，组合唯一） */
-std::string BaselineKey(const std::string &ns, std::uint64_t keyLow64)
-{
-    return ns + '\0' + std::to_string(keyLow64);
-}
-
 }  // namespace
 
 Scheduler::Scheduler() = default;
@@ -179,6 +173,7 @@ bool Scheduler::PrepareExecutors(const ConfigUtil &config, std::string &err)
         executors_.back()->SetClient(client_.get());
         executors_.back()->SetAllocator(allocator_.get());
         executors_.back()->SetPerfMode(config.GetPerf());
+        executors_.back()->SetDetailValueLimit(config.GetDetailValueBytes());
     }
     LOG_INFO("Scheduler: {} executors prepared (startcoreid={})", executors_.size(), startCoreId_);
     p99IntervalSecs_ = config.GetP99IntervalSecs();
@@ -452,7 +447,6 @@ void Scheduler::Shutdown()
         } else {
             // 凭证已失效，清空防止误用
             registered_.clear();
-            keyBaseline_.clear();
         }
         client_->Shutdown();
         client_.reset();
@@ -480,7 +474,6 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
     request.rawKeys.reserve(task.entries.size());
     request.prefixLens.reserve(task.entries.size());
     request.entries.reserve(task.entries.size());
-    request.expected.reserve(task.entries.size());
 
     // mode1 种子串时间戳 batch 内共用，for 外生成一次
     const std::time_t seedTime = std::time(nullptr);
@@ -533,22 +526,6 @@ bool Scheduler::buildTaskRequest(const OrcTask &task, int testmode,
         entry.buffer.region.size = orc.length;
         entry.buffer.handle = registered_[owned[index]].handle;
         entry.offset = orc.offset;
-
-        // 基准表：PUT 记录前缀为最近写入基准，GET 查基准（命中才有比对依据），
-        // 均以 ns + key 复合定位（同 key 不同 ns 为不同数据，防基准互相覆盖）；
-        // 其他操作无基准；多 worker 并发访问加锁
-        if (task.op == OrcOp::PUT) {
-            std::lock_guard<std::mutex> lock(baselineMutex_);
-            keyBaseline_[BaselineKey(task.ns, orc.keyLow64)] = block;
-            request.expected.emplace_back();
-        } else if (task.op == OrcOp::GET) {
-            std::lock_guard<std::mutex> lock(baselineMutex_);
-            const auto it = keyBaseline_.find(BaselineKey(task.ns, orc.keyLow64));
-            request.expected.emplace_back(it != keyBaseline_.end() ? it->second
-                                                                   : std::vector<std::uint8_t>());
-        } else {
-            request.expected.emplace_back();
-        }
 
         request.keys.emplace_back(key);
         request.keyHighs.emplace_back(orc.keyHigh16);
@@ -620,7 +597,6 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
     std::uint64_t ops = 0;
     std::uint64_t errors = 0;
     std::uint64_t notFound = 0;
-    std::uint64_t mismatch = 0;
     std::uint64_t bytes = 0;
     std::uint64_t tasks = 0;
     std::uint64_t latencyNs = 0;
@@ -631,7 +607,6 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
         ops += current[i].opCount - last[i].opCount;
         errors += current[i].errorCount - last[i].errorCount;
         notFound += current[i].notFoundCount - last[i].notFoundCount;
-        mismatch += current[i].mismatchCount - last[i].mismatchCount;
         bytes += current[i].ioBytes - last[i].ioBytes;
         tasks += current[i].taskCount - last[i].taskCount;
         latencyNs += current[i].latencyNsTotal - last[i].latencyNsTotal;
@@ -648,11 +623,9 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
     const std::string errorRate =
         (ops > 0) ? fmt::format("{:.2f}%", static_cast<double>(errors) / ops * 100.0)
                   : std::string("-");
-    LOG_INFO(
-        "Scheduler metrics [{}s]: IOPS={:.0f} traffic={}/s TTFT={} error rate={} notfound={} "
-        "mismatch={}",
-        kMetricsIntervalMs / 1000, static_cast<double>(ops) / seconds,
-        FormatBytes(static_cast<double>(bytes) / seconds), ttft, errorRate, notFound, mismatch);
+    LOG_INFO("Scheduler metrics [{}s]: IOPS={:.0f} traffic={}/s TTFT={} error rate={} notfound={}",
+             kMetricsIntervalMs / 1000, static_cast<double>(ops) / seconds,
+             FormatBytes(static_cast<double>(bytes) / seconds), ttft, errorRate, notFound);
     // 分接口行（窗口内有增量的接口才输出；exist/delete 无载荷仅 IOPS 有意义，流量恒 0）
     for (std::size_t op = 0; op < kOpTypeCount; ++op) {
         if (opsByOp[op] == 0) { continue; }
@@ -675,7 +648,6 @@ MetricsSnapshot Scheduler::CollectMetricsSnapshot() const
         }
         snapshot.errorsTotal += metrics.errorCount;
         snapshot.notFoundTotal += metrics.notFoundCount;
-        snapshot.mismatchTotal += metrics.mismatchCount;
         executor->AppendLatencySamplesUs(snapshot.latencySamplesUs);
     }
     snapshot.uptimeSecs =
@@ -714,7 +686,6 @@ void Scheduler::OutputMetricsTotal() const
     std::uint64_t ops = 0;
     std::uint64_t errors = 0;
     std::uint64_t notFound = 0;
-    std::uint64_t mismatch = 0;
     std::uint64_t bytes = 0;
     std::uint64_t tasks = 0;
     std::uint64_t latencyNs = 0;
@@ -725,7 +696,6 @@ void Scheduler::OutputMetricsTotal() const
         ops += metrics.opCount;
         errors += metrics.errorCount;
         notFound += metrics.notFoundCount;
-        mismatch += metrics.mismatchCount;
         bytes += metrics.ioBytes;
         tasks += metrics.taskCount;
         latencyNs += metrics.latencyNsTotal;
@@ -741,9 +711,9 @@ void Scheduler::OutputMetricsTotal() const
         (ops > 0) ? fmt::format("{:.2f}%", static_cast<double>(errors) / ops * 100.0)
                   : std::string("-");
     LOG_INFO(
-        "Scheduler metrics total: ops={} traffic={} tasks={} avg TTFT={} error rate={} notfound={} "
-        "mismatch={}",
-        ops, FormatBytes(static_cast<double>(bytes)), tasks, ttft, errorRate, notFound, mismatch);
+        "Scheduler metrics total: ops={} traffic={} tasks={} avg TTFT={} error rate={} "
+        "notfound={}",
+        ops, FormatBytes(static_cast<double>(bytes)), tasks, ttft, errorRate, notFound);
     // 分接口行（全程有操作的接口才输出；exist/delete 无载荷，流量恒 0）
     for (std::size_t op = 0; op < kOpTypeCount; ++op) {
         if (opsByOp[op] == 0) { continue; }

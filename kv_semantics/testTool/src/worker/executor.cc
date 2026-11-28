@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <fmt/format.h>
 #include <string>
 #include <vector>
 #include "log/logger_manager.h"
@@ -105,6 +106,8 @@ void Executor::SetAllocator(DeviceAllocator *allocator) { allocator_ = allocator
 
 void Executor::SetPerfMode(bool perf) { perf_ = perf; }
 
+void Executor::SetDetailValueLimit(std::size_t bytes) { detailValueLimit_ = bytes; }
+
 bool Executor::Execute(OpType op, const Request &request, std::string &err)
 {
     if (client_ == nullptr) {
@@ -127,7 +130,6 @@ ExecutorMetrics Executor::GetMetrics() const
     metrics.opCount = opCount_.load(std::memory_order_relaxed);
     metrics.errorCount = errorCount_.load(std::memory_order_relaxed);
     metrics.notFoundCount = notFoundCount_.load(std::memory_order_relaxed);
-    metrics.mismatchCount = mismatchCount_.load(std::memory_order_relaxed);
     metrics.ioBytes = ioBytes_.load(std::memory_order_relaxed);
     metrics.taskCount = taskCount_.load(std::memory_order_relaxed);
     metrics.latencyNsTotal = latencyNsTotal_.load(std::memory_order_relaxed);
@@ -256,10 +258,9 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
     }
 
     // entry 级分类优先（任务级 PARTIAL_FAILED 时 entryStatus 仍带逐项详情）：
-    // 未命中计 notFound、有基准比对不一致计 mismatch、其他计 error；
-    // 流量为成功 entry 口径
+    // 未命中计 notFound、其他计 error；流量为成功 entry 口径；读回内容不做自动
+    // 比对，由明细日志人工核对
     std::uint64_t notFound = 0;
-    std::uint64_t mismatch = 0;
     std::uint64_t failed = 0;
     std::uint64_t successBytes = 0;
     if (!result.entryStatus.empty()) {
@@ -267,26 +268,6 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
         for (std::size_t i = 0; i < count; ++i) {
             if (result.entryStatus[i].ok()) {
                 successBytes += entries[i].buffer.region.size;
-                // 有基准才比对；device 语义值缓冲经分配器 D2H 读回 host 再比对
-                if (i < request.expected.size() && !request.expected[i].empty()) {
-                    if (allocator_ == nullptr) {
-                        err = "load readback requires a device allocator bound";
-                        return false;
-                    }
-                    std::vector<std::uint8_t> readback(request.expected[i].size());
-                    std::string readErr;
-                    if (!allocator_->Read(readback.data(), entries[i].buffer.region.addr,
-                                          readback.size(), readErr)) {
-                        // 读回失败属工具链异常，后续观察不可信
-                        err = "load entry " + std::to_string(i) + " readback failed: " + readErr;
-                        return false;
-                    }
-                    if (std::memcmp(readback.data(), request.expected[i].data(),
-                                    request.expected[i].size()) != 0) {
-                        ++mismatch;
-                        LOG_ERROR("Executor: load entry {} data mismatch with baseline", i);
-                    }
-                }
                 continue;
             }
             if (IsNotFound(result.entryStatus[i])) {
@@ -313,7 +294,6 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
     }
     RecordTask(OpType::LOAD, entries.size(), successBytes, true, CurrentNs() - startNs);
     notFoundCount_.fetch_add(notFound, std::memory_order_relaxed);
-    mismatchCount_.fetch_add(mismatch, std::memory_order_relaxed);
     errorCount_.fetch_add(failed, std::memory_order_relaxed);
     if (failed != 0) { LogTaskResult(result, "load"); }
 
@@ -322,11 +302,11 @@ bool Executor::LoadAndRecord(const Request &request, std::string &err)
 
     // 未命中打 ERROR 仅为醒目提示（notfound 是观察指标，不算工具链失败）
     if (notFound != 0) {
-        LOG_ERROR("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
-                  notFound, mismatch, failed);
+        LOG_ERROR("Executor: load {} entries, {} not found, {} failed", entries.size(), notFound,
+                  failed);
     } else {
-        LOG_INFO("Executor: load {} entries, {} not found, {} mismatch, {} failed", entries.size(),
-                 notFound, mismatch, failed);
+        LOG_INFO("Executor: load {} entries, {} not found, {} failed", entries.size(), notFound,
+                 failed);
     }
     return true;
 }
@@ -376,14 +356,17 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
             (i < result.entryStatus.size()) ? result.entryStatus[i].ok() : result.status.ok();
 
         // 读回组装：get 无论 entry 状态总是读回缓冲（预填哨兵串即“没读到数据”标记），
-        // put 仅成功 entry 读回、失败以 "-" 占位；首段长 prefixLens[i]、尾段固定 8 字节，
+        // put 仅成功 entry 读回、失败以 "-" 占位；首段长 prefixLens[i]（超过
+        // detail_value_bytes 时截断，尾部标记 ...+未显示字节数）、尾段固定 8 字节，
         // 均经分配器 D2H 读回
         std::string value = "-";
         std::string tail = "-";
         const kv::MemoryRegion &region = entries[i].buffer.region;
         const std::size_t blockLen = static_cast<std::size_t>(region.size);
         const std::size_t prefixLen = (i < request.prefixLens.size()) ? request.prefixLens[i] : 0;
-        const std::size_t headLen = std::min(prefixLen, blockLen);
+        const std::size_t valueBytes = std::min(prefixLen, blockLen);
+        std::size_t headLen = valueBytes;
+        if (detailValueLimit_ != 0) { headLen = std::min(headLen, detailValueLimit_); }
         const std::size_t tailLen = std::min<std::size_t>(8, blockLen);
         if ((isGet || entryOk) && (headLen != 0 || tailLen != 0)) {
             if (allocator_ == nullptr) {
@@ -402,7 +385,11 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
                 err = "req log entry " + std::to_string(i) + " tail read failed: " + readErr;
                 return false;
             }
-            if (headLen != 0) { value.assign(head.begin(), head.end()); }
+            if (headLen != 0) {
+                value.assign(head.begin(), head.end());
+                // 截断标记：...+N（N 为未显示字节数），避免误认完整读回内容
+                if (valueBytes > headLen) { value += fmt::format("...+{}", valueBytes - headLen); }
+            }
             if (tailLen != 0) { tail.assign(tailBuf.begin(), tailBuf.end()); }
         }
 

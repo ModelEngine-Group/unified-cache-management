@@ -50,6 +50,12 @@ public:
     int GetRuntime() const { return config_parse::RequireInt(values_, "runtime"); }
     int GetLoop() const { return config_parse::RequireInt(values_, "loop"); }
     bool GetPerf() const { return config_parse::RequireValue(values_, "perf") == "on"; }
+    /** 请求明细 value 字段显示上限（字节）；0 不截断（键缺省兼容存量 conf，默认 1024） */
+    std::size_t GetDetailValueBytes() const
+    {
+        const int bytes = config_parse::OptionalInt(values_, "detail_value_bytes", 1024);
+        return bytes > 0 ? static_cast<std::size_t>(bytes) : 0;
+    }
     bool GetOnlyConnect() const
     {
         return config_parse::RequireValue(values_, "onlyconnect") == "on";
