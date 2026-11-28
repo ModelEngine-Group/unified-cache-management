@@ -50,8 +50,6 @@ struct Request {
     std::vector<std::size_t> prefixLens;
     /** 组装好的 kv client 请求项（绑定已注册 buffer 与 offset） */
     std::vector<kv::KVBuffer> entries;
-    /** GET 回读比对基准（与 entries 逐项对应；空 vector 表示该 entry 无基准不比对） */
-    std::vector<std::vector<std::uint8_t>> expected;
 };
 
 /**

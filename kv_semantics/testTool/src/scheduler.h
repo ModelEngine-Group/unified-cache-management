@@ -174,9 +174,6 @@ private:
     std::size_t bufferSize_{0};
     /** 已注册内存区域凭证（与值缓冲块逐项对应，注销时使用） */
     std::vector<kv::RegisteredMemory> registered_;
-    /** put 基准表：ns + keyLow64 复合定位最近一次写入块内容（get 回读比对基准；多 worker
-     * 并发访问加锁） */
-    std::unordered_map<std::string, std::vector<std::uint8_t>> keyBaseline_;
 
     // ---- 多 worker 并发执行状态（Run 期间有效，worker 全部 join 后失效） ----
     /** worker 数与起始绑核编号（conf：numjobs / startcoreid；worker i 绑 startcoreid+i） */
@@ -213,8 +210,6 @@ private:
     std::vector<std::size_t> freeBuffers_;
     std::mutex bufferMutex_;
     std::condition_variable bufferCv_;
-    /** put 基准表并发保护（PUT 写 / GET 读两触点加锁） */
-    std::mutex baselineMutex_;
     /** 工具链失败聚合（anyFail_ / firstErr_ 由 failMutex_ 保护；保留首次失败描述） */
     std::mutex failMutex_;
     bool anyFail_{false};

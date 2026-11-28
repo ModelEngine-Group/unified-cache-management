@@ -35,6 +35,9 @@ enum class OrcOp {
     DELETE  // 删除（delete）
 };
 
+/** exist/delete 无数据面：请求只按 key 提交（不携带 offset/length/value） */
+inline bool IsKeyOnlyOp(OrcOp op) { return op == OrcOp::EXIST || op == OrcOp::DELETE; }
+
 /**
  * input.txt 单条指令的原始解析结果（原始格式）：只承载输入文件中的信息，不做执行侧加工。
  * key 解析为 128 位整数后按两个分量保存：低 64 位（CacheKey 以其十进制串构造）与 >>64 后的

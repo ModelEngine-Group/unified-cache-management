@@ -170,6 +170,7 @@ void ConfigUtil::Print() const
     LOG_INFO("runtime={}", GetRuntime());
     LOG_INFO("loop={}", GetLoop());
     LOG_INFO("perf={}", GetPerf());
+    LOG_INFO("detail_value_bytes={}", GetDetailValueBytes());
     LOG_INFO("onlyconnect={}", GetOnlyConnect());
     LOG_INFO("autodisconnect={}", GetAutoDisconnect());
     LOG_INFO("ratelimit_mb={}", GetRateLimitMb());
