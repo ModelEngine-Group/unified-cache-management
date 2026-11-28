@@ -1607,10 +1607,15 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
     """Worker-to-scheduler metadata for load failures and Dump success."""
 
     is_mla: bool = False
+    # PP stage that produced this metadata; dump success aggregates per stage.
+    pp_rank: int = 0
     load_failed_reqs: set[str] = field(default_factory=set)
     missing_reqs: set[str] = field(default_factory=set)
     missing_blocks: set[bytes] = field(default_factory=set)
     dump_succeeded_blocks: set[bytes] = field(default_factory=set)
+    # Per-stage dump success while aggregating: one fold cannot express
+    # "intersect inside a stage, union across stages" with a flat set.
+    dump_succeeded_by_stage: dict[int, set[bytes]] = field(default_factory=dict)
 
     def mark_failed(self, req_id: str) -> None:
         """Record a failed load request from this worker."""
@@ -1627,14 +1632,22 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
         self.load_failed_reqs.update(other.load_failed_reqs)
         self.missing_reqs.update(other.missing_reqs)
         self.missing_blocks.update(other.missing_blocks)
-        # TODO: Support PP-aware Dump success aggregation.
         # for mla, blocks can only be dumped by 1 rank, for FAWA, the dump is distributed across ranks
         # for non-mla, blocks should be dumped by all ranks
         # so for mla, aggregation logic is union, for non-mla, aggregation is intersection
         if self.is_mla:
             self.dump_succeeded_blocks.update(other.dump_succeeded_blocks)
+            return self
+        # That intersection is per PP stage — each stage dumps a disjoint key
+        # namespace — so the per-stage results are unioned.
+        by_stage = self.dump_succeeded_by_stage
+        if not by_stage:
+            by_stage[self.pp_rank] = set(self.dump_succeeded_blocks)
+        if other.pp_rank in by_stage:
+            by_stage[other.pp_rank].intersection_update(other.dump_succeeded_blocks)
         else:
-            self.dump_succeeded_blocks.intersection_update(other.dump_succeeded_blocks)
+            by_stage[other.pp_rank] = set(other.dump_succeeded_blocks)
+        self.dump_succeeded_blocks = set().union(*by_stage.values())
         return self
 
 
@@ -1711,11 +1724,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(
-            self.launch_config,
-            kv_cache_config,
-            vllm_config.parallel_config.pipeline_parallel_size,
-        )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
         self.unique_id = self.engine_id
@@ -2800,6 +2808,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._rank_consistency.update_worker_meta(self._connector_worker_meta)
         meta = self._connector_worker_meta
         self._connector_worker_meta = UCMWorkerMetadata(is_mla=meta.is_mla)
+        meta.pp_rank = get_pp_group().rank_in_group
         return meta
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
@@ -4015,11 +4024,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
-        _apply_cuda_indexer_io_config(
-            self.launch_config,
-            kv_cache_config,
-            vllm_config.parallel_config.pipeline_parallel_size,
-        )
         self._worker_rank = (
             get_world_group().rank
             if role == KVConnectorRole.WORKER
@@ -4029,12 +4033,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
-
-        use_layerwise = (
-            self.launch_config.get("use_layerwise", True)
-            if self.launch_config is not None
-            else False
-        )
 
         use_lite = (
             self.launch_config.get("use_lite", False)
@@ -4079,8 +4077,38 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
             return
 
+        from ucm.integration.vllm.hla_connector import (
+            UCMHybridLinearAttentionConnector,
+            UCMHybridLinearAttentionLayerWiseConnector,
+        )
+        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
+
+        is_fawa = UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config)
+        use_hybrid_linear_attention = False
+        if not is_fawa:
+            use_hybrid_linear_attention = (
+                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                    kv_cache_config
+                )
+            )
+
+        if not use_hybrid_linear_attention:
+            _apply_cuda_indexer_io_config(
+                self.launch_config,
+                kv_cache_config,
+                vllm_config.parallel_config.pipeline_parallel_size,
+            )
+        elif current_platform.is_cuda():
+            self.launch_config.setdefault("use_request_async_load", True)
+        vllm_config.kv_transfer_config.kv_connector_extra_config = self.launch_config
+
+        use_layerwise = (
+            self.launch_config.get("use_layerwise", True)
+            if self.launch_config is not None
+            else False
+        )
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
-        if pp_enabled and not use_layerwise:
+        if pp_enabled and not use_layerwise and not use_hybrid_linear_attention:
             raise RuntimeError(
                 "Pipeline parallelism is not supported in UCMDirectConnector, please set use_layerwise=True."
             )
@@ -4099,24 +4127,6 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             > 1
         )
 
-        from ucm.integration.vllm.hla_connector import (
-            UCMHybridLinearAttentionConnector,
-            UCMHybridLinearAttentionLayerWiseConnector,
-        )
-        from ucm.integration.vllm.hma_connector import UCMFAWAConnector
-
-        # FAWA must win before HLA probing.  New vLLM KVCacheTensor objects
-        # describe their layers with ``layers`` and do not have the legacy
-        # ``shared_by`` field; more importantly, DS V4.1 has transient groups
-        # which are not an HLA shared physical region.
-        is_fawa = UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config)
-        use_hybrid_linear_attention = False
-        if not is_fawa:
-            use_hybrid_linear_attention = (
-                UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
-                    kv_cache_config
-                )
-            )
         use_hybrid_linear_attention_layerwise = (
             use_hybrid_linear_attention
             and use_layerwise

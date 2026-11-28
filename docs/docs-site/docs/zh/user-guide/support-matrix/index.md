@@ -81,11 +81,11 @@
 <tr><th scope="row">Qwen2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Qwen3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Qwen3-MoE</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">Qwen3-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.5</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.6</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.8</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.8-Flash-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3-Next</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.6</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8-Flash-Next</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">GLM</th></tr>
@@ -94,7 +94,7 @@
 <tr><th scope="row">GLM-5.1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">GLM-5.2</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">GLM-5.3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">GLM-5.3-Flash</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">GLM-5.3-Flash</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">MiniMax</th></tr>
@@ -107,12 +107,11 @@
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">Kimi</th></tr>
 <tr><th scope="row">Kimi-K2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Kimi-K2.7</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">Kimi-K3</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Kimi-K3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 </table>
 </div>
 
-DeepSeek V4 系列与混合线性注意力模型仅支持通过 PCP 进行上下文并行，PP 与 DCP 不支持；其中混合线性注意力模型在 PP > 1 时启动即报错（KV 哈希命名空间不包含流水线阶段维度）。
 
 ## 计算平台与设备
 
