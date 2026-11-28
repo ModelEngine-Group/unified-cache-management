@@ -122,11 +122,9 @@ def _apply_cuda_indexer_io_config(
                     "to use this configuration."
                 )
             launch_config["use_layerwise"] = False
-            launch_config["use_request_async_load"] = True
             logger.warning(
                 "CUDA indexer KV cache requires whole-block loading; "
-                "disabling use_layerwise and enabling use_request_async_load "
-                "where supported by the connector."
+                "disabling use_layerwise."
             )
             return
 
@@ -1600,6 +1598,8 @@ class PendingLoadTask:
     task: Task
     request_id: str
     vllm_block_ids: list[int]
+    submitted_at: float
+    event_handle: int = 0
 
 
 @dataclass
@@ -1640,17 +1640,12 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
 
 class UCMDirectConnector(KVConnectorBase_V1):
     """
-    This connector means synchronize:
-    load -> forward -> save
+    Load external KV asynchronously before the request runs its forward pass.
 
     Store operations that participate in rank consistency must use
     RankConsistencyManager. It owns StoreNotFoundError classification and
     cross-rank consistency metadata.
     """
-
-    @classmethod
-    def _supports_request_async_load(cls) -> bool:
-        return cls is UCMDirectConnector
 
     @staticmethod
     def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
@@ -1718,6 +1713,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         )
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
+        store_config = self.connector_configs[0].get("ucm_connector_config", {})
+        self._async_load_timeout_s = (
+            float(store_config.get("timeout_ms", 30_000)) / 1000
+        )
         self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
@@ -1758,28 +1757,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids: set[int] = set()
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
-        request_async_configured = bool(
-            self.launch_config.get("use_request_async_load", False)
-        )
-        self.use_request_async_load = (
-            request_async_configured and self._supports_request_async_load()
-        )
-        if self.use_request_async_load:
-            logger.info(
-                "Request-async loading enabled for %s.",
-                type(self).__name__,
-            )
-        elif request_async_configured:
-            logger.warning(
-                "Request-async loading is not supported by %s; disabling it.",
-                type(self).__name__,
-            )
         # Scheduler-side plans waiting to be included in connector metadata.
         self._pending_async_load_dispatches: dict[str, RequestDispatchMeta] = {}
         # Scheduler-side requests whose external load has already been dispatched.
         self._async_load_req_ids: set[str] = set()
         # Worker-side tasks that outlive the metadata step that submitted them.
         self._pending_load_tasks: dict[str, PendingLoadTask] = {}
+        self._bound_async_load_event = 0
+        self._async_load_event_refs: dict[int, int] = {}
         self._finished_async_load_req_ids: set[str] = set()
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
@@ -2265,17 +2250,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
             token_processed=hbm_hit_block_num * self.block_size + external_hit_tokens,
         )
 
-        load_async = self.use_request_async_load and external_hit_tokens > 0
+        load_async = not self.use_layerwise and external_hit_tokens > 0
         return external_hit_tokens, load_async
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
-        if not self.use_request_async_load or num_external_tokens <= 0:
+        if self.use_layerwise:
             return
 
         request_id = request.request_id
         req_meta = self.requests_meta.get(request_id)
+        if num_external_tokens <= 0:
+            # A lookup may be rejected during allocation. Keep the loaded
+            # prefix when this is the promotion after a completed async load.
+            if (
+                req_meta is not None
+                and request_id not in self._async_load_req_ids
+                and req_meta.total_hit_block_num > req_meta.hbm_hit_block_num
+            ):
+                req_meta.total_hit_block_num = req_meta.hbm_hit_block_num
+                req_meta.token_processed = req_meta.hbm_hit_block_num * self.block_size
+            return
         if req_meta is None:
             raise RuntimeError(
                 f"Request {request_id} has external tokens but no UCM metadata."
@@ -2285,8 +2281,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not block_ids_by_group:
             raise RuntimeError(f"Request {request_id} has no allocated KV blocks.")
 
-        # Match the existing direct connector path, which uses the first KV
-        # cache group. Other layouts are intentionally excluded from opt-in.
+        # The direct connector uses the first KV cache group.
         vllm_block_ids = block_ids_by_group[0]
         external_start = req_meta.hbm_hit_block_num
         num_external_blocks = math.ceil(num_external_tokens / self.block_size)
@@ -2530,10 +2525,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     "Ignore duplicate async load metadata for request %s.", request_id
                 )
                 continue
+            event_handle = 0
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(ucm_block_ids)
+                if request.load_async and getattr(
+                    self._kv_cache_config, "needs_kv_cache_zeroing", False
+                ):
+                    event_handle = self._acquire_async_load_event()
                 task = self._rank_consistency.submit_load(
                     self.store,
                     {request_id: ucm_block_ids},
@@ -2543,17 +2543,22 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     # DCP workers request different key lists. Cache2's index-based
                     # filler selection requires every rank to request the same keys.
                     distribute_backend_load=self.is_mla and self.cp_world_size == 1,
+                    event_handle=event_handle,
                 )
                 if request.load_async:
                     self._pending_load_tasks[request_id] = PendingLoadTask(
                         task=task,
                         request_id=request_id,
                         vllm_block_ids=list(vllm_block_ids),
+                        submitted_at=time.monotonic(),
+                        event_handle=event_handle,
                     )
                 else:
                     request_to_task[request_id] = task
                     request_to_load_blocks[request_id] = len(ucm_block_ids)
             except Exception as e:
+                if event_handle:
+                    self._release_async_load_event(event_handle)
                 logger.error(
                     f"request {request_id} submit load task error. "
                     f"{type(e).__name__}: {e}"
@@ -2601,6 +2606,48 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if event_handle == 0:
             self.device.synchronize()
         return event_handle
+
+    def _needs_async_load_event(self, metadata: KVConnectorMetadata) -> bool:
+        return (
+            isinstance(metadata, UCMConnectorMetadata)
+            and getattr(self._kv_cache_config, "needs_kv_cache_zeroing", False)
+            and any(
+                request.load_async and len(request.load_block_ids[0]) > 0
+                for request in metadata.request_meta.values()
+            )
+        )
+
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        self._release_bound_async_load_event()
+        super().bind_connector_metadata(connector_metadata)
+        if self._needs_async_load_event(connector_metadata) and self.enable_event_sync:
+            # Record after KV block initialization, before MRV2 enqueues forward.
+            # If recording fails, leave the synchronization fallback at submission.
+            event_handle = self.device.get_event_handle()
+            if event_handle:
+                self._bound_async_load_event = event_handle
+                self._async_load_event_refs[event_handle] = 1
+
+    def _acquire_async_load_event(self) -> int:
+        event_handle = getattr(self, "_bound_async_load_event", 0)
+        if not event_handle:
+            return self._get_event_handle()
+        self._async_load_event_refs[event_handle] += 1
+        return event_handle
+
+    def _release_async_load_event(self, event_handle: int) -> None:
+        event_refs = getattr(self, "_async_load_event_refs", {})
+        if event_refs.get(event_handle, 1) > 1:
+            event_refs[event_handle] -= 1
+        else:
+            event_refs.pop(event_handle, None)
+            self.device.destroy_event_handle(event_handle)
+
+    def _release_bound_async_load_event(self) -> None:
+        event_handle = getattr(self, "_bound_async_load_event", 0)
+        if event_handle:
+            self._bound_async_load_event = 0
+            self._release_async_load_event(event_handle)
 
     def save_kv_layer(
         self,
@@ -2776,6 +2823,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return max(value, 0.0)
 
     def clear_connector_metadata(self) -> None:
+        self._release_bound_async_load_event()
         super().clear_connector_metadata()
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -2845,23 +2893,41 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return self.request_finished(request, block_ids[0])
         return self.request_finished(request, [])
 
-    def _poll_pending_load_tasks(self) -> set[str]:
+    def _poll_load_task(
+        self,
+        task: Task,
+        submitted_at: float,
+        request_id: str,
+        *,
+        wait_all: bool = False,
+    ) -> bool:
+        """Reap completed loads and let the Store drain overdue loads."""
+        if not wait_all and not self._rank_consistency.check_load(task):
+            timeout = self._async_load_timeout_s
+            if timeout <= 0 or time.monotonic() - submitted_at < timeout:
+                return False
+            logger.warning(
+                "Async KV load for request %s is still pending after %g s; "
+                "waiting for Store I/O to drain.",
+                request_id,
+                timeout,
+            )
+        self._rank_consistency.wait_load(task)
+        return True
+
+    def _poll_pending_load_tasks(self, *, wait_all: bool = False) -> set[str]:
         finished_recving = set(getattr(self, "_finished_async_load_req_ids", set()))
         if hasattr(self, "_finished_async_load_req_ids"):
             self._finished_async_load_req_ids.clear()
 
         pending_load_tasks = getattr(self, "_pending_load_tasks", {})
         for request_id, pending in list(pending_load_tasks.items()):
-            completed = False
             try:
-                if not self._rank_consistency.check_load(pending.task):
+                if not self._poll_load_task(
+                    pending.task, pending.submitted_at, request_id, wait_all=wait_all
+                ):
                     continue
-                completed = True
-                # A completed poll is followed by wait_load() to surface any
-                # deferred Store error and release the task context.
-                self._rank_consistency.wait_load(pending.task)
             except Exception as e:
-                completed = True
                 logger.error(
                     f"request {request_id} async load task failed. "
                     f"{type(e).__name__}: {e}"
@@ -2871,12 +2937,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     pending.vllm_block_ids,
                 )
                 self._connector_worker_meta.mark_failed(request_id)
-            finally:
-                if completed:
-                    pending_load_tasks.pop(request_id, None)
-                    # Failed loads must also report completion so vLLM can
-                    # leave WAITING_FOR_REMOTE_KVS and recompute or fail.
-                    finished_recving.add(request_id)
+            else:
+                ucmmetrics.update_stats(
+                    {
+                        "load_bytes_total": len(pending.vllm_block_ids)
+                        * self.block_data_size
+                    }
+                )
+            pending_load_tasks.pop(request_id)
+            if pending.event_handle:
+                self._release_async_load_event(pending.event_handle)
+            # Failed loads also report completion so vLLM can leave
+            # WAITING_FOR_REMOTE_KVS and recompute or fail.
+            finished_recving.add(request_id)
 
         return finished_recving
 
@@ -2905,6 +2978,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_dump_req_ids.difference_update(async_finished_req_ids)
 
         return async_finished_req_ids or None, finished_recving or None
+
+    def shutdown(self) -> None:
+        if getattr(self, "_pending_load_tasks", None):
+            self._poll_pending_load_tasks(wait_all=True)
+        self._release_bound_async_load_event()
 
 
 class UCMLayerWiseConnector(UCMDirectConnector):
@@ -3134,6 +3212,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
     def shutdown(self) -> None:
         """Release the lookup pool so process exit cannot block on it."""
+        super().shutdown()
         pool = getattr(self, "_lookup_pool", None)
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
@@ -3784,15 +3863,19 @@ class UCMMockConnector(UCMDirectConnector):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        hit_tokens, _ = super().get_num_new_matched_tokens(request, num_computed_tokens)
+        hit_tokens, load_async = super().get_num_new_matched_tokens(
+            request, num_computed_tokens
+        )
         expect_hit_tokens = int(self._hit_ratio * request.num_prompt_tokens)
         if hit_tokens <= expect_hit_tokens:
-            return hit_tokens, False
-        expect_hit_block_num = expect_hit_tokens // self.block_size
+            return hit_tokens, load_async
+        expect_hit_block_num = max(0, expect_hit_tokens // self.block_size)
         request_meta = self.requests_meta[request.request_id]
-        request_meta.total_hit_block_num = expect_hit_block_num
-        request_meta.hbm_hit_block_num = min(
-            expect_hit_block_num, request_meta.hbm_hit_block_num
+        request_meta.total_hit_block_num = (
+            request_meta.hbm_hit_block_num + expect_hit_block_num
+        )
+        request_meta.token_processed = (
+            request_meta.total_hit_block_num * self.block_size
         )
 
         logger.info(
@@ -3803,7 +3886,7 @@ class UCMMockConnector(UCMDirectConnector):
             f"hit external: {request_meta.total_hit_block_num - request_meta.hbm_hit_block_num}"
         )
 
-        return expect_hit_block_num * self.block_size, False
+        return expect_hit_block_num * self.block_size, expect_hit_block_num > 0
 
 
 class UCMLiteConnector(KVConnectorBase_V1):

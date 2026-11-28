@@ -44,6 +44,7 @@ DIRECT_METHODS = {
     "_lookup_one_stage",
     "_record_load_error",
     "get_block_ids_with_load_errors",
+    "shutdown",
 }
 
 BACKEND = "/data/ucm"
@@ -84,7 +85,7 @@ def _load_connector_class(existing=(BACKEND,)):
     nodes = []
     for node in ast.parse(CONNECTOR_PATH.read_text(encoding="utf-8-sig")).body:
         if isinstance(node, ast.ClassDef) and node.name == CLASS_NAME:
-            node.bases = []
+            node.bases = [ast.Name(id=DIRECT_CLASS, ctx=ast.Load())]
             node.body = [
                 item for item in node.body if getattr(item, "name", None) in METHODS
             ]
@@ -97,6 +98,7 @@ def _load_connector_class(existing=(BACKEND,)):
     logger = MagicMock()
     namespace = {
         "__name__": __name__,
+        DIRECT_CLASS: _load_direct_class(),
         "Any": Any,
         "Optional": Optional,
         "math": math,
