@@ -148,9 +148,7 @@ kv::TransProviderType ParseTransProviderBackend(std::string backend)
     if (backend == "AIV") { return kv::TransProviderType::AIV; }
     if (backend == "AICPU") { return kv::TransProviderType::AICPU; }
     if (backend == "CPU") { return kv::TransProviderType::CPU; }
-    if (backend == "CPU_ROCE" || backend == "CPU-ROCE") {
-        return kv::TransProviderType::CPU_ROCE;
-    }
+    if (backend == "CPU_ROCE" || backend == "CPU-ROCE") { return kv::TransProviderType::CPU_ROCE; }
     if (backend == "HCCP_KV_OVER_ROCE" || backend == "HCCP") {
         return kv::TransProviderType::HCCP_KV_OVER_ROCE;
     }

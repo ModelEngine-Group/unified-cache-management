@@ -165,8 +165,8 @@ class VerbQueuePairIo final : public VerbsConnection::QueuePairIo {
 public:
     explicit VerbQueuePairIo(VerbQp& queuePair) : queuePair_(&queuePair) {}
 
-    Status PostSend(const void* buffer, std::size_t length, std::uint32_t lkey,
-                    std::uint64_t wrId, std::string& error) override;
+    Status PostSend(const void* buffer, std::size_t length, std::uint32_t lkey, std::uint64_t wrId,
+                    std::string& error) override;
 
     Status PostReceive(void* buffer, std::size_t length, std::uint32_t lkey, std::uint64_t wrId,
                        std::string& error) override;

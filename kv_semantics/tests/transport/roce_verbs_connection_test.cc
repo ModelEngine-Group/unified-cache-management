@@ -77,8 +77,8 @@ public:
         std::uint64_t wrId;
     };
 
-    Status PostSend(const void* buffer, std::size_t length, std::uint32_t lkey,
-                    std::uint64_t wrId, std::string& error) override
+    Status PostSend(const void* buffer, std::size_t length, std::uint32_t lkey, std::uint64_t wrId,
+                    std::string& error) override
     {
         if (failPostSend) {
             error = "fake send failure";
@@ -115,7 +115,8 @@ public:
     {
         Receive& receive = receives.at(slot);
         const std::vector<std::uint8_t> response = MakeResponse(cid, status);
-        const std::size_t copied = response.size() < responseBytes ? response.size() : responseBytes;
+        const std::size_t copied =
+            response.size() < responseBytes ? response.size() : responseBytes;
         std::memcpy(receive.buffer, response.data(), copied);
         roce::Completion completion;
         completion.wrId = static_cast<std::uint64_t>(slot) << 1U;
@@ -206,16 +207,15 @@ TEST(CpuKvOverRoceVerbsConnectionTest, PostRequestReportsResourceBusyWhenTheRing
 
     std::uint32_t sqe[roce::kSqeHeaderDwords] = {};
     std::uint8_t flag[kResponseCapacity] = {};
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, flag, 1U, kResponseCapacity, error)
-                    .ok());
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, flag, 2U, kResponseCapacity, error)
-                    .ok());
+    ASSERT_TRUE(
+        fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 1U, kResponseCapacity, error)
+            .ok());
+    ASSERT_TRUE(
+        fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 2U, kResponseCapacity, error)
+            .ok());
 
-    const Status third =
-        fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 3U, kResponseCapacity,
-                                        error);
+    const Status third = fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 3U,
+                                                         kResponseCapacity, error);
     EXPECT_EQ(StatusCode::RESOURCE_BUSY, third.code) << third.message;
     EXPECT_EQ(2U, fixture.io->sends.size());
     EXPECT_EQ(0U, fixture.connection->FreeReceiveSlots());
@@ -238,9 +238,9 @@ TEST(CpuKvOverRoceVerbsConnectionTest, PostRequestReportsIoErrorWhenTheSendFails
     EXPECT_FALSE(fixture.connection->Failed());
 
     fixture.io->failPostSend = false;
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, flag, 2U, kResponseCapacity, error)
-                    .ok());
+    ASSERT_TRUE(
+        fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 2U, kResponseCapacity, error)
+            .ok());
 }
 
 TEST(CpuKvOverRoceVerbsConnectionTest, PostRequestRejectsUnusableArguments)
@@ -252,24 +252,24 @@ TEST(CpuKvOverRoceVerbsConnectionTest, PostRequestRejectsUnusableArguments)
     std::uint32_t sqe[roce::kSqeHeaderDwords] = {};
     std::uint8_t flag[kResponseCapacity] = {};
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              fixture.connection->PostRequest(nullptr, sizeof(sqe), kLkey, flag, kCid,
-                                              kResponseCapacity, error)
+              fixture.connection
+                  ->PostRequest(nullptr, sizeof(sqe), kLkey, flag, kCid, kResponseCapacity, error)
                   .code);
+    EXPECT_EQ(
+        StatusCode::INVALID_ARGUMENT,
+        fixture.connection->PostRequest(sqe, 0U, kLkey, flag, kCid, kResponseCapacity, error).code);
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              fixture.connection->PostRequest(sqe, 0U, kLkey, flag, kCid, kResponseCapacity,
-                                              error)
+              fixture.connection
+                  ->PostRequest(sqe, sizeof(sqe), kLkey, nullptr, kCid, kResponseCapacity, error)
                   .code);
+    EXPECT_EQ(
+        StatusCode::INVALID_ARGUMENT,
+        fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 0U, kResponseCapacity, error)
+            .code);
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, nullptr, kCid,
-                                              kResponseCapacity, error)
-                  .code);
-    EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, 0U, kResponseCapacity,
-                                              error)
-                  .code);
-    EXPECT_EQ(StatusCode::INVALID_ARGUMENT,
-              fixture.connection->PostRequest(sqe, sizeof(sqe), kLkey, flag, kCid,
-                                              roce::kResponseHeaderBytes - 1U, error)
+              fixture.connection
+                  ->PostRequest(sqe, sizeof(sqe), kLkey, flag, kCid,
+                                roce::kResponseHeaderBytes - 1U, error)
                   .code);
     EXPECT_TRUE(fixture.io->sends.empty());
 }
@@ -282,10 +282,10 @@ TEST(CpuKvOverRoceVerbsConnectionTest, CompletionCopiesTheAnswerIntoTheFlagBuffe
 
     std::uint32_t sqe[roce::kSqeHeaderDwords] = {};
     std::vector<std::uint8_t> flag = MakeFlagBuffer(kResponseCapacity);
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(), kCid, kResponseCapacity,
-                                  error)
-                    .ok());
+    ASSERT_TRUE(
+        fixture.connection
+            ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(), kCid, kResponseCapacity, error)
+            .ok());
 
     const std::size_t receivesBefore = fixture.io->receives.size();
     fixture.io->CompleteReceive(0U, kCid, 0U);
@@ -312,18 +312,18 @@ TEST(CpuKvOverRoceVerbsConnectionTest, AnswersAreMatchedByCidNotByOrder)
     std::vector<std::uint8_t> firstFlag = MakeFlagBuffer(kResponseCapacity);
     std::vector<std::uint8_t> secondFlag = MakeFlagBuffer(kResponseCapacity);
     std::vector<std::uint8_t> thirdFlag = MakeFlagBuffer(kResponseCapacity);
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, firstFlag.data(), 1U, kResponseCapacity,
-                                  error)
-                    .ok());
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, secondFlag.data(), 2U, kResponseCapacity,
-                                  error)
-                    .ok());
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, thirdFlag.data(), 3U, kResponseCapacity,
-                                  error)
-                    .ok());
+    ASSERT_TRUE(
+        fixture.connection
+            ->PostRequest(sqe, sizeof(sqe), kLkey, firstFlag.data(), 1U, kResponseCapacity, error)
+            .ok());
+    ASSERT_TRUE(
+        fixture.connection
+            ->PostRequest(sqe, sizeof(sqe), kLkey, secondFlag.data(), 2U, kResponseCapacity, error)
+            .ok());
+    ASSERT_TRUE(
+        fixture.connection
+            ->PostRequest(sqe, sizeof(sqe), kLkey, thirdFlag.data(), 3U, kResponseCapacity, error)
+            .ok());
 
     // The third request is answered first, the first one second.
     fixture.io->CompleteReceive(1U, 3U, 0U);
@@ -364,21 +364,20 @@ TEST(CpuKvOverRoceVerbsConnectionTest, RepostFailureMarksTheConnectionFailed)
 
     std::uint32_t sqe[roce::kSqeHeaderDwords] = {};
     std::vector<std::uint8_t> flag = MakeFlagBuffer(kResponseCapacity);
-    ASSERT_TRUE(fixture.connection
-                    ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(), kCid, kResponseCapacity,
-                                  error)
-                    .ok());
+    ASSERT_TRUE(
+        fixture.connection
+            ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(), kCid, kResponseCapacity, error)
+            .ok());
 
     fixture.io->failPostReceive = true;
     fixture.io->CompleteReceive(0U, kCid, 0U);
     fixture.connection->PollCompletion();
 
     EXPECT_TRUE(fixture.connection->Failed());
-    EXPECT_EQ(StatusCode::CONNECTION_ERROR,
-              fixture.connection
-                  ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(), kCid, kResponseCapacity,
-                                error)
-                  .code);
+    EXPECT_EQ(StatusCode::CONNECTION_ERROR, fixture.connection
+                                                ->PostRequest(sqe, sizeof(sqe), kLkey, flag.data(),
+                                                              kCid, kResponseCapacity, error)
+                                                .code);
 }
 
 TEST(CpuKvOverRoceVerbsConnectionTest, AFailedCompletionMarksTheConnectionFailed)

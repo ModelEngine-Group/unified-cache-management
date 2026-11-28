@@ -498,8 +498,8 @@ Status VerbQp::PostSend(std::uint64_t wrId, const void* buffer, std::size_t leng
     return Status::OK();
 }
 
-Status VerbQp::PostReceive(std::uint64_t wrId, void* buffer, std::size_t length,
-                           std::uint32_t lkey, std::string& error)
+Status VerbQp::PostReceive(std::uint64_t wrId, void* buffer, std::size_t length, std::uint32_t lkey,
+                           std::string& error)
 {
     error.clear();
     if (qp_ == nullptr) {
@@ -548,8 +548,8 @@ std::size_t VerbQp::Poll(Completion* completions, std::size_t maxCompletions) no
         const ibv_wc& workCompletion = workCompletions[index];
         Completion& completion = completions[index];
         completion.wrId = workCompletion.wr_id;
-        completion.type = workCompletion.opcode == IBV_WC_RECV ? CompletionType::Receive
-                                                               : CompletionType::Send;
+        completion.type =
+            workCompletion.opcode == IBV_WC_RECV ? CompletionType::Receive : CompletionType::Send;
         completion.result = workCompletion.status == IBV_WC_SUCCESS ? CompletionResult::Success
                                                                     : CompletionResult::Failed;
         completion.byteLength = workCompletion.byte_len;
