@@ -1,7 +1,7 @@
 import copy
 import math
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
@@ -774,14 +774,13 @@ class UCMFAWAConnectorMetadata(KVConnectorMetadata):
 
 @dataclass
 class FAWALoadTask:
-    """One FA/WA Store transfer and its optional background wait."""
+    """One FA/WA Store transfer."""
 
     request_id: str
     label: str
-    store: UcmKVStoreBaseV1
     task: Task
     key_count: int
-    wait_future: Optional[Future] = None
+    submitted_at: float
 
 
 @dataclass
@@ -848,10 +847,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
     ASCEND_C4_COMPRESS_RATIO = 4
 
-    @classmethod
-    def _supports_request_async_load(cls) -> bool:
-        return cls is UCMFAWAConnector
-
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -873,8 +868,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.file_size = {}
         self._pending_fawa_loads: dict[str, FAWAPendingLoad] = {}
         self._failed_fawa_loads: set[str] = set()
-        self._load_wait_executor: Optional[ThreadPoolExecutor] = None
-        self._load_wait_workers = 2 * vllm_config.scheduler_config.max_num_seqs
 
         # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
         self.max_token_block_size = 0
@@ -2003,9 +1996,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}, "
             f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
-        return external_hit_tokens, (
-            self.use_request_async_load and external_hit_tokens > 0
-        )
+        return external_hit_tokens, external_hit_tokens > 0
 
     def update_state_after_alloc(
         self,
@@ -2013,10 +2004,19 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        if not self.use_request_async_load or num_external_tokens <= 0:
-            return
         req_meta = self.requests_meta.get(request.request_id)
         if not isinstance(req_meta, FAWARequestMeta):
+            return
+        if num_external_tokens <= 0:
+            # Drop a rejected lookup and keep the prefix of a promoted load.
+            if (
+                request.request_id not in self._async_load_req_ids
+                and req_meta.total_hit_block_num > req_meta.hbm_hit_block_num
+            ):
+                req_meta.total_hit_block_num = req_meta.hbm_hit_block_num
+                req_meta.token_processed = (
+                    req_meta.hbm_hit_block_num * self.hash_block_size
+                )
             return
         block_ids = tuple(list(group) for group in blocks.get_block_ids())
         if len(block_ids) != len(self.group_metas):
@@ -2290,9 +2290,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         return FAWALoadTask(
             request_id=request_id,
             label=label,
-            store=store,
             task=task,
             key_count=len(keys),
+            submitted_at=time.monotonic(),
         )
 
     def _handle_load_err(self, request_id: str):
@@ -2453,13 +2453,19 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         }
         return all_group_vllm_block_ids
 
+    def _needs_async_load_event(self, metadata: KVConnectorMetadata) -> bool:
+        return isinstance(metadata, UCMFAWAConnectorMetadata) and any(
+            request.load_async and bool(request.load_keys)
+            for request in metadata.request_meta.values()
+        )
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        # Fence load DMA behind pending zeroing: sync loads share one event
-        # destroyed below; each async request owns one, released at drain.
+        # Sync loads share a prerequisite released below. Async requests
+        # retain the event from metadata binding until their tasks drain.
         load_event_handle = 0
         if any(
             request.load_keys and (not request.load_async or not self.enable_event_sync)
@@ -2485,11 +2491,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if self.window_group_ids and self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
 
-                # Async requests fence with one event of their own, shared by
-                # the FA/WA tasks and released when the pending drains.
                 submit_handle = load_event_handle
                 if request.load_async and self.enable_event_sync:
-                    pending.event_handle = self._get_event_handle()
+                    pending.event_handle = self._acquire_async_load_event()
                     submit_handle = pending.event_handle
 
                 # FA groups are loaded for every external-hit canonical block.
@@ -2550,27 +2554,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._connector_worker_meta.mark_failed(request_id)
                         # No submitted task ever referenced the event.
                         if pending.event_handle:
-                            self.device.destroy_event_handle(pending.event_handle)
+                            self._release_async_load_event(pending.event_handle)
                             pending.event_handle = 0
                 else:
                     # Keep the historical sync behavior: invalidate both the
                     # load and dump blocks through the request metadata.
                     self._handle_load_err(request_id)
-
-        # Store.check() alone cannot trigger native timeout/cancel/drain. Start
-        # real waits off the model thread and poll their completion instead.
-        # Rank-consistency bookkeeping stays on the model thread below.
-        for pending in self._pending_fawa_loads.values():
-            for load_task in pending.tasks:
-                if load_task.wait_future is None:
-                    if self._load_wait_executor is None:
-                        self._load_wait_executor = ThreadPoolExecutor(
-                            max_workers=self._load_wait_workers,
-                            thread_name_prefix="ucm-fawa-load",
-                        )
-                    load_task.wait_future = self._load_wait_executor.submit(
-                        load_task.store.wait, load_task.task
-                    )
 
         sync_tasks = [
             task
@@ -2584,19 +2573,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if load_event_handle:
             self.device.destroy_event_handle(load_event_handle)
 
-    def _poll_pending_fawa_loads(self) -> set[str]:
+    def _poll_pending_fawa_loads(self, *, wait_all: bool = False) -> set[str]:
         finished = set(self._finished_async_load_req_ids)
         self._finished_async_load_req_ids.clear()
         for request_id, pending in list(self._pending_fawa_loads.items()):
             remaining = []
             for load_task in pending.tasks:
-                # A waiter that could not be started has not drained its I/O.
-                future = load_task.wait_future
-                if future is None or not future.done():
-                    remaining.append(load_task)
-                    continue
                 try:
-                    self._rank_consistency.wait_load(load_task.task, wait=future.result)
+                    if not self._poll_load_task(
+                        load_task.task,
+                        load_task.submitted_at,
+                        request_id,
+                        wait_all=wait_all,
+                    ):
+                        remaining.append(load_task)
+                        continue
                     pending.successful_bytes += (
                         load_task.key_count * self.file_size[load_task.label]
                     )
@@ -2616,7 +2607,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self._pending_fawa_loads.pop(request_id, None)
                 # Drained: the lazy WaitEvents have run; release the event.
                 if pending.event_handle:
-                    self.device.destroy_event_handle(pending.event_handle)
+                    self._release_async_load_event(pending.event_handle)
                     pending.event_handle = 0
                 finished.add(request_id)
                 if pending.failed:
@@ -2936,11 +2927,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
 
     def shutdown(self) -> None:
-        if self._load_wait_executor is not None:
-            # Do not cancel queued waits: each submitted Store task needs its
-            # timeout/cancel/drain path to run before HBM can be reclaimed.
-            self._load_wait_executor.shutdown(wait=True)
-            self._load_wait_executor = None
+        if self._pending_fawa_loads:
+            self._poll_pending_fawa_loads(wait_all=True)
+        self._release_bound_async_load_event()
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):
