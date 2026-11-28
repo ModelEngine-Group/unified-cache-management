@@ -6,6 +6,7 @@ or establish the safety of every model-selection/state-copy configuration.
 """
 
 import ast
+import copy
 import math
 import sys
 import time
@@ -79,6 +80,8 @@ def hla():
         "participates_in_prefix_caching",
         "extend_non_null",
         "kv_cache_layout_name",
+        "is_cuda_blhnc_layout",
+        "_normalize_tensor_size_list",
         "is_cuda_blnhc_layout",
         "is_npu_layer_major_blnhc",
         "npu_flash_next_store_columns",
@@ -101,6 +104,12 @@ def hla():
             "_tokens_per_state",
             "_has_glm53_layout",
             "_build_layout",
+            "_build_cuda_blhnc_layout",
+            "_iter_kv_tensors",
+            "_column_base",
+            "direct_store_config",
+            "extract_block_addrs",
+            "extract_layer_addrs",
             "_build_glm53_ascend_layout",
             "_validate_glm53_ascend_descriptors",
             "_build_glm53_ascend_row",
@@ -117,6 +126,7 @@ def hla():
             "_generate_hla_dispatch_meta",
             "update_state_after_alloc",
             "build_connector_meta",
+            "_create_store",
             "start_load_kv",
             "_start_load_kv_async",
             "_poll_pending_hla_loads",
@@ -189,6 +199,8 @@ def hla():
         "UCMConnectorMetadata",
         "build_kv_hash_meta",
         "_get_sparse_c8_flags",
+        "_get_store_io_sizes",
+        "_get_store_gc_block_size",
         "_record_counter",
     }
     connector_tree = ast.parse(connector_path.read_text(encoding="utf-8-sig"))
@@ -221,6 +233,7 @@ def hla():
     namespace = {
         "__name__": __name__,
         "math": math,
+        "copy": copy,
         "time": time,
         "np": np,
         "defaultdict": defaultdict,
@@ -237,13 +250,17 @@ def hla():
         "MLAAttentionSpec": MLAAttentionSpec,
         "MambaSpec": MambaSpec,
         "UniformTypeKVCacheSpecs": UniformTypeKVCacheSpecs,
+        "KVCacheSegment": SimpleNamespace,
         "torch": SimpleNamespace(Tensor=FakeTensor),
         "logger": MagicMock(),
         "ucmmetrics": MagicMock(),
         "current_platform": SimpleNamespace(
-            device_type="npu", is_cuda_alike=lambda: False
+            device_type="npu", is_cuda_alike=lambda: False, is_cuda=lambda: False
         ),
         "KVConnectorRole": SimpleNamespace(WORKER="WORKER", SCHEDULER="SCHEDULER"),
+        "UcmConnectorFactoryV1": SimpleNamespace(
+            create_connector=lambda name, config, module_path: config
+        ),
         "Task": object,
         "request_hasher_module": SimpleNamespace(
             _layout_source_digest=lambda: "test-layout-digest"
@@ -1385,6 +1402,70 @@ def test_dump_writes_state_only_when_step_ends_on_lcm_boundary(
     assert seq_lens == expected
 
 
+@pytest.mark.parametrize("scheduled_tokens", [4, 5])
+def test_dump_uses_exact_engine_checkpoint_block(
+    hla, state_connector, scheduled_tokens
+):
+    req_meta = _restore_request_meta(hla)
+    req_meta.token_processed = 0
+    state_connector.requests_meta = {"req": req_meta}
+    state_connector._async_load_req_ids.add("req")
+    output = SimpleNamespace(
+        scheduled_new_reqs=[
+            SimpleNamespace(req_id="req", block_ids=([11, 12], [21, 22]))
+        ],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={"req": scheduled_tokens},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+        kv_connector_block_state=SimpleNamespace(
+            boundary_state_offloads={"req": [(1, 99, 4)]}
+        ),
+    )
+    dispatch = state_connector.build_connector_meta(output).request_meta["req"]
+    assert dispatch.dump_block_ids == ([b"fa0", b"checkpoint"], [11, 99])
+    assert dispatch.dump_group_ids == [0, 1]
+    assert dispatch.dump_full_attn_count == 1
+
+
+def test_cuda_blhnc_store_aligns_io_without_padding_copy_lengths(hla):
+    hla.current_platform.is_cuda = lambda: True
+    connector = hla.UCMHybridLinearAttentionConnector()
+    connector._kv_cache_config = SimpleNamespace(kv_cache_layout="BLHNC")
+    connector.connector_configs = [
+        {
+            "ucm_connector_name": "UcmPipelineStore",
+            "ucm_connector_config": {
+                "store_pipeline": "Cache|Posix",
+                "io_direct": True,
+            },
+        }
+    ]
+    connector._role = hla.KVConnectorRole.WORKER
+    connector.is_mla = True
+    connector._get_world_size = lambda: 1
+    connector._configure_numa_placement = MagicMock()
+    connector._set_default_shm_buffer_capacity = MagicMock()
+    connector._publish_block_size = MagicMock()
+    connector._gc_owner = False
+    connector.unique_id = "test"
+    connector.blocks_per_chunk = 1
+    connector.device_id = 0
+    layout = SimpleNamespace(
+        tensor_size_list=[30_400_000],
+        shard_size=30_400_000,
+        block_size=30_400_000,
+        base_ptrs=np.array([4096]),
+        buffer_sizes=np.array([30_400_000]),
+    )
+
+    config = connector._create_store(layout)
+
+    assert config["tensor_size_list"] == [30_400_000]
+    assert config["shard_size"] == config["block_size"] == 30_400_512
+    connector._publish_block_size.assert_called_once_with(30_400_512)
+
+
 @pytest.mark.parametrize("row_count", [2, 3])
 def test_glm_preload_waits_all_state_rows_before_returning(
     hla, state_connector, row_count
@@ -2273,3 +2354,112 @@ def test_make_other_rank_hashers_covers_pcp_shards_at_tp1(hla, monkeypatch):
         b"meta:2:pcp=3",
     ]
     assert connector._make_other_rank_hashers(_cp_vllm_config()) == []
+
+
+@pytest.fixture
+def cuda_blhnc_layout(hla):
+    """GLM-5.3-Flash geometry with one shared allocation and distinct block IDs."""
+    stride = 8_143_872
+    blocks = 2200
+    base = 1 << 40
+    storage = SimpleNamespace(data_ptr=lambda: base, nbytes=lambda: stride * blocks)
+    groups = []
+    descriptors = []
+    tensors = {}
+    circular = type("CircularBufferSpec", (KVCacheSpec,), {})
+    circular = type("IndexerTailSpec", (circular,), {})
+
+    def add_descriptor(specs, prefix, count, page, offset, spec_type):
+        names = []
+        for index in range(count):
+            name = f"{prefix}.{index}"
+            names.append(name)
+            specs[name] = spec_type(block_size=640, page_size_bytes=page)
+            view = FakeTensor(base + offset + index * page, (blocks, 1), (stride, 1))
+            view.untyped_storage = lambda: storage
+            tensors[name] = view
+        descriptors.append(
+            SimpleNamespace(
+                layers=names,
+                size=stride * blocks,
+                layer_stride=page,
+                block_stride=stride,
+                offset=offset,
+                host_resident=False,
+            )
+        )
+
+    def add_group(specs):
+        groups.append(
+            SimpleNamespace(
+                layer_names=list(specs),
+                kv_cache_spec=UniformTypeKVCacheSpecs(kv_cache_specs=specs),
+                enable_kv_transfer=True,
+            )
+        )
+
+    for state_group, count in enumerate((12, 11, 11)):
+        specs = {}
+        add_descriptor(specs, f"kda{state_group}", count, 655_360, 0, MambaSpec)
+        add_group(specs)
+    specs = {}
+    add_descriptor(specs, "indexer", 12, 21_120, 0, MLAAttentionSpec)
+    add_descriptor(specs, "mla", 12, 655_360, 253_440, MLAAttentionSpec)
+    add_group(specs)
+    specs = {}
+    add_descriptor(specs, "tail", 12, 8_192, 0, circular)
+    add_group(specs)
+
+    layout = hla.HybridLinearAttentionLayout()
+    layout.use_layerwise = False
+    layout.num_blocks = blocks
+    layout.kv_cache_config = SimpleNamespace(
+        kv_cache_groups=groups,
+        kv_cache_tensors=descriptors,
+        kv_cache_layout="BLHNC",
+    )
+    hla.current_platform.is_cuda = lambda: True
+    return layout, tensors, base, stride
+
+
+def test_cuda_blhnc_copies_only_group_bytes_at_block_stride(cuda_blhnc_layout):
+    layout, tensors, base, stride = cuda_blhnc_layout
+    layout._build_layout(tensors)
+
+    sizes, shard_size, block_size = layout.direct_store_config()
+    assert sizes == [7_864_320, 7_208_960, 7_208_960, 253_440, 7_864_320]
+    assert shard_size == block_size == sum(sizes)
+    assert layout.direct_group_bytes[3] == 8_117_760
+    assert layout.base_ptrs.tolist() == [base]
+    assert layout.buffer_sizes.tolist() == [2199 * stride + 8_117_760]
+
+    last = base + 2199 * stride
+    assert layout.extract_block_addrs([0, 1, 2199, 2], [0, 1, 3, 4]).tolist() == [
+        [base, 0, 0, 0, 0],
+        [0, base + stride, 0, 0, 0],
+        [0, 0, 0, last, last + 253_440],
+        [0, 0, 0, 0, 0],
+    ]
+    assert "tail.0" not in layout.layer_anchors
+    with pytest.raises(ValueError, match="only direct block addressing"):
+        layout.extract_layer_addrs("mla.0", [2199])
+    for block_id in (-1, 2200):
+        with pytest.raises(ValueError, match="outside"):
+            layout.extract_block_addrs([block_id], [3])
+
+
+def test_cuda_blhnc_rejects_incorrect_view(cuda_blhnc_layout):
+    layout, tensors, _, _ = cuda_blhnc_layout
+    tensors["mla.0"].ptr += 1
+    with pytest.raises(ValueError, match="disagrees with its descriptor"):
+        layout._build_layout(tensors)
+
+
+def test_cuda_blhnc_rejects_overlapping_group_ranges(cuda_blhnc_layout):
+    layout, tensors, _, _ = cuda_blhnc_layout
+    layout.kv_cache_config.kv_cache_tensors[4].offset -= 1
+    for name, tensor in tensors.items():
+        if name.startswith("mla."):
+            tensor.ptr -= 1
+    with pytest.raises(ValueError, match="Overlapping"):
+        layout._build_layout(tensors)

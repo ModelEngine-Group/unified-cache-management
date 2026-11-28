@@ -50,6 +50,23 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _get_compress_ratios(config) -> tuple[int, ...]:
+    """Read legacy ratios or derive them from the upstream DeepSeek V4 config."""
+    ratios = getattr(config, "compress_ratios", None)
+    if ratios is not None:
+        return tuple(int(ratio) for ratio in ratios)
+
+    rates = getattr(config, "compress_rates", None)
+    layer_types = getattr(config, "layer_types", None)
+    if rates is None or not layer_types:
+        return ()
+    num_mtp_layers = getattr(config, "num_nextn_predict_layers", 0) or 0
+    return (
+        tuple(int(rates.get(layer_type, 0)) for layer_type in layer_types)
+        + (0,) * num_mtp_layers
+    )
+
+
 def _ascend_fawa_hash_suffix(
     vllm_config, kv_cache_config, group_metas, whole_page_sizes
 ) -> str:
@@ -61,7 +78,7 @@ def _ascend_fawa_hash_suffix(
     Package versions and upstream source text are deliberately excluded.
     """
     cache = vllm_config.cache_config
-    ratios = tuple(vllm_config.model_config.hf_config.compress_ratios)
+    ratios = _get_compress_ratios(vllm_config.model_config.hf_config)
     groups = []
     for group_id, meta in sorted(group_metas.items()):
         if not meta.tail_tokens:
@@ -137,7 +154,7 @@ def _build_v41_hash_meta(
 ) -> str:
     """Extend the common KV namespace with the resolved V4.1 transfer layout."""
     hf_config = getattr(vllm_config.model_config, "hf_config", None)
-    compress_ratios = getattr(hf_config, "compress_ratios", None)
+    compress_ratios = _get_compress_ratios(hf_config)
     cache_config = getattr(vllm_config, "cache_config", None)
     if cache_config is None:
         raise ValueError("DeepSeek V4.1 cache namespace needs cache_config.")
@@ -1181,13 +1198,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             or getattr(hf_config, "index_source_layer_ids", None)
         )
         self.fa_group_ids, self.window_group_ids = [], []
-        layer_compress_ratios = getattr(
-            self._vllm_config.model_config.hf_config,
-            "compress_ratios",
-            None,
-        )
-        if layer_compress_ratios is None:
-            raise ValueError("current only support DSV4")
+        layer_compress_ratios = _get_compress_ratios(hf_config)
+        if not layer_compress_ratios:
+            raise ValueError("FAWA requires DeepSeek V4 KV cache compression ratios.")
         compressed_ratios = {int(ratio) for ratio in layer_compress_ratios}
         self.is_v41_layout |= compressed_ratios.issubset({0, 1, 2}) and bool(
             compressed_ratios & {1, 2}
@@ -2989,8 +3002,8 @@ class UCMFAWALiteConnector(UCMLiteConnector):
         the calculator's deriveDSv4Params hbm formula.
         """
         hf = vllm_config.model_config.hf_text_config
-        ratios = getattr(hf, "compress_ratios", None)
-        if ratios is None:
+        ratios = _get_compress_ratios(hf)
+        if not ratios:
             return 0, 0, 0
         decoder = ratios[:-1] if ratios and ratios[-1] == 0 else ratios
         num_c4a = sum(1 for r in decoder if r == 4)
