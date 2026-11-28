@@ -356,15 +356,14 @@ bool Executor::WritePutGetLog(const Request &request, const kv::TaskResult &resu
             (i < result.entryStatus.size()) ? result.entryStatus[i].ok() : result.status.ok();
 
         // 读回组装：get 无论 entry 状态总是读回缓冲（预填哨兵串即“没读到数据”标记），
-        // put 仅成功 entry 读回、失败以 "-" 占位；首段长 prefixLens[i]（超过
-        // detail_value_bytes 时截断，尾部标记 ...+未显示字节数）、尾段固定 8 字节，
-        // 均经分配器 D2H 读回
+        // put 仅成功 entry 读回、失败以 "-" 占位；value 为接口返回的缓冲实际内容
+        // （长度为读回块长，超过 detail_value_bytes 时截断，尾部标记 ...+未显示字节数）、
+        // 尾段固定 8 字节，均经分配器 D2H 读回
         std::string value = "-";
         std::string tail = "-";
         const kv::MemoryRegion &region = entries[i].buffer.region;
         const std::size_t blockLen = static_cast<std::size_t>(region.size);
-        const std::size_t prefixLen = (i < request.prefixLens.size()) ? request.prefixLens[i] : 0;
-        const std::size_t valueBytes = std::min(prefixLen, blockLen);
+        const std::size_t valueBytes = blockLen;
         std::size_t headLen = valueBytes;
         if (detailValueLimit_ != 0) { headLen = std::min(headLen, detailValueLimit_); }
         const std::size_t tailLen = std::min<std::size_t>(8, blockLen);

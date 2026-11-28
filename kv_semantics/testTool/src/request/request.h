@@ -45,9 +45,6 @@ struct Request {
     std::vector<std::uint16_t> keyHighs;
     /** input 原文 key token 列表（与 keys 逐项对应；请求明细日志显示原始 key 用） */
     std::vector<std::string> rawKeys;
-    /** 各 entry 的 value 前缀长度（明细日志 value 读回长度：mode1 为前缀实际长度，
-     *  mode2 为完整块长度） */
-    std::vector<std::size_t> prefixLens;
     /** 组装好的 kv client 请求项（绑定已注册 buffer 与 offset） */
     std::vector<kv::KVBuffer> entries;
 };
