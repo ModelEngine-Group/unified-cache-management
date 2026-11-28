@@ -2912,7 +2912,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 continue
             pending = HLAPendingLoad(request_id)
             if getattr(self._kv_cache_config, "needs_kv_cache_zeroing", False):
-                pending.event_handle = self._get_event_handle()
+                pending.event_handle = self._acquire_async_load_event()
             mla_count = (
                 getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
                 if self.is_mla
@@ -2967,7 +2967,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 self._pending_hla_loads[request_id] = pending
             else:
                 if pending.event_handle:
-                    self.device.destroy_event_handle(pending.event_handle)
+                    self._release_async_load_event(pending.event_handle)
                 self._finished_async_load_req_ids.add(request_id)
                 if pending.failed:
                     self._failed_hla_loads.add(request_id)
@@ -3000,7 +3000,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
             self._pending_hla_loads.pop(request_id, None)
             if pending.event_handle:
-                self.device.destroy_event_handle(pending.event_handle)
+                self._release_async_load_event(pending.event_handle)
             finished.add(request_id)
             if pending.failed:
                 self._failed_hla_loads.add(request_id)
@@ -3136,6 +3136,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def shutdown(self) -> None:
         if self._pending_hla_loads:
             self._poll_pending_hla_loads(wait_all=True)
+        self._release_bound_async_load_event()
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):

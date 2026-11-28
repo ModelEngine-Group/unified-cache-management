@@ -2479,13 +2479,19 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         }
         return all_group_vllm_block_ids
 
+    def _needs_async_load_event(self, metadata: KVConnectorMetadata) -> bool:
+        return isinstance(metadata, UCMFAWAConnectorMetadata) and any(
+            request.load_async and bool(request.load_keys)
+            for request in metadata.request_meta.values()
+        )
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        # Fence load DMA behind pending zeroing: sync loads share one event
-        # destroyed below; each async request owns one, released at drain.
+        # Sync loads share a prerequisite released below. Async requests
+        # retain the event from metadata binding until their tasks drain.
         load_event_handle = 0
         if any(
             request.load_keys and (not request.load_async or not self.enable_event_sync)
@@ -2511,11 +2517,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 if self.window_group_ids and self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
 
-                # Async requests fence with one event of their own, shared by
-                # the FA/WA tasks and released when the pending drains.
                 submit_handle = load_event_handle
                 if request.load_async and self.enable_event_sync:
-                    pending.event_handle = self._get_event_handle()
+                    pending.event_handle = self._acquire_async_load_event()
                     submit_handle = pending.event_handle
 
                 # FA groups are loaded for every external-hit canonical block.
@@ -2576,7 +2580,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                         self._connector_worker_meta.mark_failed(request_id)
                         # No submitted task ever referenced the event.
                         if pending.event_handle:
-                            self.device.destroy_event_handle(pending.event_handle)
+                            self._release_async_load_event(pending.event_handle)
                             pending.event_handle = 0
                 else:
                     # Keep the historical sync behavior: invalidate both the
@@ -2629,7 +2633,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self._pending_fawa_loads.pop(request_id, None)
                 # Drained: the lazy WaitEvents have run; release the event.
                 if pending.event_handle:
-                    self.device.destroy_event_handle(pending.event_handle)
+                    self._release_async_load_event(pending.event_handle)
                     pending.event_handle = 0
                 finished.add(request_id)
                 if pending.failed:
@@ -2951,6 +2955,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def shutdown(self) -> None:
         if self._pending_fawa_loads:
             self._poll_pending_fawa_loads(wait_all=True)
+        self._release_bound_async_load_event()
 
 
 class UCMFAWALiteConnector(UCMLiteConnector):

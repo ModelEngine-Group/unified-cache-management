@@ -1763,6 +1763,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_load_req_ids: set[str] = set()
         # Worker-side tasks that outlive the metadata step that submitted them.
         self._pending_load_tasks: dict[str, PendingLoadTask] = {}
+        self._bound_async_load_event = 0
+        self._async_load_event_refs: dict[int, int] = {}
         self._finished_async_load_req_ids: set[str] = set()
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
@@ -2531,7 +2533,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 if request.load_async and getattr(
                     self._kv_cache_config, "needs_kv_cache_zeroing", False
                 ):
-                    event_handle = self._get_event_handle()
+                    event_handle = self._acquire_async_load_event()
                 task = self._rank_consistency.submit_load(
                     self.store,
                     {request_id: ucm_block_ids},
@@ -2556,7 +2558,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     request_to_load_blocks[request_id] = len(ucm_block_ids)
             except Exception as e:
                 if event_handle:
-                    self.device.destroy_event_handle(event_handle)
+                    self._release_async_load_event(event_handle)
                 logger.error(
                     f"request {request_id} submit load task error. "
                     f"{type(e).__name__}: {e}"
@@ -2604,6 +2606,48 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if event_handle == 0:
             self.device.synchronize()
         return event_handle
+
+    def _needs_async_load_event(self, metadata: KVConnectorMetadata) -> bool:
+        return (
+            isinstance(metadata, UCMConnectorMetadata)
+            and getattr(self._kv_cache_config, "needs_kv_cache_zeroing", False)
+            and any(
+                request.load_async and len(request.load_block_ids[0]) > 0
+                for request in metadata.request_meta.values()
+            )
+        )
+
+    def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        self._release_bound_async_load_event()
+        super().bind_connector_metadata(connector_metadata)
+        if self._needs_async_load_event(connector_metadata) and self.enable_event_sync:
+            # Record after KV block initialization, before MRV2 enqueues forward.
+            # If recording fails, leave the synchronization fallback at submission.
+            event_handle = self.device.get_event_handle()
+            if event_handle:
+                self._bound_async_load_event = event_handle
+                self._async_load_event_refs[event_handle] = 1
+
+    def _acquire_async_load_event(self) -> int:
+        event_handle = getattr(self, "_bound_async_load_event", 0)
+        if not event_handle:
+            return self._get_event_handle()
+        self._async_load_event_refs[event_handle] += 1
+        return event_handle
+
+    def _release_async_load_event(self, event_handle: int) -> None:
+        event_refs = getattr(self, "_async_load_event_refs", {})
+        if event_refs.get(event_handle, 1) > 1:
+            event_refs[event_handle] -= 1
+        else:
+            event_refs.pop(event_handle, None)
+            self.device.destroy_event_handle(event_handle)
+
+    def _release_bound_async_load_event(self) -> None:
+        event_handle = getattr(self, "_bound_async_load_event", 0)
+        if event_handle:
+            self._bound_async_load_event = 0
+            self._release_async_load_event(event_handle)
 
     def save_kv_layer(
         self,
@@ -2779,6 +2823,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return max(value, 0.0)
 
     def clear_connector_metadata(self) -> None:
+        self._release_bound_async_load_event()
         super().clear_connector_metadata()
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -2901,7 +2946,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
             pending_load_tasks.pop(request_id)
             if pending.event_handle:
-                self.device.destroy_event_handle(pending.event_handle)
+                self._release_async_load_event(pending.event_handle)
             # Failed loads also report completion so vLLM can leave
             # WAITING_FOR_REMOTE_KVS and recompute or fail.
             finished_recving.add(request_id)
@@ -2937,6 +2982,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def shutdown(self) -> None:
         if getattr(self, "_pending_load_tasks", None):
             self._poll_pending_load_tasks(wait_all=True)
+        self._release_bound_async_load_event()
 
 
 class UCMLayerWiseConnector(UCMDirectConnector):

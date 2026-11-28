@@ -206,10 +206,16 @@ def hla():
         for node in connector_tree.body
         if isinstance(node, ast.ClassDef) and node.name == "UCMDirectConnector"
     )
+    direct_methods = {
+        "_poll_load_task",
+        "_acquire_async_load_event",
+        "_release_async_load_event",
+        "_release_bound_async_load_event",
+    }
     base_nodes.extend(
         node
         for node in direct_class.body
-        if getattr(node, "name", None) == "_poll_load_task"
+        if getattr(node, "name", None) in direct_methods
     )
     nodes = base_nodes + nodes
     namespace = {
@@ -250,9 +256,8 @@ def hla():
         ast.Module(body=[future, *nodes], type_ignores=[])
     )
     exec(compile(module, str(HLA_PATH), "exec"), namespace)
-    namespace["UCMHybridLinearAttentionConnector"]._poll_load_task = namespace[
-        "_poll_load_task"
-    ]
+    for name in direct_methods:
+        setattr(namespace["UCMHybridLinearAttentionConnector"], name, namespace[name])
     namespace["UCMHybridLinearAttentionLayerWiseConnector"]._mark_load_failed = (
         namespace["UCMHybridLinearAttentionConnector"]._mark_load_failed
     )
