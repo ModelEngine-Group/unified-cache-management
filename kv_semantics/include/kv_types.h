@@ -130,6 +130,9 @@ struct IoOptions {
 struct QueryResult {
     std::vector<std::uint8_t> exists;
     std::uint32_t prefixHitKeys{0};
+    // Logical bytes in input order. Read only for successful hits.
+    // Zero for an unconfigured GNSID. Empty when no sizes are configured.
+    std::vector<std::size_t> valueSizes{};
 };
 
 enum class MemoryType {
@@ -260,6 +263,7 @@ struct KvClientConfig {
     bool useBatchIoForSingleKey{true};
     SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};
     std::unordered_map<std::string, std::string> attrs;
+    std::unordered_map<std::uint32_t, std::size_t> namespaceValueSizes;
 };
 
 }  // namespace kv

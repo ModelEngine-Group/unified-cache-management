@@ -24,7 +24,9 @@
 #include "config_utils.h"
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <fstream>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -39,6 +41,14 @@ bool ParseClientBool(const std::string& value)
 {
     const auto normalized = ToLower(value);
     return normalized == "1" || normalized == "true";
+}
+
+template <typename UInt>
+bool ParseDecimalField(std::string_view text, UInt& value)
+{
+    const auto end = text.data() + text.size();
+    const auto [rest, error] = std::from_chars(text.data(), end, value);
+    return error == std::errc{} && rest == end;
 }
 
 void ApplyClientViewEndpointField(NodeEndpoint& endpoint, const std::string& key,
@@ -163,6 +173,22 @@ Status KvClientConfig::LoadFromFile(const std::string& configPath, KvClientConfi
             const auto waitTimeoutMs = ParseConfigUint64(value);
             config.defaultWaitTimeoutMs = waitTimeoutMs;
             config.timeoutMs = waitTimeoutMs;
+        } else if (key == "client.namespace_value_sizes") {
+            for (const auto& entry : SplitConfigValue(value, ',')) {
+                const auto pos = entry.find(':');
+                std::uint32_t id;
+                std::size_t bytes;
+                if (pos == std::string::npos ||
+                    !ParseDecimalField(TrimConfigValue(entry.substr(0, pos)), id) ||
+                    !ParseDecimalField(TrimConfigValue(entry.substr(pos + 1)), bytes) || bytes == 0) {
+                    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                         "invalid namespace size: " + entry);
+                }
+                if (!config.namespaceValueSizes.emplace(id, bytes).second) {
+                    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                         "duplicate namespace size for GNSID " + std::to_string(id));
+                }
+            }
         } else if (key == "inference.engine") {
             if (value == "vllm_ascend") {
                 config.keyResolution.engine = InferenceEngine::VLLM_ASCEND;
