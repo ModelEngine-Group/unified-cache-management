@@ -181,11 +181,13 @@ bool Scheduler::PrepareExecutors(const ConfigUtil &config, std::string &err)
         executors_.back()->SetPerfMode(config.GetPerf());
     }
     LOG_INFO("Scheduler: {} executors prepared (startcoreid={})", executors_.size(), startCoreId_);
+    p99IntervalSecs_ = config.GetP99IntervalSecs();
+    p99ElapsedSecs_ = 0;
     return true;
 }
 
 bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runtime, int loop,
-                    std::string &err)
+                    int rateLimitMb, std::string &err)
 {
     if (client_ == nullptr) {
         err = "scheduler not initialized";
@@ -224,6 +226,13 @@ bool Scheduler::Run(const RequestManager &requestManager, int testmode, int runt
     runtimeSecs_ = runtime;
     loopLimit_ = loop;
     startTime_ = std::chrono::steady_clock::now();
+    rateLimitBytesPerSec_ = static_cast<std::uint64_t>(rateLimitMb) * 1024ULL * 1024ULL;
+    rateWindowStart_ = startTime_;
+    rateWindowUsed_ = 0;
+    if (rateLimitMb > 0) {
+        LOG_INFO("Scheduler: rate limit {} MB/s ({} bytes/s per 1s window)", rateLimitMb,
+                 rateLimitBytesPerSec_);
+    }
     anyFail_ = false;
     firstErr_.clear();
     freeBuffers_.clear();
@@ -295,6 +304,11 @@ void Scheduler::WorkerLoop(int workerId, int testmode)
                        std::to_string(bufferAddrs_.size()));
             continue;
         }
+        // 秒级限速：按任务 IO 字节量申请配额，额度不足时阻塞等到下一窗口（不占缓冲块，
+        // 等待期间其他 worker 可继续领任务执行）
+        std::uint64_t taskBytes = 0;
+        for (const auto &orc : task.entries) { taskBytes += orc.length; }
+        WaitForRateLimit(taskBytes);
         std::vector<std::size_t> owned;
         AcquireBuffers(task.entries.size(), owned);
 
@@ -347,6 +361,32 @@ void Scheduler::EnterBarrier()
     barrierArrived_ = 0;
     ++barrierGen_;
     barrierCv_.notify_all();
+}
+
+void Scheduler::WaitForRateLimit(std::uint64_t bytes)
+{
+    if (rateLimitBytesPerSec_ == 0 || bytes == 0) { return; }  // 不限速 / 无流量直接放行
+    // 单任务超整秒预算：直接放行（否则本任务永远凑不齐配额）
+    if (bytes >= rateLimitBytesPerSec_) { return; }
+    while (true) {
+        std::chrono::steady_clock::time_point wakeAt{};
+        {
+            std::lock_guard<std::mutex> lock(rateMutex_);
+            const auto now = std::chrono::steady_clock::now();
+            // 跨秒滚动窗口：窗口起点推进到当前时刻，已用字节清零
+            if (now >= rateWindowStart_ + std::chrono::seconds(1)) {
+                rateWindowStart_ = now;
+                rateWindowUsed_ = 0;
+            }
+            if (rateWindowUsed_ + bytes <= rateLimitBytesPerSec_) {
+                rateWindowUsed_ += bytes;
+                return;
+            }
+            // 本窗口额度不足：等到本窗口起点 +1 秒（解锁后再睡，不持锁等待）
+            wakeAt = rateWindowStart_ + std::chrono::seconds(1);
+        }
+        std::this_thread::sleep_until(wakeAt);
+    }
 }
 
 void Scheduler::AcquireBuffers(std::size_t count, std::vector<std::size_t> &owned)
@@ -544,6 +584,14 @@ void Scheduler::MetricsLoop()
         const std::vector<ExecutorMetrics> current = SnapshotExecutors();
         OutputMetricsWindow(last, current);
         last = current;
+        // P99 分位行按独立周期打印（p99_interval_s，0 禁用；与 1s 窗口行互不影响）
+        if (p99IntervalSecs_ > 0) {
+            ++p99ElapsedSecs_;
+            if (p99ElapsedSecs_ >= p99IntervalSecs_) {
+                p99ElapsedSecs_ = 0;
+                OutputLatencyP99();
+            }
+        }
     }
 }
 
@@ -602,6 +650,52 @@ void Scheduler::OutputMetricsWindow(const std::vector<ExecutorMetrics> &last,
                  kOpNames[op], static_cast<double>(opsByOp[op]) / seconds,
                  FormatBytes(static_cast<double>(bytesByOp[op]) / seconds));
     }
+}
+
+MetricsSnapshot Scheduler::CollectMetricsSnapshot() const
+{
+    MetricsSnapshot snapshot;
+    for (const auto &executor : executors_) {
+        const ExecutorMetrics metrics = executor->GetMetrics();
+        for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+            snapshot.opsByOp[op] += metrics.opCountByOp[op];
+            snapshot.bytesByOp[op] += metrics.ioBytesByOp[op];
+            snapshot.latencyNsByOp[op] += metrics.latencyNsTotalByOp[op];
+            snapshot.tasksByOp[op] += metrics.taskCountByOp[op];
+        }
+        snapshot.errorsTotal += metrics.errorCount;
+        snapshot.notFoundTotal += metrics.notFoundCount;
+        snapshot.mismatchTotal += metrics.mismatchCount;
+        executor->AppendLatencySamplesUs(snapshot.latencySamplesUs);
+    }
+    snapshot.uptimeSecs =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime_).count();
+    return snapshot;
+}
+
+void Scheduler::OutputLatencyP99() const
+{
+    const MetricsSnapshot snapshot = CollectMetricsSnapshot();
+    std::vector<std::uint32_t> all;
+    std::string parts[kOpTypeCount];
+    for (std::size_t op = 0; op < kOpTypeCount; ++op) {
+        // 样本副本参与排序（快照只读），总口径合并用副本内容
+        std::vector<std::uint32_t> samples = snapshot.latencySamplesUs[op];
+        std::uint64_t p99 = 0;
+        if (!samples.empty()) { p99 = LatencyQuantileUs(samples, 0.99); }
+        parts[op] =
+            samples.empty() ? std::string("-") : FormatLatency(static_cast<double>(p99) * 1000.0);
+        all.insert(all.end(), samples.begin(), samples.end());
+    }
+    std::uint64_t totalP99 = 0;
+    if (!all.empty()) { totalP99 = LatencyQuantileUs(all, 0.99); }
+    LOG_INFO("Scheduler latency P99 [{}s]: total={} exist={} put={} get={} delete={}",
+             p99IntervalSecs_,
+             all.empty() ? std::string("-") : FormatLatency(static_cast<double>(totalP99) * 1000.0),
+             parts[static_cast<std::size_t>(OpType::QUERY)],
+             parts[static_cast<std::size_t>(OpType::STORE)],
+             parts[static_cast<std::size_t>(OpType::LOAD)],
+             parts[static_cast<std::size_t>(OpType::DELETE)]);
 }
 
 void Scheduler::OutputMetricsTotal() const

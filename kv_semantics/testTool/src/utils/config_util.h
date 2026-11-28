@@ -55,6 +55,23 @@ public:
         return config_parse::RequireValue(values_, "onlyconnect") == "on";
     }
     int GetAutoDisconnect() const { return config_parse::RequireInt(values_, "autodisconnect"); }
+    /** 带宽限速（MB/s）；0 不限速（键缺省兼容存量 conf，默认 0） */
+    int GetRateLimitMb() const { return config_parse::OptionalInt(values_, "ratelimit_mb", 0); }
+    /** 接口时延 P99 打印间隔（秒）；0 禁用（键缺省兼容存量 conf，默认 10） */
+    int GetP99IntervalSecs() const
+    {
+        return config_parse::OptionalInt(values_, "p99_interval_s", 10);
+    }
+    /** Prometheus 抓取端点开关（on 启动 /metrics HTTP 端点；键缺省兼容存量 conf，默认 off） */
+    bool GetMetricsExporter() const
+    {
+        return config_parse::OptionalValue(values_, "metrics_exporter", "off") == "on";
+    }
+    /** Prometheus 抓取端点监听端口（metrics_exporter=on 时生效；缺省 9450） */
+    int GetMetricsExporterPort() const
+    {
+        return config_parse::OptionalInt(values_, "metrics_exporter_port", 9450);
+    }
     int GetStartCoreId() const { return config_parse::RequireInt(values_, "startcoreid"); }
     int GetNumJobs() const { return config_parse::RequireInt(values_, "numjobs"); }
     std::size_t GetBufferSize() const { return config_parse::RequireSize(values_, "buffersize"); }
