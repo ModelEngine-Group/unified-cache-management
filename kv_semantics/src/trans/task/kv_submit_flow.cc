@@ -125,8 +125,7 @@ void TransportTaskExecutor::BuildSubBatchSendBuffers(
             subBatchContext.channel->GetConnection(),
             reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
             reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr),
-            subBatchContext.sendSge.length,
-            static_cast<std::uint8_t>(ToKvOpcode(subBatchContext.opType))});
+            subBatchContext.sendSge.length});
     }
 }
 

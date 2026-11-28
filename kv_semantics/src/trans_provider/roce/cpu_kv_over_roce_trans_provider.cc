@@ -355,8 +355,7 @@ Status CpuKvOverRoceTransProvider::BuildVerbConfig(const std::string& localIp, V
         !ApplyUnsigned(attrs, "roce_sq_depth", config.sendDepth, 0x7FFFU, error) ||
         !ApplyUnsigned(attrs, "roce_rq_depth", config.recvDepth, 0x7FFFU, error) ||
         !ApplyUnsigned(attrs, "roce_cq_depth", config.cqDepth, 0xFFFFU, error) ||
-        !ApplyUnsigned(attrs, "roce_inline_threshold", config.inlineThreshold, 0x1000U,
-                       error) ||
+        !ApplyUnsigned(attrs, "roce_inline_threshold", config.inlineThreshold, 0x1000U, error) ||
         !ApplyUnsigned(attrs, "roce_sl", config.sl, 0xFFU, error) ||
         !ApplyUnsigned(attrs, "roce_traffic_class", config.trafficClass, 0xFFU, error) ||
         !ApplyUnsigned(attrs, "roce_qp_timeout", config.timeout, 31U, error) ||
@@ -711,14 +710,11 @@ Status CpuKvOverRoceTransProvider::StartIoConnections(Link& link, std::string& e
     VerbQpConfig config;
     Status built = BuildVerbConfig(std::string(), config, error);
     if (!built.ok()) { return built; }
-    std::uint32_t receiveDepth =
-        config.recvDepth == 0U ? kDefaultReceiveDepth : config.recvDepth;
+    std::uint32_t receiveDepth = config.recvDepth == 0U ? kDefaultReceiveDepth : config.recvDepth;
     // The store may advertise a smaller IO queue depth; the receive ring cannot
     // exceed it, because each outstanding answer claims one of its slots.
     const std::uint32_t advertisedDepth = link.negotiatedCapabilities.ioqDepth;
-    if (advertisedDepth != 0U && receiveDepth > advertisedDepth) {
-        receiveDepth = advertisedDepth;
-    }
+    if (advertisedDepth != 0U && receiveDepth > advertisedDepth) { receiveDepth = advertisedDepth; }
     std::uint64_t maxInflightPerQp = 0;
     if (ParseUnsigned(Attr("max_inflight_kv_per_qp"), maxInflightPerQp) && maxInflightPerQp != 0U &&
         receiveDepth > NarrowTimeout(maxInflightPerQp)) {
@@ -781,7 +777,6 @@ void CpuKvOverRoceTransProvider::TeardownLink(Link& link) noexcept
     link.ioConnections.clear();
     link.queuePairs.clear();
 }
-
 
 Capabilities CpuKvOverRoceTransProvider::AdoptCapabilities(const Capabilities& local,
                                                            const Capabilities& peer)
@@ -1085,7 +1080,10 @@ std::vector<Status> CpuKvOverRoceTransProvider::Send(const std::vector<SendIoBat
         Link* link = nullptr;
         std::uint32_t qpIndex = 0;
         Status status = ResolveHandle(batch.connectionHandle, link, qpIndex);
-        if (!status.ok()) { results[index] = status; continue; }
+        if (!status.ok()) {
+            results[index] = status;
+            continue;
+        }
         if (!UseVerbsBackend()) {
             // Without a device there is no completion queue to poll: the simulated
             // backend keeps the handshake testable, not the data path.
@@ -1110,14 +1108,13 @@ std::vector<Status> CpuKvOverRoceTransProvider::Send(const std::vector<SendIoBat
         // completion is published into the flag buffer by PollCompletion().
         RequestDescription description;
         status = DescribeRequest(batch.sendBuffer, batch.len, description);
-        if (!status.ok()) { results[index] = status; continue; }
+        if (!status.ok()) {
+            results[index] = status;
+            continue;
+        }
         if (description.writeback) {
             results[index] = InvalidArgument(
                 "the SQE asks for a response writeback; the CPU path needs send_response");
-            continue;
-        }
-        if (batch.opcode != 0U && batch.opcode != description.opcode) {
-            results[index] = InvalidArgument("the batch opcode does not match the packed SQE");
             continue;
         }
 
@@ -1125,7 +1122,10 @@ std::vector<Status> CpuKvOverRoceTransProvider::Send(const std::vector<SendIoBat
         error.clear();
         status = ResolveSendLkey(reinterpret_cast<std::uintptr_t>(batch.sendBuffer), batch.len,
                                  lkey, error);
-        if (!status.ok()) { results[index] = Failure(status.code, error); continue; }
+        if (!status.ok()) {
+            results[index] = Failure(status.code, error);
+            continue;
+        }
 
         error.clear();
         results[index] = link->ioConnections[qpIndex]->PostRequest(
