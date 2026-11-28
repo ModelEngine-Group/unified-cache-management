@@ -81,11 +81,11 @@ Per-model support for parallel strategies and their vLLM flags: DP (`--data-para
 <tr><th scope="row">Qwen2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Qwen3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Qwen3-MoE</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">Qwen3-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.5</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.6</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.8</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
-<tr><th scope="row">Qwen3.8-Flash-Next</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3-Next</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.6</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Qwen3.8-Flash-Next</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">GLM</th></tr>
@@ -94,7 +94,7 @@ Per-model support for parallel strategies and their vLLM flags: DP (`--data-para
 <tr><th scope="row">GLM-5.1</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">GLM-5.2</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">GLM-5.3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">GLM-5.3-Flash</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">GLM-5.3-Flash</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 <tbody>
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">MiniMax</th></tr>
@@ -107,12 +107,11 @@ Per-model support for parallel strategies and their vLLM flags: DP (`--data-para
 <tr class="ucm-matrix-family"><th colspan="6" scope="rowgroup">Kimi</th></tr>
 <tr><th scope="row">Kimi-K2.5</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><th scope="row">Kimi-K2.7</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><th scope="row">Kimi-K3</th><td>✅</td><td>✅</td><td>❌</td><td>✅</td><td>❌</td></tr>
+<tr><th scope="row">Kimi-K3</th><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr>
 </tbody>
 </table>
 </div>
 
-The DeepSeek V4 family and the hybrid linear-attention models support context parallelism through PCP only: PP and DCP are unsupported, and for hybrid linear-attention models PP > 1 is rejected at startup with a plain-language error (the KV hash namespace has no pipeline-stage dimension).
 
 ## Compute platforms and devices
 

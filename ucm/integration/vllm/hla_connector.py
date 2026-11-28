@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
 import numpy as np
 import torch
@@ -15,13 +15,13 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
     SupportsHMA,
 )
+from vllm.distributed.parallel_state import get_pp_group
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
     MambaSpec,
-    MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
 )
 from vllm.v1.request import RequestStatus
@@ -202,19 +202,22 @@ def npu_flash_next_store_columns(
     n_slots: int,
     full_page: int,
     compressed_page: int,
-    ple_page: int,
+    ple_page: Optional[int],
     layerwise: bool,
 ) -> tuple[list[int], int, int]:
     """Column sizes, one shard, and the single UCM block size.
 
     Whole-store lists every column of the block. Layerwise lists one shard;
-    the block is ``n_slots`` of those shards.
+    the block is ``n_slots`` of those shards. ``ple_page`` is ``None`` on a
+    PP stage without the PLE layer, which then has no PLE column.
     """
     if layerwise:
         columns = [full_page, compressed_page]
         shard = full_page + compressed_page
         return columns, shard, shard * n_slots
-    columns = [full_page] * n_slots + [compressed_page] * n_slots + [ple_page]
+    columns = [full_page] * n_slots + [compressed_page] * n_slots
+    if ple_page:
+        columns.append(ple_page)
     total = sum(columns)
     return columns, total, total
 
@@ -302,17 +305,22 @@ def blnhc_group_role(layer_names: list[str]) -> str:
     return ""
 
 
-def group_state_flags(kv_cache_config: "KVCacheConfig", group) -> tuple[bool, bool]:
+def group_state_flags(
+    kv_cache_config: "KVCacheConfig", group, role: Optional[str] = None
+) -> tuple[bool, bool]:
     """Return ``(is_mamba_align, is_ple)`` for one cache group.
 
     PLE keeps the state-hash role even when its spec is not mamba-align.
     A mamba-align spec with a PLE, compressed, or raw_key role does not.
+    ``role`` is the group's role over all its layers; under PP the scheduler
+    only sees stage 0's layer names, so the caller supplies the merged one.
     """
-    role = ""
-    if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
-        kv_cache_config
-    ):
-        role = blnhc_group_role(group.layer_names)
+    if role is None:
+        role = ""
+        if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+            kv_cache_config
+        ):
+            role = blnhc_group_role(group.layer_names)
     is_mamba_align = is_mamba_align_kv_cache_spec(group.kv_cache_spec) and role not in (
         "ple",
         *_BLNHC_UNHASHED_ROLES,
@@ -386,6 +394,17 @@ class GroupInfo:
         )
 
 
+@dataclass
+class SchedulerContext:
+    """Scheduler-side context: the local config only sees stage 0, so the
+    workers' handshake facts land here. Later facts become fields, not
+    constructor parameters of their consumers."""
+
+    role_by_gid: dict[int, str]
+    owner_stages: dict[int, list[int]]
+    pp_size: int
+
+
 class KVCacheGroupManager:
     """Group-aware hashing and two-stage lookup for hybrid (HLA) connectors."""
 
@@ -394,6 +413,7 @@ class KVCacheGroupManager:
         kv_cache_config: "KVCacheConfig",
         request_hasher: "RequestHasher",
         base_seed: bytes,
+        context: Optional[SchedulerContext] = None,
     ) -> None:
         self.request_hasher = request_hasher
         self.groups_by_id: list[GroupInfo] = []
@@ -404,12 +424,18 @@ class KVCacheGroupManager:
         for group_id, group in enumerate(kv_cache_config.kv_cache_groups):
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
-            role = ""
-            if is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
+            if context is not None:
+                # Under PP the config is stage 0's; the roles arrive by handshake.
+                role = context.role_by_gid.get(group_id, "")
+            elif is_cuda_blnhc_layout(kv_cache_config) or is_npu_layer_major_blnhc(
                 kv_cache_config
             ):
                 role = blnhc_group_role(group.layer_names)
-            is_mamba_align, is_ple = group_state_flags(kv_cache_config, group)
+            else:
+                role = ""
+            is_mamba_align, is_ple = group_state_flags(
+                kv_cache_config, group, role=role
+            )
             seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
@@ -456,6 +482,40 @@ class KVCacheGroupManager:
                 f"state group {sg.group_id} is not mamba-align or PLE; "
                 f"UCMHybridLinearAttentionConnector only supports those "
                 f"state groups."
+            )
+
+        self.owner_stages: dict[int, list[int]] = (
+            dict(context.owner_stages) if context is not None else {}
+        )
+        self._lookup_pool: Optional[ThreadPoolExecutor] = None
+        self._owned_group_ids_by_stage: dict[int, set[int]] = {}
+        self._full_attn_stages: list[int] = []
+        if self.owner_stages:
+            for group in cached_groups:
+                if not self.owner_stages.get(group.group_id):
+                    raise ValueError(
+                        f"KV cache group {group.group_id} is owned by no PP stage."
+                    )
+            stages = sorted(
+                {s for owners in self.owner_stages.values() for s in owners}
+            )
+            self._owned_group_ids_by_stage = {
+                stage: {
+                    gid for gid, owners in self.owner_stages.items() if stage in owners
+                }
+                for stage in stages
+            }
+            self._full_attn_stages = [
+                stage
+                for stage in stages
+                if any(
+                    group.group_id in self._owned_group_ids_by_stage[stage]
+                    for group in self.full_attn_groups
+                )
+            ]
+        if context is not None and context.pp_size > 1:
+            self._lookup_pool = ThreadPoolExecutor(
+                max_workers=context.pp_size, thread_name_prefix="ucm-hla-lookup"
             )
 
         logger.info(
@@ -519,21 +579,17 @@ class KVCacheGroupManager:
             (group.seed, b"UCM_MAMBA_ALIGN_STATE", seq_len, prefix_hash)
         )
 
-    def lookup_external_hit_tokens(
+    def lookup_full_attention_group(
         self,
         num_computed_tokens: int,
         group_block_ids: list[list[bytes]],
         lookup_on_prefix: Callable[[list[bytes]], int],
-        lookup_on_reverse: Callable[[list[bytes]], int],
-    ) -> tuple[int, int, list[bytes]]:
-        """Two-stage HLA lookup using precomputed per-group hashes.
+        owned_group_ids: Optional[set[int]] = None,
+    ) -> Optional[int]:
+        """Return the external full-attention hit cap aligned to the LCM.
 
-        Stage 1: min of full-attn groups' ``lookup_on_prefix`` hits, rounded
-        down to ``lcm_block_size``. Stage 2: ``lookup_on_reverse`` over the
-        mamba and PLE state hashes at candidate LCM boundaries; any state
-        group with no hit downgrades the external hit to zero. Returns
-        (external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes
-        for GC heat update).
+        ``None`` means this caller owns no full-attention group and therefore
+        places no constraint on the global hit window.
         """
         assert len(group_block_ids) == self.num_groups, (
             f"group_block_ids length {len(group_block_ids)} does not match "
@@ -544,9 +600,10 @@ class KVCacheGroupManager:
             f"lcm_block_size={self.lcm_block_size}"
         )
 
-        # Stage 1: each full-attn group contributes a candidate hit count.
         candidates: list[int] = []
         for fa in self.full_attn_groups:
+            if owned_group_ids is not None and fa.group_id not in owned_group_ids:
+                continue
             fa_block_ids = group_block_ids[fa.group_id]
             fa_hbm_blocks = num_computed_tokens // fa.block_size
             fa_external = fa_block_ids[fa_hbm_blocks:]
@@ -565,19 +622,43 @@ class KVCacheGroupManager:
                 continue
             candidates.append(max(fa_hit_blocks, 0) * fa.block_size)
 
-        # Resume boundary must be a multiple of lcm_block_size so every
-        # group's tail/dispatch slicing lands on a real block boundary.
-        min_external_hit_tokens = min(candidates)
-        external_hit_tokens = (
-            min_external_hit_tokens // self.lcm_block_size
-        ) * self.lcm_block_size
+        if not candidates:
+            return None
+        return (min(candidates) // self.lcm_block_size) * self.lcm_block_size
+
+    def lookup_external_hit_tokens(
+        self,
+        num_computed_tokens: int,
+        group_block_ids: list[list[bytes]],
+        lookup_on_prefix: Callable[[list[bytes]], int],
+        lookup_all: Callable[[list[bytes]], list[bool]],
+    ) -> tuple[int, int, list[bytes]]:
+        """Two-stage HLA lookup using precomputed per-group hashes.
+
+        Stage 1 finds the full-attention prefix cap. Stage 2 walks candidate
+        LCM boundaries from right to left and accepts only a position where
+        every mamba/PLE state group exists. Returns (external_hit_tokens,
+        external_hit_lcm_blocks, mamba_prefetch_hashes for GC heat update).
+        """
+        assert len(group_block_ids) == self.num_groups, (
+            f"group_block_ids length {len(group_block_ids)} does not match "
+            f"num_groups {self.num_groups}"
+        )
+        assert num_computed_tokens % self.lcm_block_size == 0, (
+            f"num_computed_tokens={num_computed_tokens} is not aligned to "
+            f"lcm_block_size={self.lcm_block_size}"
+        )
+
+        external_hit_tokens = self.lookup_full_attention_group(
+            num_computed_tokens,
+            group_block_ids,
+            lookup_on_prefix,
+        )
+        assert external_hit_tokens is not None
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Stage 2: reverse scan for mamba state at LCM boundaries — find the
-        # rightmost position where ALL state groups' states are present.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
-
         if not self.state_groups:
             return (
                 external_hit_tokens,
@@ -585,44 +666,36 @@ class KVCacheGroupManager:
                 [],
             )
 
-        positions = list(
-            range(
-                num_computed_tokens + self.lcm_block_size,
-                total_hit_tokens + self.lcm_block_size,
-                self.lcm_block_size,
-            )
-        )
-
-        best_pos = total_hit_tokens
-        for sg in self.state_groups:
-            # Truncate to positions <= best_pos so earlier state groups
-            # can shrink the search window for subsequent ones.
-            sg_positions = [p for p in positions if p <= best_pos]
-            sg_hashes: list[bytes] = []
-            for pos in sg_positions:
+        best_pos: Optional[int] = None
+        for pos in range(
+            total_hit_tokens,
+            num_computed_tokens,
+            -self.lcm_block_size,
+        ):
+            state_hashes: list[bytes] = []
+            for group in self.state_groups:
                 state_hash = self.compute_mamba_align_state_hash(
-                    sg, pos, group_block_ids
+                    group, pos, group_block_ids
                 )
-                sg_hashes.append(state_hash if state_hash is not None else b"")
+                if state_hash is not None:
+                    state_hashes.append(state_hash)
+            if len(state_hashes) != len(self.state_groups):
+                continue
             try:
-                idx = lookup_on_reverse(sg_hashes)
+                if all(lookup_all(state_hashes)):
+                    best_pos = pos
+                    break
             except Exception as e:
                 logger.error(
-                    f"mamba-align state reverse lookup error for "
-                    f"group={sg.group_id}. {type(e).__name__}: {e}"
+                    f"mamba-align state lookup error at position {pos}. "
+                    f"{type(e).__name__}: {e}"
                 )
                 _record_counter("connector_lookup_errors_total")
                 return 0, 0, []
-            if idx < 0:
-                # This state group has no state at any candidate position.
-                return 0, 0, []
-            sg_pos = sg_positions[idx]
-            if sg_pos < best_pos:
-                best_pos = sg_pos
 
-        external_hit_tokens = best_pos - num_computed_tokens
-        if external_hit_tokens <= 0:
+        if best_pos is None:
             return 0, 0, []
+        external_hit_tokens = best_pos - num_computed_tokens
 
         # Collect mamba state hashes for GC heat update.
         mamba_prefetch_hashes: list[bytes] = []
@@ -643,6 +716,112 @@ class KVCacheGroupManager:
             external_hit_tokens // self.lcm_block_size,
             mamba_prefetch_hashes,
         )
+
+    def lookup_external_hit_tokens_pp(
+        self,
+        num_computed_tokens: int,
+        group_block_ids: list[list[bytes]],
+        stage_ids: Callable[[int, list[bytes]], list[bytes]],
+        lookup_on_prefix: Callable[[list[bytes]], int],
+        lookup_all: Callable[[list[bytes]], list[bool]],
+    ) -> tuple[int, int, list[bytes]]:
+        """Find a full-attention and state checkpoint shared by every PP stage.
+
+        Each owning stage answers for its own re-keyed blocks: ``stage_ids``
+        maps context ids to the given stage's tp0 keys, so the lookup
+        callbacks only ever see ids already in one stage's namespace.
+        """
+        assert len(group_block_ids) == self.num_groups, (
+            f"group_block_ids length {len(group_block_ids)} does not match "
+            f"num_groups {self.num_groups}"
+        )
+        assert num_computed_tokens % self.lcm_block_size == 0, (
+            f"num_computed_tokens={num_computed_tokens} is not aligned to "
+            f"lcm_block_size={self.lcm_block_size}"
+        )
+
+        def stage_prefix(stage: int) -> Callable[[list[bytes]], int]:
+            def prefix(block_ids: list[bytes]) -> int:
+                return lookup_on_prefix(stage_ids(stage, block_ids))
+
+            return prefix
+
+        assert self._lookup_pool is not None
+        futures = [
+            self._lookup_pool.submit(
+                self.lookup_full_attention_group,
+                num_computed_tokens,
+                group_block_ids,
+                stage_prefix(stage),
+                self._owned_group_ids_by_stage[stage],
+            )
+            for stage in self._full_attn_stages
+        ]
+        caps = [future.result() for future in futures]
+        caps = [cap for cap in caps if cap is not None]
+        if not caps:
+            return 0, 0, []
+        fa_cap = min(caps)
+        if fa_cap <= 0:
+            return 0, 0, []
+
+        best_pos: Optional[int] = None
+        for pos in range(
+            num_computed_tokens + fa_cap,
+            num_computed_tokens,
+            -self.lcm_block_size,
+        ):
+            state_hashes: list[bytes] = []
+            expected = 0
+            for group in self.state_groups:
+                owners = self.owner_stages[group.group_id]
+                expected += len(owners)
+                state_hash = self.compute_mamba_align_state_hash(
+                    group, pos, group_block_ids
+                )
+                if state_hash is None:
+                    continue
+                for stage in owners:
+                    state_hashes.append(stage_ids(stage, [state_hash])[0])
+            if len(state_hashes) != expected:
+                continue
+            try:
+                if all(lookup_all(state_hashes)):
+                    best_pos = pos
+                    break
+            except Exception as e:
+                logger.error(
+                    f"PP state lookup error at position {pos}. {type(e).__name__}: {e}"
+                )
+                _record_counter("connector_lookup_errors_total")
+                return 0, 0, []
+        if best_pos is None:
+            return 0, 0, []
+
+        external_hit_tokens = best_pos - num_computed_tokens
+        prefetch_hashes: list[bytes] = []
+        for pos in range(
+            self.lcm_block_size,
+            best_pos + self.lcm_block_size,
+            self.lcm_block_size,
+        ):
+            for group in self.state_groups:
+                state_hash = self.compute_mamba_align_state_hash(
+                    group, pos, group_block_ids
+                )
+                if state_hash is not None:
+                    prefetch_hashes.append(state_hash)
+        return (
+            external_hit_tokens,
+            external_hit_tokens // self.lcm_block_size,
+            prefetch_hashes,
+        )
+
+    def shutdown(self) -> None:
+        pool = self._lookup_pool
+        self._lookup_pool = None
+        if pool is not None:
+            pool.shutdown(wait=False)
 
 
 class HybridLinearAttentionLayout(KVCacheLayout):
@@ -974,6 +1153,10 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         linear_gids = []
         ple_gids = []
         for gid, group in enumerate(groups):
+            if not group.layer_names:
+                # Under pipeline parallelism the group's layers sit on
+                # another stage; an empty group has no role on this one.
+                continue
             role = blnhc_group_role(group.layer_names)
             if role == "raw_key":
                 continue
@@ -1014,23 +1197,28 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             if len(rows) != n_slots:
                 raise ValueError(
                     "NPU flash-next linear group does not have "
-                    f"{n_slots} layers: group={gid}, layers={len(rows)}."
+                    f"{n_slots} layers: group={gid}, layers={len(rows)}. "
+                    "A stage must hold whole repeats of the layer pattern; "
+                    "under pipeline parallelism choose a pp_size that keeps "
+                    "num_hidden_layers / pp_size a multiple of the pattern "
+                    "length."
                 )
             linear_rows[gid] = rows
-        if len(ple_gids) != 1:
+        # A single PLE layer lives on one stage under PP.
+        if len(ple_gids) > 1:
             raise ValueError(
-                f"NPU flash-next expects one PLE group, found {len(ple_gids)}."
+                f"NPU flash-next expects at most one PLE group, found {len(ple_gids)}."
             )
-        ple_gid = ple_gids[0]
-        ple_rows = ordered(ple_gid, "ple")
-        if len(ple_rows) != 1:
+        ple_gid = ple_gids[0] if ple_gids else None
+        ple_rows = ordered(ple_gid, "ple") if ple_gid is not None else []
+        if len(ple_rows) > 1:
             raise ValueError(
                 f"NPU flash-next expects one PLE layer, found {len(ple_rows)}."
             )
-        ple_row = ple_rows[0]
+        ple_row = ple_rows[0] if ple_rows else None
         full_page = self._uniform_page(full_rows, "full attention")
         compressed_page = self._uniform_page(compressed_rows, "compressed")
-        ple_page = ple_row["block_stride"]
+        ple_page = int(ple_row["block_stride"]) if ple_row else None
         for gid, rows in linear_rows.items():
             self._uniform_page(rows, f"linear group {gid}")
             if rows[0]["block_stride"] != full_page:
@@ -1050,13 +1238,12 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         self.num_slots = n_slots if self.use_layerwise else 1
         self.slot_shard_size = shard_size if self.use_layerwise else block_size
         self.tensor_size_lists = np.asarray([columns], dtype=np.uint64)
-        self.ple_layer_name = ple_row["name"]
+        self.ple_layer_name = ple_row["name"] if ple_row else None
         self.ple_group_id = ple_gid
-        self._ple_block0 = int(ple_row["block0"])
-        self._ple_block_stride = int(ple_page)
-        self._ple_tensor = ple_row["tensor"]
-        ple_base = int(ple_row["block0"])
-        if self.use_layerwise and self._ple_tensor is None:
+        self._ple_block0 = int(ple_row["block0"]) if ple_row else 0
+        self._ple_block_stride = int(ple_page) if ple_row else 0
+        self._ple_tensor = ple_row["tensor"] if ple_row else None
+        if ple_row is not None and self.use_layerwise and self._ple_tensor is None:
             raise ValueError("NPU flash-next PLE layer has no live tensor.")
 
         bases: dict[tuple[int, int, int], int] = {}
@@ -1081,20 +1268,21 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 else:
                     bases[(gid, slot, 0)] = int(row["block0"])
                 self.layer_column_bytes[row["name"]] = full_page
-        self._npu_anchor(
-            ple_row["name"],
-            ple_gid,
-            0,
-            ple_base,
-            full_page if self.use_layerwise else ple_page,
-        )
-        if self.use_layerwise:
-            # The stage does not exist yet. Its base is published when the
-            # blocks for a dump or load are known.
-            self.layer_column_bytes[ple_row["name"]] = full_page
-        else:
-            bases[(ple_gid, n_slots * 2, 0)] = ple_base
-            self.layer_column_bytes[ple_row["name"]] = ple_page
+        if ple_row is not None:
+            ple_base = int(ple_row["block0"])
+            self._npu_anchor(
+                ple_row["name"],
+                ple_gid,
+                0,
+                ple_base,
+                full_page if self.use_layerwise else ple_page,
+            )
+            if self.use_layerwise:
+                # The base is published when the dump/load blocks are known.
+                self.layer_column_bytes[ple_row["name"]] = full_page
+            else:
+                bases[(ple_gid, n_slots * 2, 0)] = ple_base
+                self.layer_column_bytes[ple_row["name"]] = ple_page
         self.group_pair_bases = bases
         self.group_owns_type = {
             (gid, type_id): True
@@ -1660,27 +1848,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ):
             return False
 
-        layer_to_specs = layer_name_to_kv_cache_spec(kv_cache_config)
-        # Attention and Mamba layers may use separate tensor allocations.
         has_full_attention = False
         has_mamba_align = False
-        for raw_tensor in kv_cache_config.kv_cache_tensors:
-            shared_by = _kv_cache_tensor_layers(raw_tensor)
-            shared_specs = [
-                spec
-                for layer_name in shared_by
-                for spec in layer_to_specs.get(layer_name, [])
-            ]
-            has_full_attention |= any(
-                isinstance(spec, FullAttentionSpec) for spec in shared_specs
-            )
-            has_mamba_align |= any(
-                isinstance(spec, MambaSpec) and spec.mamba_cache_mode == "align"
-                for spec in shared_specs
-            )
+        for group in kv_cache_config.kv_cache_groups:
+            specs = group.kv_cache_spec
+            if isinstance(specs, UniformTypeKVCacheSpecs):
+                specs = specs.kv_cache_specs.values()
+            else:
+                specs = [specs]
+            for spec in specs:
+                has_full_attention |= isinstance(spec, FullAttentionSpec)
+                has_mamba_align |= is_mamba_align_kv_cache_spec(spec)
             if has_full_attention and has_mamba_align:
                 return True
-
         return False
 
     def __init__(
@@ -1689,18 +1869,33 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
     ):
+        self.pp_size = vllm_config.parallel_config.pipeline_parallel_size
+        # The scheduler has no stage of its own.
+        self.pp_rank = (
+            get_pp_group().rank_in_group if role == KVConnectorRole.WORKER else 0
+        )
+        self._is_pp = self.pp_size > 1
+        if self._is_pp:
+            # The store waits for the handshake: the workers know the geometry.
+            self._defer_scheduler_store = True
+        self.store = None
+
         super().__init__(
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         self._skip_null_vllm_blocks = True
+        self._stage_hasher = None
+        self._stage_hashers: dict[int, Optional[RequestHasher]] = {}
         self._setup_cp_scoping(vllm_config)
+        self._setup_stage_scoping(vllm_config)
         self._state_group_ids = (
             state_group_ids(kv_cache_config) if kv_cache_config is not None else set()
         )
         # group manager only lives on the scheduler side, where ``self._seed``
-        # and ``self.request_hasher`` are populated by the parent ctor.
+        # and ``self.request_hasher`` are populated by the parent ctor. Under
+        # PP it waits for the other stages' roles from the handshake.
         self.group_manager: Optional[KVCacheGroupManager] = None
-        if role == KVConnectorRole.SCHEDULER:
+        if role == KVConnectorRole.SCHEDULER and not self._is_pp:
             self.group_manager = KVCacheGroupManager(
                 kv_cache_config=kv_cache_config,
                 request_hasher=self.request_hasher,
@@ -1710,6 +1905,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
             self._bind_request_block_hasher()
+
+        # Per-request memo; the entries die with the request.
+        self._stage_id_cache: dict[str, dict[tuple[int, bytes], bytes]] = {}
+        self._store_block_size = 0
+        self._owned_group_ids: set[int] = set()
 
         # ---- worker-side transfer state --------------------------------------
         # Direct uses: request_data / _failure_req_ids / _dump_plan /
@@ -1762,10 +1962,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         logger.info(f"{type(self).__name__} initialized")
 
     def _setup_cp_scoping(self, vllm_config: "VllmConfig") -> None:
-        """Set up pure-PCP state; the policy lives in ``_scope_blocks_pcp``.
+        """Create the pure-PCP hashers; the scoping policy lives in ``_scope_blocks_pcp``.
 
         The pcp size comes from ``parallel_config`` (the scheduler process
         never initializes the PCP group); ``rank_in_group`` is worker-only.
+        The scheduler also gets its pcp rank shards for the heat refresh.
         """
         parallel_config = vllm_config.parallel_config
         self.pcp_world_size = getattr(
@@ -1773,11 +1974,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         self.pcp_rank = 0
         self._pcp_shard_hasher = None
-        if getattr(parallel_config, "pipeline_parallel_size", 1) > 1:
-            raise ValueError(
-                "Pipeline parallelism is not supported for the current "
-                "model. Set pipeline_parallel_size=1."
-            )
         if getattr(parallel_config, "decode_context_parallel_size", 1) > 1:
             raise ValueError(
                 "Decode context parallelism is not supported for the "
@@ -1803,43 +1999,201 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     build_kv_hash_meta(vllm_config, 0) + suffix
                 )
                 self._seed = self.request_hasher.seed
+                self._other_rank_hashers = [
+                    RequestHasher(build_kv_hash_meta(vllm_config, pcp_rank) + suffix)
+                    for pcp_rank in range(1, self.pcp_world_size)
+                ]
             else:
                 self._pcp_shard_hasher = RequestHasher(
                     build_kv_hash_meta(vllm_config, self.pcp_rank) + suffix
                 )
 
-    def _make_other_rank_hashers(self, vllm_config) -> list["RequestHasher"]:
-        """Per-rank namespaces for GC hotness refresh.
+    def _setup_stage_scoping(self, vllm_config: "VllmConfig") -> None:
+        """Create the hashers that namespace this connector's store keys.
 
-        Unlike the base ``is_mla -> []`` shortcut, hybrid MLA models have
-        per-rank KDA shards that must stay warm; at TP=1 with PCP the
-        rank slot carries the pcp_rank.
+        The worker gets this PP stage's re-keying hasher. The scheduler gets
+        the pp'd request hasher, one lookup hasher per stage, and the
+        hotness-refresh hashers: the TP rank shards plus, under PP, every
+        other stage's tp0 hash with the rank shards chained after it
+        exactly as the workers compute their keys.
         """
-        from ucm.integration.vllm.request_hasher import RequestHasher
         from ucm.integration.vllm.ucm_connector import build_kv_hash_meta
 
-        parallel_config = vllm_config.parallel_config
-        tp_size = parallel_config.tensor_parallel_size
-        pcp_size = getattr(parallel_config, "prefill_context_parallel_size", 1)
-        if tp_size > 1:
-            return [
-                RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
-                for rank_id in range(1, tp_size)
-            ]
-        if pcp_size > 1:
-            # Must match _setup_cp_scoping's shard hasher.
-            return [
-                RequestHasher(
-                    build_kv_hash_meta(vllm_config, pcp_rank) + f":pcp={pcp_size}"
+        if self._role == KVConnectorRole.WORKER:
+            if self._is_pp and self.pp_rank != 0:
+                self._stage_hasher = RequestHasher(
+                    build_kv_hash_meta(vllm_config, 0)
+                    + f":pp={self.pp_rank}/{self.pp_size}"
                 )
-                for pcp_rank in range(1, pcp_size)
+            return
+
+        if self.tp_size > 1:
+            self._other_rank_hashers = [
+                RequestHasher(build_kv_hash_meta(vllm_config, rank_id))
+                for rank_id in range(1, self.tp_size)
             ]
-        return []
+        if not self._is_pp:
+            return
+
+        self.request_hasher = RequestHasher(
+            self.request_hasher.meta_bytes.decode() + f":pp=0/{self.pp_size}"
+        )
+        self._seed = self.request_hasher.seed
+        self._stage_hashers = {
+            pp_rank: (
+                None
+                if pp_rank == 0
+                else RequestHasher(
+                    build_kv_hash_meta(vllm_config, 0) + f":pp={pp_rank}/{self.pp_size}"
+                )
+            )
+            for pp_rank in range(self.pp_size)
+        }
+        rank_shards = list(self._other_rank_hashers)
+        for pp_rank in range(1, self.pp_size):
+            stage = self._stage_hashers[pp_rank]
+            self._other_rank_hashers.append(stage)
+            self._other_rank_hashers.extend(
+                lambda block_id, s=stage, r=rank_shard: r(s(block_id))
+                for rank_shard in rank_shards
+            )
+
+    def _stage_ids(
+        self, stage: int, block_ids: list[bytes], cache: dict
+    ) -> list[bytes]:
+        """Context ids as the stage's tp0 keys; stage 0 keeps them as they are."""
+        hasher = self._stage_hashers.get(stage)
+        if hasher is None:
+            return block_ids
+        out = []
+        for block_id in block_ids:
+            key = (stage, block_id)
+            value = cache.get(key)
+            if value is None:
+                value = hasher(block_id)
+                cache[key] = value
+            out.append(value)
+        return out
+
+    def _lookup_all_stages(
+        self,
+        num_computed_tokens: int,
+        group_block_ids: list[list[bytes]],
+        request_id: str,
+    ) -> tuple[int, int, list[bytes]]:
+        """Dispatch to non-PP or PP-wide common-state lookup."""
+        if not self._is_pp:
+            return self.group_manager.lookup_external_hit_tokens(
+                num_computed_tokens,
+                group_block_ids,
+                lambda block_ids: self._rank_consistency.lookup_on_prefix(
+                    self.store, block_ids
+                ),
+                lambda hashes: self._rank_consistency.lookup_all(self.store, hashes),
+            )
+        cache = self._stage_id_cache.setdefault(request_id, {})
+        return self.group_manager.lookup_external_hit_tokens_pp(
+            num_computed_tokens,
+            group_block_ids,
+            lambda stage, block_ids: self._stage_ids(stage, block_ids, cache),
+            lambda block_ids: self._rank_consistency.lookup_on_prefix(
+                self.store, block_ids
+            ),
+            lambda hashes: self._rank_consistency.lookup_all(self.store, hashes),
+        )
 
     def get_block_size(self) -> int:
         if self.group_manager is not None:
             return self.group_manager.lcm_block_size
         return self.block_size
+
+    def get_handshake_metadata(self) -> Optional[dict]:
+        """Tell the scheduler this stage's store geometry and the groups it owns.
+
+        Without it the scheduler only knows stage 0: it cannot size the shared
+        store, tell a group's role on other stages, or know which stage to
+        query for a group.
+        """
+        if not self._is_pp or self._role != KVConnectorRole.WORKER:
+            return None
+        cfg = self._kv_cache_config
+        role_by_name = is_cuda_blnhc_layout(cfg) or is_npu_layer_major_blnhc(cfg)
+        return {
+            "block_size": self._store_block_size,
+            "groups": {
+                gid: (
+                    blnhc_group_role(cfg.kv_cache_groups[gid].layer_names)
+                    if role_by_name
+                    else ""
+                )
+                for gid in sorted(self._owned_group_ids)
+            },
+        }
+
+    def set_xfer_handshake_metadata_pp_aware(self, metadata: dict) -> None:
+        """Build the scheduler-side view of every PP stage from the workers.
+
+        Store geometry is averaged over the stages that hold cache layers:
+        GC turns the block size into a file count, and every stage writes one
+        file per token block. Group roles are merged over the stages, since
+        the scheduler's own ``kv_cache_config`` is stage 0's.
+        """
+        if not self._is_pp or self._role != KVConnectorRole.SCHEDULER:
+            return
+        if self.store is not None:
+            logger.info("Ignore repeated PP handshake; stage stores already exist.")
+            return
+
+        by_stage: dict[int, list[dict]] = defaultdict(list)
+        for key, payload in metadata.items():
+            if (
+                not isinstance(key, tuple)
+                or not key
+                or not isinstance(key[0], int)
+                or not 0 <= key[0] < self.pp_size
+            ):
+                raise ValueError(f"Unsupported PP handshake key: {key!r}")
+            by_stage[key[0]].append(payload)
+
+        block_sizes: list[int] = []
+        owner_stages: dict[int, list[int]] = defaultdict(list)
+        roles: dict[int, set[str]] = defaultdict(set)
+        for pp_rank in range(self.pp_size):
+            payloads = by_stage.get(pp_rank)
+            if not payloads:
+                raise ValueError(f"Missing handshake metadata for PP stage {pp_rank}.")
+            first = payloads[0]
+            if any(payload != first for payload in payloads):
+                raise ValueError(
+                    f"PP stage {pp_rank} reports heterogeneous KV geometry."
+                )
+            if first["block_size"] > 0:
+                block_sizes.append(first["block_size"])
+            for gid, role in first["groups"].items():
+                owner_stages[gid].append(pp_rank)
+                roles[gid].add(role)
+
+        self.group_manager = KVCacheGroupManager(
+            kv_cache_config=self._kv_cache_config,
+            request_hasher=self.request_hasher,
+            base_seed=self._seed,
+            context=SchedulerContext(
+                role_by_gid={
+                    gid: ("" if len(values) > 1 else next(iter(values)))
+                    for gid, values in roles.items()
+                },
+                owner_stages=owner_stages,
+                pp_size=self.pp_size,
+            ),
+        )
+        lcm_block_size = self.group_manager.lcm_block_size
+        self.block_size = lcm_block_size
+        self.hash_block_size = lcm_block_size
+        self._bind_request_block_hasher()
+        self.store = self._create_store(
+            None,
+            block_size_override=sum(block_sizes) // len(block_sizes),
+        )
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
@@ -1907,15 +2261,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             lookup_block_ids = group_ucm_block_ids
 
         external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
-            self.group_manager.lookup_external_hit_tokens(
-                num_computed_tokens,
-                lookup_block_ids,
-                lambda block_ids: self._rank_consistency.lookup_on_prefix(
-                    self.store, block_ids
-                ),
-                lambda block_ids: self._rank_consistency.lookup_on_reverse(
-                    self.store, block_ids
-                ),
+            self._lookup_all_stages(
+                num_computed_tokens, lookup_block_ids, request.request_id
             )
         )
 
@@ -2314,6 +2661,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._stage_id_cache.pop(request_id, None)
             self._pending_async_load_dispatches.pop(request_id, None)
             self._async_load_req_ids.discard(request_id)
             resumed_req_ids.discard(request_id)
@@ -2327,24 +2675,37 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
 
     def _scope_blocks(self, ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump):
-        """Rank-scope block IDs for dump or load.
+        """Rank-scope block IDs for dump or load, after the PP stage mapping.
 
-        Returns this rank's unscoped (context) hashes, scoped store keys,
-        matching vLLM block IDs, and the matching KV-cache group IDs.
+        Returns this stage's TP0 hashes for rank-consistency reporting, the
+        rank-scoped Store keys, and their vLLM block/group IDs. Under PP,
+        keeping both sides in the stage's TP0 namespace lets the Scheduler
+        filter a missing block reported by any rank of that stage.
+
+        Under pure PCP, dumps (and TP=1 loads, which need the pcp_rank
+        KDA namespace) delegate to ``_scope_blocks_pcp``.
+        """
+        if self._stage_hasher is None:
+            stage_ids = ucm_ids
+        else:
+            stage_ids = [self._stage_hasher(block_id) for block_id in ucm_ids]
+        if getattr(self, "pcp_world_size", 1) > 1 and (is_dump or self.tp_size == 1):
+            return self._scope_blocks_pcp(
+                stage_ids, vllm_ids, group_ids, full_attn_count, is_dump
+            )
+        return self._scope_blocks_tp(
+            stage_ids, vllm_ids, group_ids, full_attn_count, is_dump
+        )
+
+    def _scope_blocks_tp(self, ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump):
+        """Rank-scope block IDs by TP rank.
 
         MLA latent is TP-replicated under the shared rank-0 hash, so for
         dumps each rank writes a proportional contiguous slice of the MLA
         blocks; KDA state is per-rank sharded (rank0 shared / non-rank0
         per-rank hashing). Loads are unchanged: every rank reads all of its
         MLA blocks plus its own KDA blocks.
-
-        Under pure PCP, dumps (and TP=1 loads, which need the pcp_rank
-        KDA namespace) delegate to ``_scope_blocks_pcp``.
         """
-        if getattr(self, "pcp_world_size", 1) > 1 and (is_dump or self.tp_size == 1):
-            return self._scope_blocks_pcp(
-                ucm_ids, vllm_ids, group_ids, full_attn_count, is_dump
-            )
         is_rank0 = self.tp_rank % self.tp_size == 0
         if not self.is_mla:
             scoped = ucm_ids if is_rank0 else [self.request_hasher(b) for b in ucm_ids]
@@ -2532,7 +2893,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             config["shard_size"] = shard_size * self.blocks_per_chunk
             config["block_size"] = block_size * self.blocks_per_chunk
-            self._publish_block_size(config["block_size"])
+            self._store_block_size = config["block_size"]
+            if getattr(self, "_is_pp", False):
+                self._configure_host_cache_for_stage(config)
+            else:
+                self._publish_block_size(config["block_size"])
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()
@@ -2553,6 +2918,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        elif getattr(self, "_is_pp", False):
+            config["block_size"] = block_size_override
+            config["store_pipeline"] = "Posix"
         elif self._gc_owner:
             bs = _scheduler_read_block_size()
             if bs is None:
@@ -2568,6 +2936,23 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         config["posix_gc_enable"] = self._gc_owner
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
+    def _configure_host_cache_for_stage(self, config: dict) -> None:
+        """Give this PP stage its own host-cache domain.
+
+        Stages share one storage directory and differ by key, but their host
+        caches cannot: each stage holds a different layer set, so block sizes
+        differ, and a re-partition must not reuse the buffers of the previous
+        layer set. The node's budget is split between the stages on it.
+        """
+        stage_width = self.tp_size * getattr(self, "pcp_world_size", 1)
+        local_ranks = self._get_world_size()
+        config["unique_id"] = f"{self.unique_id}_pp{self.pp_rank}"
+        config["local_rank_size"] = min(stage_width, local_ranks)
+        local_stages = max(1, math.ceil(local_ranks / stage_width))
+        config["cache_buffer_capacity_gb"] = (
+            int(config["cache_buffer_capacity_gb"]) // local_stages
+        )
 
     def _register_common(
         self, kv_caches: dict[str, torch.Tensor]
@@ -2607,6 +2992,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         )
         layout = self.kv_cache_layout
         assert isinstance(layout, HybridLinearAttentionLayout)
+        # Groups with layers on this stage; the rest sit on other stages under PP.
+        self._owned_group_ids = set(layout.group_pairs)
         self.layer_name_to_id = layout.layer_name_to_id
         self.layer_ids = sorted(set(self.layer_name_to_id.values()))
         self.first_layer_id = self.layer_ids[0]
@@ -2723,26 +3110,55 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self.is_save = False
         self._save_bytes_total = 0
 
+    def _keep_owned(
+        self,
+        context_ucm: list[bytes],
+        scoped_ucm: list[bytes],
+        scoped_vllm: list[int],
+        scoped_groups: list[int],
+    ) -> tuple[list[bytes], list[bytes], list[int], list[int]]:
+        """Drop the plan entries of groups this stage does not own.
+
+        Under PP another stage holds those layers and transfers them itself.
+        Order is kept, so the shared MLA keys still come before the
+        rank-scoped state keys.
+        """
+        owned = self._owned_group_ids
+        keep = [i for i, gid in enumerate(scoped_groups) if gid in owned]
+        if len(keep) == len(scoped_groups):
+            return context_ucm, scoped_ucm, scoped_vllm, scoped_groups
+        return (
+            [context_ucm[i] for i in keep],
+            [scoped_ucm[i] for i in keep],
+            [scoped_vllm[i] for i in keep],
+            [scoped_groups[i] for i in keep],
+        )
+
     def _prepare_load_plan(self, metadata: "UCMConnectorMetadata") -> None:
         """Rank-scope every request's load blocks into ``request_data``."""
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
-            n = getattr(request, "load_full_attn_count", 0)
-            _, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
+            context_ucm, scoped_ucm, scoped_vllm, scoped_groups = self._scope_blocks(
                 request.load_block_ids[0],
                 request.load_block_ids[1],
                 getattr(request, "load_group_ids", []),
-                n,
+                getattr(request, "load_full_attn_count", 0),
                 is_dump=False,
             )
             if not scoped_ucm:
+                continue
+            context_ucm, scoped_ucm, scoped_vllm, scoped_groups = self._keep_owned(
+                context_ucm, scoped_ucm, scoped_vllm, scoped_groups
+            )
+            if not scoped_ucm:
+                # Nothing of this load lives on this stage.
                 continue
             self.need_load = True
             self.request_data.append(
                 (
                     request_id,
-                    request.load_block_ids[0],
+                    context_ucm,
                     scoped_ucm,
                     scoped_vllm,
                     scoped_groups,
@@ -2771,6 +3187,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 getattr(request, "dump_group_ids", []),
                 n,
                 is_dump=True,
+            )
+            context_ucm, s_ucm, s_vllm, s_groups = self._keep_owned(
+                context_ucm, s_ucm, s_vllm, s_groups
             )
             if not s_ucm:
                 continue
@@ -2821,11 +3240,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
-            mla_count = (
-                getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
-                if self.is_mla
-                else 0
-            )
+            # _keep_owned may have dropped groups, so recount from the plan.
+            mla_count = 0
+            if self.is_mla:
+                while (
+                    mla_count < len(scoped_groups)
+                    and scoped_groups[mla_count] not in self._state_group_ids
+                ):
+                    mla_count += 1
             # Load metadata puts shared MLA keys before rank-scoped state keys.
             # A task with private keys cannot assign fills to other ranks.
             for start, end, distribute_load in (
@@ -2926,11 +3348,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 continue
             pending = HLAPendingLoad(request_id)
-            mla_count = (
-                getattr(metadata.request_meta[request_id], "load_full_attn_count", 0)
-                if self.is_mla
-                else 0
-            )
+            # _keep_owned may have dropped groups, so recount from the plan.
+            mla_count = 0
+            if self.is_mla:
+                while (
+                    mla_count < len(scoped_groups)
+                    and scoped_groups[mla_count] not in self._state_group_ids
+                ):
+                    mla_count += 1
             # Load metadata puts shared MLA keys before rank-scoped state keys.
             # A task with private keys cannot assign fills to other ranks.
             for start, end, distribute_load in (
@@ -3155,6 +3580,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             # timeout/drain path to run before HBM can be reclaimed.
             self._load_wait_executor.shutdown(wait=True)
             self._load_wait_executor = None
+        if self.group_manager is not None:
+            self.group_manager.shutdown()
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
