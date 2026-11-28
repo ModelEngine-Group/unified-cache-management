@@ -535,10 +535,10 @@ index 46e46b28eabe63363677e5063da8fd7580a32191..5fc3612f549ea4d66c80a484dfd7531b
  
 diff --git a/lmcache/v1/distributed/l2_adapters/nds_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nds_l2_adapter.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c81c51b7d
+index 0000000000000000000000000000000000000000..4cfa7c482779d59444c0ee4b68d8f61c21b27be3
 --- /dev/null
 +++ b/lmcache/v1/distributed/l2_adapters/nds_l2_adapter.py
-@@ -0,0 +1,1433 @@
+@@ -0,0 +1,1538 @@
 +# SPDX-License-Identifier: Apache-2.0
 +"""
 +NDS (KV disk frame) L2 adapter for the LMCache MP server.
@@ -640,6 +640,10 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            copy.  If init_multi with the L1 buffer fails, init fails with
 +            a clear error -- set this to False to force the staging-copy
 +            path (default True).
++        object_group_nsid: Optional mapping from object_group_id to NDS
++            namespace ID. Groups not listed fall back to nsid. Use separate
++            namespaces when object groups have different valueSize requirements
++            (default empty, preserving single-nsid behavior).
 +    """
 +
 +    def __init__(
@@ -659,6 +663,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        unhealthy_probe_interval: float = 15,
 +        nds_buffer_size_gb: float = 2,
 +        use_l1_zero_copy: bool = True,
++        object_group_nsid: dict[int, int] | None = None,
 +    ):
 +        self.nsid = nsid
 +        self.nds_config_path = nds_config_path
@@ -675,6 +680,8 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        self.unhealthy_probe_interval = unhealthy_probe_interval
 +        self.nds_buffer_size_gb = nds_buffer_size_gb
 +        self.use_l1_zero_copy = use_l1_zero_copy
++        # Explicit object-group routes; unlisted groups use nsid as a fallback.
++        self.object_group_nsid = dict(object_group_nsid or {})
 +
 +    @classmethod
 +    def from_dict(cls, d: dict) -> "NDSL2AdapterConfig":
@@ -725,7 +732,10 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            raise ValueError("io_timeout_s must be a non-negative number")
 +
 +        unhealthy_probe_interval = d.get("unhealthy_probe_interval", 15)
-+        if not isinstance(unhealthy_probe_interval, (int, float)) or unhealthy_probe_interval < 0:
++        if (
++            not isinstance(unhealthy_probe_interval, (int, float))
++            or unhealthy_probe_interval < 0
++        ):
 +            raise ValueError("unhealthy_probe_interval must be a non-negative number")
 +
 +        nds_buffer_size_gb = d.get("nds_buffer_size_gb", 2)
@@ -735,6 +745,33 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        use_l1_zero_copy = d.get("use_l1_zero_copy", True)
 +        if not isinstance(use_l1_zero_copy, bool):
 +            raise ValueError("use_l1_zero_copy must be a boolean")
++
++        raw_group_nsids = d.get("object_group_nsid", {})
++        if not isinstance(raw_group_nsids, dict):
++            raise ValueError("object_group_nsid must be a dict of group ID to nsid")
++        object_group_nsid: dict[int, int] = {}
++        for raw_group_id, group_nsid in raw_group_nsids.items():
++            if isinstance(raw_group_id, bool):
++                raise ValueError("object_group_nsid keys must be non-negative integers")
++            if isinstance(raw_group_id, int):
++                group_id = raw_group_id
++            elif isinstance(raw_group_id, str) and raw_group_id.isdecimal():
++                group_id = int(raw_group_id)
++            else:
++                raise ValueError("object_group_nsid keys must be non-negative integers")
++            if group_id < 0 or group_id > 0xFFFF:
++                raise ValueError("object_group_nsid group IDs must be in [0, 65535]")
++            if group_id in object_group_nsid:
++                raise ValueError(f"duplicate object_group_nsid group ID: {group_id}")
++            if (
++                not isinstance(group_nsid, int)
++                or isinstance(group_nsid, bool)
++                or group_nsid <= 0
++            ):
++                raise ValueError(
++                    f"object_group_nsid[{raw_group_id!r}] must be a positive integer"
++                )
++            object_group_nsid[group_id] = group_nsid
 +
 +        return cls(
 +            nsid=nsid,
@@ -752,6 +789,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            unhealthy_probe_interval=unhealthy_probe_interval,
 +            nds_buffer_size_gb=nds_buffer_size_gb,
 +            use_l1_zero_copy=use_l1_zero_copy,
++            object_group_nsid=object_group_nsid,
 +        )
 +
 +    @classmethod
@@ -803,7 +841,9 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            "hits MemoryObj memory directly without the "
 +            "staging memcpy; objects outside the registered "
 +            "range fall back to the staging copy (optional, "
-+            "default True)"
++            "default True)\n"
++            "- object_group_nsid (dict): map object_group_id to NDS nsid; "
++            "unlisted groups use nsid (optional, default {})"
 +        )
 +
 +
@@ -919,13 +959,21 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        try:
 +            self._ensure_nds_initialized()
 +        except Exception:
-+            logger.exception(
-+                "Eager NDS init failed; will retry lazily on first IO"
-+            )
++            logger.exception("Eager NDS init failed; will retry lazily on first IO")
 +
 +    # --------------------
 +    # Key Encoding
 +    # --------------------
++
++    def _nsid_for_key(self, key: "ObjectKey") -> int:
++        """Return the configured namespace for an object key."""
++        return self._config.object_group_nsid.get(
++            key.object_group_id, self._config.nsid
++        )
++
++    def _configured_nsids(self) -> list[int]:
++        """Return every namespace that requires warmup and health checks."""
++        return sorted({self._config.nsid, *self._config.object_group_nsid.values()})
 +
 +    @staticmethod
 +    def _encode_block_id(key: "ObjectKey") -> int:
@@ -1004,8 +1052,6 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                return
 +
 +            if not self._nds_client_ready:
-+                import ctypes
-+
 +                # Lazy import pynds_kv
 +                import pynds_kv
 +
@@ -1028,23 +1074,30 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                    try:
 +                        import ctypes.util
 +
-+                        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
++                        libc = ctypes.CDLL(
++                            ctypes.util.find_library("c"), use_errno=True
++                        )
 +                        libc.mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 +                        libc.mlock.restype = ctypes.c_int
-+                        addr = ctypes.addressof(ctypes.c_char.from_buffer(self._nds_mmap))
++                        addr = ctypes.addressof(
++                            ctypes.c_char.from_buffer(self._nds_mmap)
++                        )
 +                        if libc.mlock(addr, buf_size) != 0:
 +                            logger.warning(
-+                                "mlock failed (errno=%d), NDS may fail if pages are swapped",
++                                "mlock failed (errno=%d), NDS may fail if pages "
++                                "are swapped",
 +                                ctypes.get_errno(),
 +                            )
 +                    except Exception:
 +                        logger.warning("mlock unavailable, continuing without it")
 +
-+                    # Touch pages to ensure they're faulted in
++                    # Touch pages to ensure they're faulted in. The configured
++                    # byte size need not be a multiple of the page size.
 +                    chunk = 4096
 +                    zero_page = b"\x00" * chunk
 +                    for off in range(0, buf_size, chunk):
-+                        self._nds_mmap[off : off + chunk] = zero_page
++                        end = min(off + chunk, buf_size)
++                        self._nds_mmap[off:end] = zero_page[: end - off]
 +
 +                    buf_addr = ctypes.addressof(
 +                        ctypes.c_char.from_buffer(self._nds_mmap)
@@ -1120,20 +1173,24 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                logger.info("NDS init success (nsid=%d)", self._config.nsid)
 +                self._nds_client_ready = True
 +
-+            # Warmup IO
++            # Warm every configured namespace: NDS establishes connections
++            # per namespace, so warming only the default leaves group routes cold.
 +            if self._config.warmup_on_init:
-+                try:
-+                    warmup_ok = self._warmup_nds_io()
-+                except Exception:
-+                    logger.exception("NDS warmup IO raised an exception")
-+                    warmup_ok = False
-+                if not warmup_ok:
-+                    logger.error("NDS warmup IO failed, marking unhealthy")
-+                    # Latch so subsequent IO fails fast; lazy retry (force)
-+                    # re-runs ONLY this warmup, not pynds_kv.init.
-+                    self._pynds_init_failed = True
-+                    self._healthy = False
-+                    return
++                for nsid in self._configured_nsids():
++                    try:
++                        warmup_ok = self._warmup_nds_io(nsid)
++                    except Exception:
++                        logger.exception("NDS warmup IO raised an exception")
++                        warmup_ok = False
++                    if not warmup_ok:
++                        logger.error(
++                            "NDS warmup IO failed for nsid=%d, marking unhealthy", nsid
++                        )
++                        # Latch so subsequent IO fails fast; lazy retry (force)
++                        # re-runs ONLY this warmup, not pynds_kv.init.
++                        self._pynds_init_failed = True
++                        self._healthy = False
++                        return
 +
 +            self._pynds_init_failed = False
 +            self._healthy = True
@@ -1212,6 +1269,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        elapsed_s: float,
 +        ret: int,
 +        attempts: int = 1,
++        nsid: int | str | None = None,
 +    ) -> None:
 +        """Per-call pynds_kv IO detail, gated by LMCACHE_KV_DEBUG_LOG.
 +
@@ -1222,11 +1280,12 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            return
 +        n = len(block_ids)
 +        bw = total_bytes / elapsed_s / 1e9 if elapsed_s > 0 else 0.0
++        display_nsid = self._config.nsid if nsid is None else nsid
 +        logger.info(
-+            "%s: nsid=%d keys=%d total_bytes=%d io_ms=%.2f bw=%.2fGB/s "
++            "%s: nsid=%s keys=%d total_bytes=%d io_ms=%.2f bw=%.2fGB/s "
 +            "first_block_id=%d last_block_id=%d attempts=%d ret=%d",
 +            op,
-+            self._config.nsid,
++            display_nsid,
 +            n,
 +            total_bytes,
 +            elapsed_s * 1000,
@@ -1237,8 +1296,8 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            ret,
 +        )
 +
-+    def _warmup_nds_io(self) -> bool:
-+        """Run warmup write self-test (write-only, no read-back).
++    def _warmup_nds_io(self, nsid: int) -> bool:
++        """Run warmup write self-test for one namespace.
 +
 +        Uses reserved key_high=0xFFFF domain to avoid collision with
 +        business keys. Writes warmup_keys x 1 MiB through the registered
@@ -1252,6 +1311,9 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        purpose is to establish the RDMA connections and smoke-test the
 +        write path, which the batchPut alone covers.
 +
++        Args:
++            nsid: Namespace whose connection and write path are warmed.
++
 +        Returns:
 +            True if warmup passed, False otherwise.
 +        """
@@ -1260,7 +1322,6 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        import pynds_kv
 +
 +        warmup_size = 1024 * 1024  # 1 MiB
-+        nsid = self._config.nsid
 +        num_keys = self._config.warmup_keys
 +        total = warmup_size * num_keys
 +
@@ -1301,14 +1362,17 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        ret = self._call_with_timeout(
 +            pynds_kv.batchPut, block_ids, views, zeros, lengths, nsids
 +        )
-+        self._log_pynds_io("kv_set", block_ids, total, time.monotonic() - t0, ret)
++        self._log_pynds_io(
++            "kv_set", block_ids, total, time.monotonic() - t0, ret, nsid=nsid
++        )
 +        if ret != 0:
-+            logger.error("Warmup batchPut failed: ret=%d", ret)
++            logger.error("Warmup batchPut failed for nsid=%d: ret=%d", nsid, ret)
 +            return False
 +
 +        logger.info(
-+            "NDS warmup IO ok: wrote %d bytes in %d keys (no read-back; "
-+            "box does not support overwrite)",
++            "NDS warmup IO ok for nsid=%d: wrote %d bytes in %d keys "
++            "(no read-back; box does not support overwrite)",
++            nsid,
 +            total,
 +            num_keys,
 +        )
@@ -1366,7 +1430,9 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        try:
 +            import pynds_kv
 +        except ImportError:
-+            logger.error("NDSL2Adapter health probe: pynds_kv unavailable, probe disabled")
++            logger.error(
++                "NDSL2Adapter health probe: pynds_kv unavailable, probe disabled"
++            )
 +            return
 +
 +        interval = self._config.unhealthy_probe_interval
@@ -1376,16 +1442,21 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            if not self._nds_client_ready:
 +                continue
 +            probe_key = [(0xFFFF << 64)]
-+            t0 = time.monotonic()
-+            ret = self._call_with_timeout(
-+                pynds_kv.is_exists, probe_key, self._config.nsid
-+            )
-+            self._log_pynds_io("kv_exists", probe_key, 0, time.monotonic() - t0, ret)
-+            if ret >= 0:
++            all_reachable = True
++            for nsid in self._configured_nsids():
++                t0 = time.monotonic()
++                ret = self._call_with_timeout(pynds_kv.is_exists, probe_key, nsid)
++                self._log_pynds_io(
++                    "kv_exists", probe_key, 0, time.monotonic() - t0, ret, nsid=nsid
++                )
++                if ret < 0:
++                    all_reachable = False
++                    logger.debug(
++                        "NDSL2Adapter health probe: nsid=%d still unreachable", nsid
++                    )
++            if all_reachable:
 +                self._record_pynds_success()
-+                logger.info("NDSL2Adapter health probe: NDS reachable, recovered")
-+            else:
-+                logger.debug("NDSL2Adapter health probe: NDS still unreachable")
++                logger.info("NDSL2Adapter health probe: all NDS namespaces recovered")
 +
 +    # --------------------
 +    # Store / Load / Lookup (stubs - filled in Task 3+4)
@@ -1468,11 +1539,10 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            import pynds_kv
 +
 +            block_ids = [self._encode_block_id(k) for k in keys]
++            key_nsids = [self._nsid_for_key(k) for k in keys]
 +            sizes = [obj.get_size() for obj in objects]
 +
-+            mr_base = ctypes.addressof(
-+                ctypes.c_char.from_buffer(self._nds_mmap)
-+            )
++            mr_base = ctypes.addressof(ctypes.c_char.from_buffer(self._nds_mmap))
 +
 +            # Per-key direct-or-staging decision: objects fully inside the
 +            # registered L1 MR are handed to batchPut directly (zero-copy);
@@ -1485,6 +1555,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            pending_ids: list[int] = []
 +            pending_views: list = []
 +            pending_sizes: list[int] = []
++            pending_nsids: list[int] = []
 +            pending_copies: list[tuple[int, int, int]] = []  # (dst, src, nbytes)
 +            staging_off = 0
 +
@@ -1496,6 +1567,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                ids = list(pending_ids)
 +                views = list(pending_views)
 +                lens = list(pending_sizes)
++                nsids = list(pending_nsids)
 +                copies = list(pending_copies)
 +                total = sum(lens)
 +
@@ -1504,26 +1576,29 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                    # not on the asyncio loop.
 +                    for dst, src, nbytes in copies:
 +                        ctypes.memmove(dst, src, nbytes)
-+                    return pynds_kv.batchPut(
-+                        ids, views, [0] * n, lens, [self._config.nsid] * n
-+                    )
++                    return pynds_kv.batchPut(ids, views, [0] * n, lens, nsids)
 +
 +                t0 = time.monotonic()
 +                r = await self._run_io_with_timeout(_copy_and_put)
-+                self._log_pynds_io("kv_set", ids, total, time.monotonic() - t0, r)
++                log_nsid: int | str = nsids[0] if len(set(nsids)) == 1 else "mixed"
++                self._log_pynds_io(
++                    "kv_set", ids, total, time.monotonic() - t0, r, nsid=log_nsid
++                )
 +                pending_ids.clear()
 +                pending_views.clear()
 +                pending_sizes.clear()
++                pending_nsids.clear()
 +                pending_copies.clear()
 +                staging_off = 0
 +                return r
 +
-+            for i, (obj, size) in enumerate(zip(objects, sizes)):
++            for i, (obj, size) in enumerate(zip(objects, sizes, strict=False)):
 +                src = obj.raw_tensor.data_ptr()
 +                if self._in_l1_mr(src, size):
 +                    pending_ids.append(block_ids[i])
 +                    pending_views.append((ctypes.c_char * size).from_address(src))
 +                    pending_sizes.append(size)
++                    pending_nsids.append(key_nsids[i])
 +                    continue
 +                if size > self._nds_buffer_size:
 +                    raise ValueError(
@@ -1539,13 +1614,12 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                pending_ids.append(block_ids[i])
 +                pending_views.append((ctypes.c_char * size).from_address(dst))
 +                pending_sizes.append(size)
++                pending_nsids.append(key_nsids[i])
 +                pending_copies.append((dst, src, size))
 +            if ret == 0:
 +                ret = await _flush()
 +        except Exception:
-+            logger.exception(
-+                "NDS batchPut raised exception for task %s", task_id
-+            )
++            logger.exception("NDS batchPut raised exception for task %s", task_id)
 +            self._record_pynds_failure()
 +            result = L2StoreResult(False, 0)
 +            sizes = []
@@ -1590,9 +1664,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        )
 +        return task_id
 +
-+    def query_lookup_and_lock_result(
-+        self, task_id: L2TaskId
-+    ) -> "Bitmap | None":
++    def query_lookup_and_lock_result(self, task_id: L2TaskId) -> "Bitmap | None":
 +        """Non-blockingly query the result of a lookup task.
 +
 +        Args:
@@ -1624,9 +1696,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        try:
 +            self._ensure_nds_initialized(force=self._pynds_init_failed)
 +        except Exception:
-+            logger.exception(
-+                "NDS init raised an exception for lookup task %s", task_id
-+            )
++            logger.exception("NDS init raised an exception for lookup task %s", task_id)
 +            self._healthy = False
 +        if not self._healthy:
 +            bitmap = Bitmap(len(keys))
@@ -1638,28 +1708,62 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        try:
 +            import pynds_kv
 +
-+            block_ids = [self._encode_block_id(k) for k in keys]
-+            t0 = time.monotonic()
-+            prefix_count = await asyncio.to_thread(
-+                pynds_kv.is_exists, block_ids, self._config.nsid
++            key_groups: dict[int, list[tuple[int, int]]] = {}
++            for index, key in enumerate(keys):
++                key_groups.setdefault(self._nsid_for_key(key), []).append(
++                    (index, self._encode_block_id(key))
++                )
++
++            async def _query_group(
++                nsid: int, indexed_block_ids: list[tuple[int, int]]
++            ) -> tuple[int, list[tuple[int, int]], int]:
++                block_ids = [block_id for _, block_id in indexed_block_ids]
++                t0 = time.monotonic()
++                prefix_count = await asyncio.to_thread(
++                    pynds_kv.is_exists, block_ids, nsid
++                )
++                self._log_pynds_io(
++                    "kv_exists",
++                    block_ids,
++                    0,
++                    time.monotonic() - t0,
++                    prefix_count,
++                    nsid=nsid,
++                )
++                return nsid, indexed_block_ids, prefix_count
++
++            # is_exists accepts only one nsid. Query each namespace separately,
++            # then reconstruct the prefix in the caller's original key order.
++            group_results = await asyncio.gather(
++                *(
++                    _query_group(nsid, indexed_block_ids)
++                    for nsid, indexed_block_ids in key_groups.items()
++                )
 +            )
-+            self._log_pynds_io(
-+                "kv_exists", block_ids, 0, time.monotonic() - t0, prefix_count
-+            )
-+            if prefix_count < 0:
-+                self._record_pynds_failure()
-+                prefix_count = 0
 +
 +            bitmap = Bitmap(len(keys))
-+            for i in range(min(prefix_count, len(keys))):
-+                bitmap.set(i)
++            key_exists = [False] * len(keys)
++            has_failure = False
++            for _, indexed_block_ids, prefix_count in group_results:
++                if prefix_count < 0:
++                    has_failure = True
++                    continue
++                for index, _ in indexed_block_ids[:prefix_count]:
++                    key_exists[index] = True
 +
-+            if prefix_count > 0:
-+                self._record_pynds_success()
++            if has_failure:
++                self._record_pynds_failure()
++            else:
++                prefix_count = 0
++                for exists in key_exists:
++                    if not exists:
++                        break
++                    bitmap.set(prefix_count)
++                    prefix_count += 1
++                if prefix_count > 0:
++                    self._record_pynds_success()
 +        except Exception:
-+            logger.exception(
-+                "NDS is_exists raised exception for task %s", task_id
-+            )
++            logger.exception("NDS is_exists raised exception for task %s", task_id)
 +            self._record_pynds_failure()
 +            bitmap = Bitmap(len(keys))
 +
@@ -1694,9 +1798,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +        )
 +        return task_id
 +
-+    def query_load_result(
-+        self, task_id: L2TaskId
-+    ) -> "Bitmap | None":
++    def query_load_result(self, task_id: L2TaskId) -> "Bitmap | None":
 +        """Non-blockingly query the result of a load task.
 +
 +        Args:
@@ -1744,11 +1846,10 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            import pynds_kv
 +
 +            block_ids = [self._encode_block_id(k) for k in keys]
++            key_nsids = [self._nsid_for_key(k) for k in keys]
 +            sizes = [obj.get_size() for obj in objects]
 +
-+            mr_base = ctypes.addressof(
-+                ctypes.c_char.from_buffer(self._nds_mmap)
-+            )
++            mr_base = ctypes.addressof(ctypes.c_char.from_buffer(self._nds_mmap))
 +
 +            # Per-key direct-or-staging decision: objects fully inside the
 +            # registered L1 MR are read into directly (zero-copy); the rest
@@ -1758,6 +1859,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            pending_ids: list[int] = []
 +            pending_views: list = []
 +            pending_sizes: list[int] = []
++            pending_nsids: list[int] = []
 +            pending_copybacks: list[tuple[int, int, int]] = []  # (dst, src, nbytes)
 +            staging_off = 0
 +
@@ -1769,13 +1871,12 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                ids = list(pending_ids)
 +                views = list(pending_views)
 +                lens = list(pending_sizes)
++                nsids = list(pending_nsids)
 +                copybacks = list(pending_copybacks)
 +                total = sum(lens)
 +
 +                def _get_and_copy() -> int:
-+                    return pynds_kv.batchGet(
-+                        ids, views, [0] * n, lens, [self._config.nsid] * n
-+                    )
++                    return pynds_kv.batchGet(ids, views, [0] * n, lens, nsids)
 +
 +                def _copyback() -> None:
 +                    for dst, src, nbytes in copybacks:
@@ -1801,6 +1902,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                            r,
 +                        )
 +                        await asyncio.sleep(self._config.get_retry_backoff)
++                log_nsid: int | str = nsids[0] if len(set(nsids)) == 1 else "mixed"
 +                self._log_pynds_io(
 +                    "kv_get",
 +                    ids,
@@ -1808,22 +1910,25 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                    time.monotonic() - t0,
 +                    r,
 +                    attempts=attempts,
++                    nsid=log_nsid,
 +                )
 +                if r == 0 and copybacks:
 +                    await asyncio.to_thread(_copyback)
 +                pending_ids.clear()
 +                pending_views.clear()
 +                pending_sizes.clear()
++                pending_nsids.clear()
 +                pending_copybacks.clear()
 +                staging_off = 0
 +                return r
 +
-+            for i, (obj, size) in enumerate(zip(objects, sizes)):
++            for i, (obj, size) in enumerate(zip(objects, sizes, strict=False)):
 +                dst = obj.raw_tensor.data_ptr()
 +                if self._in_l1_mr(dst, size):
 +                    pending_ids.append(block_ids[i])
 +                    pending_views.append((ctypes.c_char * size).from_address(dst))
 +                    pending_sizes.append(size)
++                    pending_nsids.append(key_nsids[i])
 +                    continue
 +                if size > self._nds_buffer_size:
 +                    raise ValueError(
@@ -1839,13 +1944,12 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +                pending_ids.append(block_ids[i])
 +                pending_views.append((ctypes.c_char * size).from_address(src))
 +                pending_sizes.append(size)
++                pending_nsids.append(key_nsids[i])
 +                pending_copybacks.append((dst, src, size))
 +            if ret == 0:
 +                ret = await _flush()
 +        except Exception:
-+            logger.exception(
-+                "NDS batchGet raised exception for task %s", task_id
-+            )
++            logger.exception("NDS batchGet raised exception for task %s", task_id)
 +            self._record_pynds_failure()
 +            bitmap = Bitmap(len(keys))
 +        else:
@@ -1938,6 +2042,7 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +            "is_healthy": self._healthy,
 +            "type": "NDSL2Adapter",
 +            "nsid": self._config.nsid,
++            "object_group_nsid": dict(self._config.object_group_nsid),
 +            "nds_initialized": self._nds_initialized,
 +            "consecutive_failures": self._consecutive_failures,
 +        }
@@ -1972,6 +2077,43 @@ index 0000000000000000000000000000000000000000..12fecfc99139549a6244d30520fd8b9c
 +
 +
 +register_l2_adapter_factory("nds", _create_nds_adapter)
+diff --git a/lmcache/v1/gpu_connector/gpu_ops.py b/lmcache/v1/gpu_connector/gpu_ops.py
+index 4ab3f9b5d8947b3ab839a6f1a4cd06ce83405f71..e481b2acac7d5360077d5d6761877214a941de79 100644
+--- a/lmcache/v1/gpu_connector/gpu_ops.py
++++ b/lmcache/v1/gpu_connector/gpu_ops.py
+@@ -24,8 +24,14 @@ def lmcache_memcpy_async_h2d(
+ 
+     This function is non-blocking and won't do stream synchronization.
+ 
++    The GPU buffer may be larger than the logical memory object. Only the
++    memory object's bytes are copied into the buffer prefix; the remaining
++    buffer contents are left unchanged.
++
+     :param MemoryObj memory_obj: The memory object to be copied.
+     :param torch.Tensor gpu_buffer: The GPU buffer to copy the data to.
++    :raises ValueError: If the memory object has no raw tensor or is larger
++        than the GPU buffer.
+     """
+     if isinstance(memory_obj, GDSMemoryObject):
+         get_l1_gds_context(memory_obj.get_l1_manager()).transfer_async(
+@@ -38,7 +44,7 @@ def lmcache_memcpy_async_h2d(
+             "memory_obj.raw_tensor is None; ensure the MemoryObj has been allocated."
+         )
+     mem_obj_size = memory_obj.get_size()
+-    if mem_obj_size != gpu_buffer.nbytes:
++    if mem_obj_size > gpu_buffer.nbytes:
+         raise ValueError(
+             f"Size mismatch: memory_obj nbytes={mem_obj_size}, "
+             f"gpu_buffer nbytes={gpu_buffer.nbytes}"
+@@ -53,7 +59,7 @@ def lmcache_memcpy_async_h2d(
+             LazyMemoryAllocator.PIN_CHUNK_SIZE,
+         )
+     else:
+-        gpu_buffer.view(torch.uint8).copy_(
++        gpu_buffer.view(torch.uint8)[:mem_obj_size].copy_(
+             src_tensor.view(torch.uint8)[:mem_obj_size], non_blocking=True
+         )
+ 
 diff --git a/lmcache/v1/memory_allocators/mixed_memory_allocator.py b/lmcache/v1/memory_allocators/mixed_memory_allocator.py
 index 06202b6afbeee7bcd669c2e113e731f4c9edf1a4..913c4935fe56be9ddefc6f59e2a45ed8c4701e0a 100644
 --- a/lmcache/v1/memory_allocators/mixed_memory_allocator.py
@@ -2304,10 +2446,10 @@ index c7fe8f6cd6a898618cec1c88a4b1c4626c608322..ec320d48fef93938d6a51770084bdae4
          and config.max_local_disk_size > 0
 diff --git a/lmcache/v1/storage_backend/kv_storage_backend.py b/lmcache/v1/storage_backend/kv_storage_backend.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0e5f9ea3f
+index 0000000000000000000000000000000000000000..64adc6fbea3058e42a9038322b5d71827fc0c842
 --- /dev/null
 +++ b/lmcache/v1/storage_backend/kv_storage_backend.py
-@@ -0,0 +1,2001 @@
+@@ -0,0 +1,2140 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# Standard
 +from concurrent.futures import Future
@@ -2350,6 +2492,19 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +# flag also enables per-call kv_set/kv_get/kv_exists/kv_put debug lines.
 +_STATS_LOG_INTERVAL = 50
 +
++# Diagnostic dump: when LMCACHE_KV_DUMP_DIR is set, every batch set/exists
++# call is logged to disk so that KV backend behaviour can be verified
++# offline, independently of the NDS box.
++_DUMP_DIR_ENV = "LMCACHE_KV_DUMP_DIR"
++_dump_seq = 0
++_dump_lock = threading.Lock()
++
++
++def _dump_dir() -> Optional[str]:
++    """Return the diagnostic dump directory if enabled, else None."""
++    return os.environ.get(_DUMP_DIR_ENV)
++
++
 +def _kv_debug() -> bool:
 +    """Whether per-call KV IO debug logging is enabled.
 +
@@ -2360,6 +2515,85 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +    bandwidth summary (parity with SGLANG_HICACHE_KV_DEBUG_LOG).
 +    """
 +    return bool(os.environ.get("LMCACHE_KV_DEBUG_LOG"))
++
++
++def _next_dump_seq() -> int:
++    """Return a monotonically increasing sequence number for dump files."""
++    global _dump_seq
++    with _dump_lock:
++        seq = _dump_seq
++        _dump_seq += 1
++        return seq
++
++
++def _dump_set_batch(
++    dump_dir: str,
++    worker_id: int,
++    nsid: int,
++    block_ids: list,
++    buffers: list,
++    lengths: list,
++    ret: int,
++) -> None:
++    """Write a batch_put call to disk for offline verification."""
++    try:
++        seq = _next_dump_seq()
++        ts = time.strftime("%Y%m%d_%H%M%S")
++        prefix = os.path.join(
++            dump_dir, f"set_rank{worker_id}_{ts}_{seq:06d}"
++        )
++        os.makedirs(dump_dir, exist_ok=True)
++        buffer_files: list = []
++        for i, (buf, length) in enumerate(zip(buffers, lengths)):
++            path = f"{prefix}_block{i}.bin"
++            with open(path, "wb") as f:
++                f.write(buf[:length])
++            buffer_files.append(path)
++        meta = {
++            "type": "set",
++            "timestamp": ts,
++            "seq": seq,
++            "rank": worker_id,
++            "nsid": nsid,
++            "block_ids": block_ids,
++            "lengths": lengths,
++            "ret": ret,
++            "buffer_files": buffer_files,
++        }
++        torch.save(meta, f"{prefix}_meta.pt")
++    except Exception as e:
++        logger.warning("Failed to write diagnostic dump (set): %s", e)
++
++
++def _dump_exists_batch(
++    dump_dir: str,
++    worker_id: int,
++    nsid: int,
++    block_ids: list,
++    ret: int,
++) -> None:
++    """Write a batch_exists call to disk for offline verification."""
++    try:
++        seq = _next_dump_seq()
++        ts = time.strftime("%Y%m%d_%H%M%S")
++        prefix = os.path.join(
++            dump_dir, f"exists_rank{worker_id}_{ts}_{seq:06d}"
++        )
++        os.makedirs(dump_dir, exist_ok=True)
++        meta = {
++            "type": "exists",
++            "timestamp": ts,
++            "seq": seq,
++            "rank": worker_id,
++            "nsid": nsid,
++            "block_ids": block_ids,
++            "ret": ret,
++        }
++        torch.save(meta, f"{prefix}_meta.pt")
++    except Exception as e:
++        logger.warning(
++            "Failed to write diagnostic dump (exists): %s", e
++        )
 +
 +
 +# Global NDS initialization guard
@@ -2375,9 +2609,12 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +_init_timeout: float = 30.0
 +_init_stagger_rank: Optional[int] = None
 +
-+# Warmup IO: the vendor NDS client establishes its data channels lazily per
-+# namespace; round-trips after every successful init (eager or lazy retry)
-+# exercise the data path and establish connections before live traffic.
++# Warmup IO (ported from SGLang hicache-kv-backend-0.5.13post1): the vendor
++# NDS client establishes its data channels lazily per namespace; without a
++# warmup round-trip the first real IO pays connection setup and can hit the
++# vendor data-plane segfault window under live traffic (2026-08-02).  Right
++# after every successful init (eager or lazy retry) we round-trip
++# ``kv_storage_warmup_io_keys`` keys x 1MiB through the box.
 +_WARMUP_IO_BYTES = 1024 * 1024
 +# Warmup block_ids live in the reserved key_high space 0xFFFF (real data
 +# keys encode worker_id 0..0xFFFE there, or a full 64-bit hash when
@@ -2452,8 +2689,11 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +    _init_timeout = timeout
 +    _init_stagger_rank = stagger_rank
 +
-+    # Rank-staggered init reduces contention when multiple TP processes
-+    # establish their NDS connections concurrently.
++    # Rank-staggered init: rank i sleeps i * stagger seconds before
++    # acquiring the lock so that concurrent nds_init calls across TP
++    # ranks are serialised in time.  Observed 2026-08-02: 8-rank
++    # concurrent init left 5/8 ranks with permanently-hanging data
++    # channels — suspected box/NIC race under connection setup.
 +    stagger = float(os.environ.get("LMCACHE_KV_INIT_STAGGER_S", "0"))
 +    eff_stagger_rank = stagger_rank if stagger_rank is not None else worker_id
 +    if stagger > 0 and eff_stagger_rank > 0:
@@ -2637,9 +2877,11 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +        self._warmup_io_keys = getattr(config, "kv_storage_warmup_io_keys", 16)
 +        self._warmup_done = False
 +        self._warmup_array: Any = None
-+        # Resolve and cache the node-unique GPU index on the main thread:
-+        # torch.cuda.current_device() is thread-local and IO threads have
-+        # not run the engine's set_device call.
++        # Node-unique GPU index, resolved on the main thread at backend
++        # construction (after the engine's set_device) and cached: lazy NDS
++        # init runs on IO threads where torch.cuda.current_device() is
++        # thread-local and would wrongly report 0 (2026-08-27 per-rank conf
++        # collision incident on the SGLang side).
 +        self._node_gpu_index = self._resolve_node_gpu_index(
 +            metadata.worker_id if metadata is not None else 0
 +        )
@@ -2862,11 +3104,13 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +    def _materialize_rank_nds_config(self) -> Optional[str]:
 +        """Return the nds_config path to use, possibly a per-rank rewrite.
 +
-+        The NDS SDK pins its IO threads from the conf's ``start_core``;
-+        shift this value for each rank to avoid sharing the same cores.
-+        NUMA-aware absolute placement is preferred; the linear offset mode
-+        is the fallback when the topology cannot be queried; ``"auto"``
-+        passes the base conf through when topology is unknown.
++        Ported from SGLang hicache-kv-backend-0.5.13post1
++        (``nds_core_stride``): the vendor SDK pins its IO threads from the
++        conf's ``start_core``; without a per-rank shift every process on
++        the node pins the same cores (2026-08-02 5/8-rank connection-storm
++        incident).  NUMA-aware absolute placement is preferred; the linear
++        offset mode is the fallback when the topology cannot be queried;
++        ``"auto"`` passes the base conf through when topology is unknown.
 +
 +        Raises:
 +            ValueError: On misconfiguration (loud deployment error); the
@@ -2917,10 +3161,11 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +    def _warmup_nds_io(self) -> None:
 +        """Round-trip N keys x 1MiB through the KV box right after init.
 +
-+        Establish the NDS client's lazily-created data channels before live
-+        traffic. On any failure the backend is marked unhealthy and degrades
-+        to cache miss instead of blocking startup. Requires the box namespace
-+        valueSize >= 1MiB.
++        Forces the vendor client's lazily-established data channels up at
++        init time, before live traffic (2026-08-02 segfault-window
++        mitigation).  On any failure the backend is marked unhealthy and
++        degrades to cache miss instead of blocking startup.  Requires the
++        box namespace valueSize >= 1MiB.
 +        """
 +        # Third Party
 +        import pynds_kv
@@ -3452,6 +3697,25 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +                    return 0
 +                self._record_pynds_success()
 +
++                dump_dir = _dump_dir()
++                if dump_dir is not None:
++                    try:
++                        verified_block_ids = [
++                            self._encode_block_id(keys[i])
++                            for i in range(hit_chunks)
++                        ]
++                        _dump_exists_batch(
++                            dump_dir,
++                            self._worker_id,
++                            self.nsid,
++                            verified_block_ids,
++                            exists,
++                        )
++                    except Exception as e:
++                        logger.warning(
++                            "diagnostic dump (exists) failed: %s", e
++                        )
++
 +            # Local dict prefix broken, probe KV box for remaining keys
 +            remaining = keys[hit_chunks:]
 +            if remaining:
@@ -3958,6 +4222,23 @@ index 0000000000000000000000000000000000000000..8ed93cb7260a880e319c8d2660531ec0
 +            total_bytes / 1024**3,
 +        )
 +
++        dump_dir = _dump_dir()
++        if dump_dir is not None:
++            try:
++                _dump_set_batch(
++                    dump_dir,
++                    self._worker_id,
++                    self.nsid,
++                    block_ids,
++                    buffers,
++                    lengths,
++                    ret,
++                )
++            except Exception as e:
++                logger.warning(
++                    "diagnostic dump (set) failed: %s", e
++                )
++
 +        # Update dict, usage, and metadata outside the lock
 +        for key, memory_obj in zip(keys, memory_objs, strict=False):
 +            # True blob bytes (== lengths[] above), not phy_size.
@@ -4395,10 +4676,10 @@ index 0c5275a21bcb809f1962f1f8f4650cb1e21670d2..595a61a8a7c114eb2e1121c7e47b7423
                  cpu_size_bytes,
 diff --git a/lmcache/v1/storage_backend/nds_numa.py b/lmcache/v1/storage_backend/nds_numa.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a775d32269f556f4201c9ad2df2d651f48db0ce7
+index 0000000000000000000000000000000000000000..15d726cd2cb9a7f9c63006fa958044afd95bc664
 --- /dev/null
 +++ b/lmcache/v1/storage_backend/nds_numa.py
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,413 @@
 +# SPDX-License-Identifier: Apache-2.0
 +"""Per-rank NDS config materialization and NUMA-aware start_core placement.
 +
@@ -4412,8 +4693,10 @@ index 0000000000000000000000000000000000000000..a775d32269f556f4201c9ad2df2d651f
 +to physical cores starting at the ``start_core`` key in ``nds_config.conf``.
 +Multi-GPU launches run one process per TP rank and every process reads the
 +same conf, so all ranks pin their SDK threads onto the same cores and
-+starve each other. Shifting ``start_core`` by a per-rank offset — ideally
-+into the GPU's own NUMA node — gives each process its own core window.
++starve each other (observed 2026-08-02: 8-rank concurrent init left 5/8
++ranks with permanently-hanging data channels).  Shifting ``start_core`` by
++a per-rank offset — ideally into the GPU's own NUMA node — gives each
++process its own core window.
 +"""
 +
 +# Standard
@@ -4451,13 +4734,19 @@ index 0000000000000000000000000000000000000000..a775d32269f556f4201c9ad2df2d651f
 +    silently drop the wrapper IO tuning.
 +
 +    The per-rank copy is a derived artifact whose source of truth is the
-+    base conf the deployer edits, so an existing copy is always overwritten
-+    to avoid reusing stale core assignments.
++    base conf the deployer edits, so an existing copy is ALWAYS overwritten
++    (a previous deployment may have left one generated from a different
++    base start_core; refusing to overwrite would silently skip NDS init —
++    the 2026-08-17 incident where ranks 1-7 fell back to lazy init).
 +
-+    The write is atomic (tmp file + ``os.replace`` in the same directory)
-+    because processes that compute the same ``start_core`` target the same
-+    file name. A naive ``open(w)`` truncate+write could let a concurrent
-+    reader observe a torn or empty file.
++    The write is atomic (tmp file + ``os.replace`` in the same directory):
++    when two processes compute the same ``start_core`` they target the
++    same file name — e.g. lazy NDS init on storage IO threads, where
++    ``torch.cuda.current_device()`` is thread-local and reports 0 for
++    every rank (2026-08-27: 8 ranks, 4 conf copies, lazy init during
++    traffic).  A naive ``open(w)`` truncate+write lets a concurrent reader
++    (the vendor SDK parsing the conf inside init) observe a torn/empty
++    file.
 +    """
 +    with open(base_path, "r", encoding="utf-8") as f:
 +        lines = f.readlines()
@@ -5487,28 +5776,3 @@ index f3e5808895a2efa23197eb2eb0ab10563f3f18f9..e102983c5f1ee8f25e2e4a838042cf0b
          allocated_keys.append(key)
          allocated_objects.append(memory_obj)
  
-diff --git a/lmcache/v1/gpu_connector/gpu_ops.py b/lmcache/v1/gpu_connector/gpu_ops.py
-index 4ab3f9b5..e481b2ac 100644
---- a/lmcache/v1/gpu_connector/gpu_ops.py
-+++ b/lmcache/v1/gpu_connector/gpu_ops.py
-@@ -26,4 +26,10 @@ def lmcache_memcpy_async_h2d(
-
-+    The GPU buffer may be larger than the logical memory object. Only the
-+    memory object's bytes are copied into the buffer prefix; the remaining
-+    buffer contents are left unchanged.
-+
-     :param MemoryObj memory_obj: The memory object to be copied.
-     :param torch.Tensor gpu_buffer: The GPU buffer to copy the data to.
-+    :raises ValueError: If the memory object has no raw tensor or is larger
-+        than the GPU buffer.
-     """
-@@ -40,3 +46,3 @@ def lmcache_memcpy_async_h2d(
-     mem_obj_size = memory_obj.get_size()
--    if mem_obj_size != gpu_buffer.nbytes:
-+    if mem_obj_size > gpu_buffer.nbytes:
-         raise ValueError(
-@@ -55,3 +61,3 @@ def lmcache_memcpy_async_h2d(
-     else:
--        gpu_buffer.view(torch.uint8).copy_(
-+        gpu_buffer.view(torch.uint8)[:mem_obj_size].copy_(
-             src_tensor.view(torch.uint8)[:mem_obj_size], non_blocking=True
