@@ -166,6 +166,9 @@ TransProviderType ParseConfigTransProviderType(std::string value)
     if (value == "AIV") { return TransProviderType::AIV; }
     if (value == "AICPU") { return TransProviderType::AICPU; }
     if (value == "CPU") { return TransProviderType::CPU; }
+    // The CPU IO path over RoCE: the same provider as CPU, under the name the
+    // CPU data path documentation uses.
+    if (value == "CPU_ROCE" || value == "CPU-ROCE") { return TransProviderType::CPU_ROCE; }
     if (value == "HCCP_KV_OVER_ROCE") { return TransProviderType::HCCP_KV_OVER_ROCE; }
     return TransProviderType::UNSUPPORTED;
 }

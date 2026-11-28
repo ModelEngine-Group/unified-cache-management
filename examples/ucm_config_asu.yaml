@@ -68,11 +68,12 @@ use_layerwise: false
 persist_token_threshold: 0
 
 # ---------------------------------------------------------------------------
-# CPU-over-RoCE transport provider (asu_trans_provider_backend: "cpu").
+# CPU-over-RoCE transport provider (asu_trans_provider_backend: "cpu", or
+# "cpu_roce" for the same provider under the CPU IO name).
 # The keys below are the ones the provider reads; see
 # kv_semantics/docs/guide/roce-provider.md for the full table and defaults.
 #
-#      asu_trans_provider_backend: "cpu"
+#      asu_trans_provider_backend: "cpu_roce"
 #      # Required: there is no automatic GID selection.
 #      asu_roce_gid_index: 0
 #      # Optional tuning.

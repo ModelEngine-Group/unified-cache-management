@@ -49,6 +49,19 @@ enum MemoryAccess : int {
     kMemoryAccessRemoteRead = 4,
 };
 
+// One entry the completion queue reports.  The type is kept out of the verbs
+// headers so that the provider and its tests stay free of rdma-core.
+enum class CompletionType : std::uint8_t { Send, Receive };
+enum class CompletionResult : std::uint8_t { Success, Failed };
+
+struct Completion {
+    std::uint64_t wrId{0};
+    CompletionType type{CompletionType::Send};
+    CompletionResult result{CompletionResult::Success};
+    // Bytes the peer wrote for a receive completion; zero for a send.
+    std::uint32_t byteLength{0};
+};
+
 // Settings that come from the ASU configuration (asu_roce_*) and describe how
 // the local HCA and its queue pairs are brought up.
 struct VerbQpConfig {
@@ -111,6 +124,10 @@ public:
                           std::uint32_t& rkey, std::string& error);
     Status UnregisterMemory(void* region, std::string& error) const;
 
+    // Local key of a region this device registered.  Zero when the region is not
+    // an access record of this device (the simulated backend has none).
+    std::uint32_t Lkey(void* region) const noexcept;
+
 private:
     ibv_context* context_{nullptr};
     ibv_pd* pd_{nullptr};
@@ -142,6 +159,21 @@ public:
     // INIT -> RTR -> RTS using the queue pair description received from the peer.
     Status Connect(VerbDevice& device, const VerbQpConfig& config, const QpInfo& peer,
                    std::uint32_t peerQpn, std::uint32_t linkPsn, std::string& error);
+
+    // Posts one two-sided send of `length` bytes from `buffer`; `lkey` is the
+    // local key of the registration that covers it.  wrId travels back in the
+    // completion, which is how the caller tells two sends apart.
+    Status PostSend(std::uint64_t wrId, const void* buffer, std::size_t length, std::uint32_t lkey,
+                    std::string& error);
+
+    // Posts one receive buffer.  A two-sided send from the peer fills it and
+    // reports `wrId` in the completion.
+    Status PostReceive(std::uint64_t wrId, void* buffer, std::size_t length, std::uint32_t lkey,
+                       std::string& error);
+
+    // Reaps up to `maxCompletions` entries already reported by the device.
+    // Returns how many entries were written; zero means there is nothing done.
+    std::size_t Poll(Completion* completions, std::size_t maxCompletions) noexcept;
 
     void Reset() noexcept;
 

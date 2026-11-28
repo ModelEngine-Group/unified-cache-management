@@ -27,8 +27,10 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "kv_types.h"
 #include "roce_process_state.h"
@@ -36,6 +38,7 @@
 #include "roce_verb_qp.h"
 #include "roce_wire.h"
 #include "trans_provider.h"
+#include "verbs_connection.h"
 
 namespace kv {
 namespace roce {
@@ -54,8 +57,12 @@ namespace roce {
 //   4. connect  table 3 exchange carrying gid/lid/mtu/qpn/psn, then table 4
 //   5. teardown table 5 disconnect followed by queue pair destruction
 //
-// Only Send still reports UNSUPPORTED: link establishment, teardown and the
-// memory registration path are implemented.
+// The data path is two sided and runs on the CPU, one VerbsConnection per queue
+// pair: Send() posts the packed SQE (Rflag clear, so the store answers with an
+// RDMA send) and PollCompletion() reaps the completion queues, matches each
+// answer to its request by cid and publishes it into the flag buffer the caller
+// polls.  No device operator is involved, and the provider creates no thread of
+// its own: the transport calls PollCompletion() from its completion loop.
 class CpuKvOverRoceTransProvider final : public TransProvider {
 public:
     explicit CpuKvOverRoceTransProvider(const TransportConfig& config);
@@ -79,8 +86,14 @@ public:
     Status GetServerCapabilities(ConnectionHandle connectionHandle,
                                  ServerKvCapabilities& capabilities) override;
 
+    // Posts the packed SQE of every batch and returns; a batch whose receive queue
+    // is full reports RESOURCE_BUSY and is retried by the caller.
     std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, std::uint32_t kernelCount,
                              std::uint32_t quietCount) override;
+
+    // Reaps the completion queues of every link and publishes the answers into
+    // their flag buffers.  Called by the transport's completion loop.
+    void PollCompletion() override;
 
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& mrHandles) override;
@@ -125,6 +138,8 @@ private:
         QpInfo localQpInfo;
         QpInfo peerQpInfo;
         std::vector<std::unique_ptr<VerbQp>> queuePairs;
+        // One data path per queue pair; empty on the simulated backend.
+        std::vector<std::unique_ptr<VerbsConnection>> ioConnections;
         // One PSN covers the whole link, so every queue pair sends from it.
         std::uint32_t linkPsn{0};
         // Queue pairs both sides agreed on; it may be smaller than the request.
@@ -132,6 +147,20 @@ private:
         // Capabilities the store side accepted at setup time.
         Capabilities negotiatedCapabilities;
     };
+
+    // Configuration this provider was built with.
+    TransportConfig config_;
+
+    // Guards links_, handleToLink_ and nextLinkId_.  Sends and completion polling
+    // take it shared, so they only exclude a connection being created or torn
+    // down; the data path itself is serialized per queue pair.
+    mutable std::shared_mutex mutex_;
+
+    std::vector<std::unique_ptr<Link>> links_;
+
+    std::unordered_map<ConnectionHandle, std::uint64_t> handleToLink_;
+
+    std::uint64_t nextLinkId_{1};
 
     static ConnectionHandle MakeHandle(std::uint64_t linkId, std::uint32_t qpIndex);
 
@@ -172,6 +201,9 @@ private:
     Status CreateQueuePairs(Link& link, std::uint32_t qpNum, const std::string& localIp,
                             std::string& error);
 
+    // Creates the data path of every queue pair once the queue pairs are in RTS.
+    Status StartIoConnections(Link& link, std::string& error);
+
     static Capabilities AdoptCapabilities(const Capabilities& local, const Capabilities& peer);
 
     std::uint32_t NegotiatedQpNum(const Link& link) const;
@@ -197,18 +229,17 @@ private:
 
     void TeardownLink(Link& link) noexcept;
 
-    // Callers hold mutex_.
+    // Callers hold mutex_ (shared or exclusive).
     auto FindLinkPosition(std::uint64_t linkId) -> std::vector<std::unique_ptr<Link>>::iterator;
 
-    TransportConfig config_;
+    // Resolves a handle this provider handed out; callers hold mutex_ shared.
+    Status ResolveHandle(ConnectionHandle handle, Link*& link, std::uint32_t& qpIndex);
 
-    mutable std::mutex mutex_;
-
-    std::vector<std::unique_ptr<Link>> links_;
-
-    std::unordered_map<ConnectionHandle, std::uint64_t> handleToLink_;
-
-    std::uint64_t nextLinkId_{1};
+    // Local key of the registration that covers [addr, addr + size).  The CPU
+    // posts the SGE itself, so the buffer has to be a verbs region of this
+    // device; the caller holds no lock.
+    Status ResolveSendLkey(std::uintptr_t addr, std::size_t size, std::uint32_t& lkey,
+                           std::string& error) const;
 
     // Handle of the registration that covers the range and that this provider
     // can actually use, or zero when there is none.  A registration made on the
